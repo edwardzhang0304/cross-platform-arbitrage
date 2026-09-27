@@ -166,7 +166,7 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
         }
         "preflight" | "launch" => {
             ensure!(s.service.is_none(), "账户已加载，请查看当前状态");
-            let cfg=s.settings.clone().context("请先配置账户或导入迁移数据")?;
+            let mut cfg=s.settings.clone().context("请先配置账户或导入迁移数据")?;
             crate::profiles::ProfileId::new(app.paths.market,Mode::Live).validate(&cfg.strategy)?;
             ensure!(app.paths.load()?.is_some_and(|disk|serde_json::to_value(disk).ok()==serde_json::to_value(&cfg).ok()),"配置文件已改变；请重新加载并核对绑定");
             let bound_strategy=app.paths.bound_strategy(&cfg.strategy)?;
@@ -183,6 +183,9 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
                 return Ok(json!({"accounts":evidence}));
             }
             ensure!(r.confirmation=="LOAD_EXCLUSIVE_ACCOUNTS", "请先确认原电脑的交易程序已关闭");
+            app.paths.upgrade_rules(&mut cfg)?;
+            let bound_strategy=app.paths.bound_strategy(&cfg.strategy)?;
+            s.settings=Some(cfg.clone());
             let workers=inventory::live::bootstrap(&bound_strategy,l,e,false).await.context("账户加载失败，请先运行只读检查")?;
             app.lease.store(true,Ordering::SeqCst);
             let lease=app.lease.clone();let check: Arc<dyn Fn()->bool+Send+Sync>=Arc::new(move||lease.load(Ordering::SeqCst));

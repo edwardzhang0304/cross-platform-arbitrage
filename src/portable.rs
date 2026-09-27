@@ -38,6 +38,18 @@ impl ProfilePaths {
             atomic_json(&self.accounts,&s.accounts)?;atomic_json(&self.strategy,&s.strategy)
         } else {atomic_json(&self.accounts,s)}
     }
+    pub fn upgrade_rules(&self, s: &mut Settings) -> Result<()> {
+        let desired = crate::openai_inventory::rules_upgrade::current_config(&s.strategy)?;
+        crate::openai_inventory::rules_upgrade::migrate_ledger(&self.database, &desired)?;
+        if desired != s.strategy {
+            let mut next = s.clone(); next.strategy = desired;
+            // Commit the durable ledger first. If this atomic file replacement
+            // fails, reloading the original config safely retries the same upgrade.
+            self.save(&next)?;
+            *s = next;
+        }
+        Ok(())
+    }
     /// Keep legacy ledger/config bytes intact when learning the missing L1 address.
     pub fn bind_public_address(&self,c:&InventoryConfig,lighter_address:&str)->Result<()> {self.check_or_bind_public_address(c,lighter_address,true)}
     pub fn check_public_address(&self,c:&InventoryConfig,lighter_address:&str)->Result<()> {self.check_or_bind_public_address(c,lighter_address,false)}

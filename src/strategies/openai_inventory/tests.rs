@@ -1853,6 +1853,7 @@ include!("decision_frequency_tests.rs");
 include!("entry_confirmation_tests.rs");
 include!("independent_entry_tests.rs");
 include!("core_parity_tests.rs");
+include!("rules_upgrade_tests.rs");
 
 #[test]
 fn five_minute_mean_excludes_old_prices_and_requires_real_coverage() {

@@ -122,7 +122,7 @@
     "source": "src/strategies/openai_inventory/mod.rs",
     "destination": "src/strategies/openai_inventory/mod.rs",
     "source_sha256": "7832c5de67055a333eb94612462869dbba6265dafedf1288a0ce2b834f4b0518",
-    "packaged_sha256": "229d8a9a2e3013a67dd094450724bb5e18a855fd405018939ad4b191be23472d",
+    "packaged_sha256": "0044dcbc67f84be00a7f781e952de919f90a8cd81c2bd86a59f3e9580ae2ae1d",
     "unchanged": false
   },
   {
@@ -150,7 +150,7 @@
     "source": "src/strategies/openai_inventory/tests.rs",
     "destination": "src/strategies/openai_inventory/tests.rs",
     "source_sha256": "bf233c2010fcf3abc7f02374b6859ea2ce32afc023c2303b6e52630544bfe1ab",
-    "packaged_sha256": "1c0830a0bf018fefe9130260652895c9288dbc9dfb13641d944a948c47205058",
+    "packaged_sha256": "010e52030de5ab622a59031089f5e7f0cf0ef5ce30062c822366a33ba342f326",
     "unchanged": false
   },
   {
@@ -311,7 +311,7 @@
     "source": "Cargo.lock",
     "destination": "Cargo.lock",
     "source_sha256": "8233e4ad7da8258d5feb7e263849097df33d81cad87566dd73eb9e716637c69d",
-    "packaged_sha256": "3a7b212bf32bef24f0feb4f5da9732fa36c474996ec31376c2515b3cac273f0a",
+    "packaged_sha256": "7fa6477a8df6e7eefb96db4f2ada1e9d86f5f6a812b32f3e08c7bc3033f320ac",
     "unchanged": false
   },
   {
@@ -535,7 +535,7 @@
     "source": "src/profiles.rs",
     "destination": "src/profiles.rs",
     "source_sha256": "18165d04cad509c3076259f5fc5f85a8f9a492705791167d7ae5d90f1771278f",
-    "packaged_sha256": "aea36d88a33c809379a94ed015efbe55387719ac12cfc5cdb75e7d0e235da87c",
+    "packaged_sha256": "b9a7c16c37fcad8f19847049875a4d3a97ae25eabb26492131183cf98faad42e",
     "unchanged": false
   },
   {

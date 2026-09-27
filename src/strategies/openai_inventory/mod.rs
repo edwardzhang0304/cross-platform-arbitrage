@@ -16,6 +16,7 @@ pub mod execution;
 pub mod live;
 pub mod live_orphan;
 pub mod model;
+pub mod rules_upgrade;
 pub mod service;
 pub mod store;
 pub mod strategy;
