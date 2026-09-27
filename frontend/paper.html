@@ -1,12 +1,12 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>双平台模拟控制台</title>
+<title>OPENAI＋ANTH 模拟控制台</title>
 <style>body{font:16px system-ui;background:#f5f5f7;color:#1d1d1f;margin:0}main{max-width:960px;margin:40px auto;padding:24px}.card{background:white;border:1px solid #e8e8ed;border-radius:20px;padding:26px;margin:20px 0}a{color:#078393}button{padding:10px 18px;border:1px solid #c6c6c8;background:white;border-radius:9px;margin:6px;cursor:pointer}small{color:#6e6e73}#result{white-space:pre-wrap}</style>
-<main><h1>双平台模拟控制台</h1><p>这台 Mac 使用公开行情与虚拟资金。Windows 的 OPENAI 实盘独立运行。</p>
+<main><h1>OPENAI＋ANTH 模拟控制台</h1><p>一个程序同时运行 OPENAI 和 ANTH，两个标的分别使用虚拟资金与独立账本。</p>
 <p>本程序没有实盘下单入口，不读取地址、密钥或原来的账户账本。</p>
 <div id="profiles"></div><p id="result"></p>
 <script>
 const tokens={};
-async function refresh(){for(const market of ['anth','openai']){
+async function refresh(){for(const market of ['openai','anth']){
 const r=await (await fetch(`/api/${market}-inventory`,{cache:'no-store'})).json();
 if(!r.ok||!r.data.paper_build||r.data.live_build)continue;
 tokens[market]=r.data.csrf;const s=r.data.view?.snapshot;

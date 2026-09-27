@@ -549,15 +549,15 @@
     "source": "src/paper_server.rs",
     "destination": "src/paper_server.rs",
     "source_sha256": "092fc93a91e1080b47219f40306d9115a5f08c4d7ba4e1db3cdb006ea428f116",
-    "packaged_sha256": "092fc93a91e1080b47219f40306d9115a5f08c4d7ba4e1db3cdb006ea428f116",
-    "unchanged": true
+    "packaged_sha256": "1a0f741bc3f6cd6d94174c9d987bf8623be89491c4a6b0e18c5f88d8d9295f4b",
+    "unchanged": false
   },
   {
     "source": "src/bin/paired-paper.rs",
     "destination": "src/bin/paired-paper.rs",
     "source_sha256": "e2d72505fb26d32927b7e9c7a7f888bab697b88f14c2fa33cf5d4cc5e15085d0",
-    "packaged_sha256": "e2d72505fb26d32927b7e9c7a7f888bab697b88f14c2fa33cf5d4cc5e15085d0",
-    "unchanged": true
+    "packaged_sha256": "5f9fc66d976d981dcb7ae3cc33105a3e23c0f510f52a96015898d1c503953c88",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/market.rs",
@@ -591,14 +591,21 @@
     "source": "frontend/paper.html",
     "destination": "frontend/paper.html",
     "source_sha256": "48f7f3d3f3e8f5032fe8715763e1011275d4076251ac4d011d1becb98a306e81",
-    "packaged_sha256": "48f7f3d3f3e8f5032fe8715763e1011275d4076251ac4d011d1becb98a306e81",
-    "unchanged": true
+    "packaged_sha256": "6a951d88def63c5d135f2a9609e404192a10d2d4b40bbf2b6de69b5fa66f2922",
+    "unchanged": false
   },
   {
     "source": "config/strategy.anth.example.json",
     "destination": "config/strategy.anth.example.json",
     "source_sha256": "bba5d62fde515a33d80aad54094f41fda5fc84f1216f727d2187c61d4ea4c296",
     "packaged_sha256": "bba5d62fde515a33d80aad54094f41fda5fc84f1216f727d2187c61d4ea4c296",
+    "unchanged": true
+  },
+  {
+    "source": "scripts/start-paper-macos.command",
+    "destination": "scripts/start-paper-macos.command",
+    "source_sha256": "d33cae9ba5f7458fb2ba1e7e6cc63e58bfa6d43a92f3f8b3c313855fba0528c2",
+    "packaged_sha256": "d33cae9ba5f7458fb2ba1e7e6cc63e58bfa6d43a92f3f8b3c313855fba0528c2",
     "unchanged": true
   }
 ]
