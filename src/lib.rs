@@ -1,6 +1,7 @@
 #[cfg(all(feature="paper-runtime", feature="openai-inventory-live"))]
 compile_error!("Build paper and live executables separately; do not enable both features");
 pub mod config;
+pub mod build_info;
 pub mod domain;
 pub mod hyperliquid;
 pub mod lighter;

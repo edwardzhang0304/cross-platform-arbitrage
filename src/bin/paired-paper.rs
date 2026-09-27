@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use openai_paired_trader::{openai_inventory::{InventoryService, Mode, Control}, paper_server::{self, PaperApp, PAPER_MARKETS}, profiles};
 use std::{path::PathBuf, collections::BTreeMap, sync::Arc};
@@ -7,7 +7,9 @@ use std::{path::PathBuf, collections::BTreeMap, sync::Arc};
 #[command(about="公开行情、虚拟资金；不加载密钥，也不能发送实盘订单")]
 struct Args {
     /// Must be a new empty directory or this simulator's own data directory.
-    #[arg(long)] data_dir:PathBuf,
+    #[arg(long, required_unless_present="build_info")] data_dir:Option<PathBuf>,
+    /// Print public build identity without starting the simulation.
+    #[arg(long)] build_info:bool,
     #[arg(long,default_value_t=18794)] port:u16,
     #[arg(long)] start:bool,
 }
@@ -15,7 +17,11 @@ struct Args {
 async fn main()->Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args=Args::parse();
-    let (root,_lock)=profiles::prepare_paper_root(&args.data_dir)?;
+    if args.build_info {
+        println!("{}", openai_paired_trader::build_info::current());
+        return Ok(());
+    }
+    let (root,_lock)=profiles::prepare_paper_root(&args.data_dir.context("data directory required")?)?;
     let listener=tokio::net::TcpListener::bind(("127.0.0.1",args.port)).await?;
     let mut services=BTreeMap::new();
     for market in PAPER_MARKETS {

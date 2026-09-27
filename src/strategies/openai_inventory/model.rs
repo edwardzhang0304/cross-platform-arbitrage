@@ -350,6 +350,7 @@ pub struct Snapshot {
     /// Live-only incident: one owned leg vanished at the venue; never infer its PnL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_orphan: Option<super::live_orphan::Incident>,
+    /// Completed time additions within the configured round or grid-stage scope.
     #[serde(default)]
     pub time_adds_used: usize,
     #[serde(default)]
@@ -658,8 +659,14 @@ impl Snapshot {
                 entry_spread: spread,
             });
             if let Some(armed)=self.armed.get_mut(op.level) { *armed=false; }
-            if self.config.accumulation.is_some() {
-                if op.level>=self.config.max_groups {self.time_adds_used+=1;}
+            if let Some(rules) = &self.config.accumulation {
+                if op.level >= self.config.max_groups {
+                    self.time_adds_used += 1;
+                } else if rules.quota_scope == super::config::TimeAddQuotaScope::GridStage {
+                    // Reset only after a positive, reconciled paired grid fill.
+                    // Reservation, rejection and a fully unwound attempt grant no quota.
+                    self.time_adds_used = 0;
+                }
                 self.last_open_completed=Some((now,spread));
             }
             self.opened_groups += 1;

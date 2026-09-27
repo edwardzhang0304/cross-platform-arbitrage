@@ -247,7 +247,7 @@ fn accumulation_fixture(now:u64,reverse:bool)->(Snapshot,[AccountEvidence;2]) {
     let(mut s,mut a)=group_fixture(now,reverse);
     s.config.shared_exit_conditions=true;s.config.entry_offset=Decimal::ONE;
     s.config.decision_ms=Some(1000);s.config.entry_confirmation_ms=Some(1000);
-    s.config.accumulation=Some(super::config::AccumulationRules{entry_floor:d(5),interval_ms:900000,max_time_adds:2,contraction_ratio:Decimal::new(5,1)});
+    s.config.accumulation=Some(super::config::AccumulationRules{entry_floor:d(5),interval_ms:900000,max_time_adds:2,quota_scope:TimeAddQuotaScope::Round,contraction_ratio:Decimal::new(5,1)});
     for (_,m) in &mut s.samples {*m=d(5)*Decimal::from(s.direction.sign());}
     s.lots.truncate(1);s.positions[0].units/=2;s.positions[1].units/=2;
     for i in 0..2 {a[i].position_units=s.positions[i].units;}
@@ -392,7 +392,7 @@ fn accumulation_round_keeps_ma_gate_while_groups_keep_half_spread_target() {
         group.config.shared_exit_conditions=true;group.config.decision_ms=Some(1000);
         group.config.entry_confirmation_ms=Some(5000);group.config.mean_window_ms=300000;
         group.config.accumulation=Some(AccumulationRules{entry_floor:d(5),interval_ms:900000,
-            max_time_adds:2,contraction_ratio:Decimal::new(5,1)});
+            max_time_adds:2,quota_scope:TimeAddQuotaScope::Round,contraction_ratio:Decimal::new(5,1)});
         for (_,m) in &mut group.samples {*m=d(5)*Decimal::from(group.direction.sign());}
         group.config.validate().unwrap();
         let mut round=group.clone();round.config.exit_policy=ExitPolicy::Round;

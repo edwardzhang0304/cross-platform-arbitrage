@@ -1,0 +1,22 @@
+{
+  "files": [
+    "Cargo.lock",
+    "src/domain.rs",
+    "src/strategies/openai_inventory/config.rs",
+    "src/strategies/openai_inventory/market.rs",
+    "src/strategies/openai_inventory/model.rs",
+    "src/strategies/openai_inventory/strategy.rs",
+    "src/strategies/openai_inventory/execution.rs",
+    "src/strategies/openai_inventory/accounting.rs",
+    "src/strategies/openai_inventory/entry_mean.rs",
+    "src/strategies/openai_inventory/charts.rs",
+    "src/strategies/openai_inventory/store.rs"
+  ],
+  "mode_agnostic": [
+    "src/strategies/openai_inventory/strategy.rs",
+    "src/strategies/openai_inventory/model.rs",
+    "src/strategies/openai_inventory/execution.rs",
+    "src/strategies/openai_inventory/accounting.rs",
+    "src/strategies/openai_inventory/entry_mean.rs"
+  ]
+}

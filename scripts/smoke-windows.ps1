@@ -13,6 +13,10 @@ try {
     try { $Health = Invoke-RestMethod "$Base/health"; break } catch {}
   }
   if (!$Health -or $Health.application -ne 'openai-paired-trader' -or !$Health.sleep_prevention) { throw 'Health / power guard failed' }
+  $Build = Get-Content (Join-Path (Split-Path $Exe) 'build-info.json') -Raw | ConvertFrom-Json
+  foreach ($Key in @('source_commit','strategy_core_sha256','runtime','version')) {
+    if ($Health.build.$Key -ne $Build.$Key) { throw "Running binary $Key differs from package" }
+  }
   $Status = (Invoke-RestMethod "$Base/api/openai-inventory").data
   if ($Status.vault_unlocked -or $Status.configured -or $Status.view) { throw 'Clean package contains account state' }
   if ($Status.residual_recovery_version -ne 2) { throw 'Residual recovery version is incorrect' }

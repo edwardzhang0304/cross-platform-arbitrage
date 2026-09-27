@@ -1,21 +1,31 @@
-name: Windows portable
+name: Shared core - Mac and Windows
 on:
   push:
-    branches: [main, windows-portable]
+    branches: [main, windows-portable, feature/anth-paper]
     tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   build:
-    runs-on: windows-2022
-    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            platform: windows
+          - os: macos-15
+            target: aarch64-apple-darwin
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: '0'
     defaults:
       run:
-        shell: pwsh
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -31,36 +41,46 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ github.sha }}
+          key: ${{ matrix.platform }}-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: |
-            windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
-            windows-rust-1.98.1-static-
-      - name: Offline strategy and signer regressions
+            ${{ matrix.platform }}-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+            ${{ matrix.platform }}-rust-1.98.1-static-
+      - name: Shared source boundaries and frontend regressions
         run: |
-          cargo test --locked --release --workspace --lib --target x86_64-pc-windows-msvc
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node --test tests/openai_market_visuals.test.cjs tests/openai_profit_display.test.cjs
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Paper-only feature and isolation regressions
+          node scripts/check-shared-core.cjs
+          node --test tests/*.test.cjs
+      - name: Live core and signer regressions - synthetic evidence only
+        env:
+          STRATEGY_PARITY_REPORT: artifacts/parity-live.json
+        run: cargo test --locked --release --workspace --lib --target ${{ matrix.target }}
+      - name: Paper core and isolation regressions - synthetic evidence only
+        env:
+          STRATEGY_PARITY_REPORT: artifacts/parity-paper.json
+        run: cargo test --locked --release --no-default-features --features paper-runtime --lib --target ${{ matrix.target }}
+      - name: Build Windows live binary
+        if: matrix.platform == 'windows'
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin openai-paired-trader
+      - name: Package and smoke test Windows binary without credentials
+        if: matrix.platform == 'windows'
+        shell: pwsh
         run: |
-          cargo test --locked --release --no-default-features --features paper-runtime --lib --target x86_64-pc-windows-msvc
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Build standalone EXE
+          ./scripts/package-windows.ps1 -Exe target/x86_64-pc-windows-msvc/release/openai-paired-trader.exe
+          ./scripts/smoke-windows.ps1 -Exe dist/OPENAI-Trader-Windows-x64/OPENAI-Trader.exe
+      - name: Build and package Mac paper binary without starting it
+        if: matrix.platform == 'macos'
         run: |
-          cargo build --locked --release --target x86_64-pc-windows-msvc --bin openai-paired-trader
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Package public files only
-        run: ./scripts/package-windows.ps1 -Exe target/x86_64-pc-windows-msvc/release/openai-paired-trader.exe
-      - name: Smoke test packaged EXE without credentials
-        run: ./scripts/smoke-windows.ps1 -Exe dist/OPENAI-Trader-Windows-x64/OPENAI-Trader.exe
+          cargo build --locked --release --no-default-features --features paper-runtime --target ${{ matrix.target }} --bin paired-paper
+          bash scripts/package-macos.sh target/aarch64-apple-darwin/release/paired-paper
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows-portable
+          name: candidate-${{ matrix.platform }}
           path: |
-            dist/OPENAI-Trader-Windows-x64.zip
+            artifacts/parity-*.json
+            dist/*.zip
             dist/SHA256SUMS.txt
+            dist/*/build-info.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
         with:
@@ -69,3 +89,27 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+  verify-pair:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: candidate-*
+          path: artifacts
+      - name: Require identical core, rules and decision traces on both operating systems
+        run: node scripts/verify-core-parity.cjs artifacts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-mac-windows
+          path: |
+            artifacts/shared-core-verification.json
+            artifacts/candidate-*/dist/*.zip
+            artifacts/candidate-*/dist/SHA256SUMS.txt
+            artifacts/candidate-*/dist/*/build-info.json
+            artifacts/candidate-*/artifacts/parity-*.json
+          if-no-files-found: error
+          retention-days: 30

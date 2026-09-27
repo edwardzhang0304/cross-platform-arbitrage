@@ -234,7 +234,7 @@ fn reporting_funding_does_not_change_existing_profit_exit_conditions() {
     let mut s = snapshot(); open(&mut s, "a", 1000, 1000);
     s.config.shared_exit_conditions = true;
     s.config.accumulation = Some(AccumulationRules { contraction_ratio: d("0.5"),
-        entry_floor: d("5"), interval_ms: 900000, max_time_adds: 5 });
+        entry_floor: d("5"), interval_ms: 900000, max_time_adds: 5, quota_scope: TimeAddQuotaScope::Round });
     assert!(strategy::group_exit_eligible(&s, &s.lots[0], &books(10000), 1000, 10000).unwrap());
     record_funding(&mut s, funding("cost", Venue::Entropy, 2000, "-0.8")).unwrap();
     assert_eq!(report(&s).lots[0].estimated_exit_net, Some(d("-0.1")));

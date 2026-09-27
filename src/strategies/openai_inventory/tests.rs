@@ -35,6 +35,7 @@ fn accounts(now: u64) -> [AccountEvidence; 2] {
 fn warmed(now: u64) -> Snapshot {
     let mut s = Snapshot::new(InventoryConfig::default()).unwrap();
     s.status = Status::Running;
+    s.funding_synced_ms = now;
     for i in 1..=240 {
         s.samples.push_back((now - i * 15000, d(10)));
     }
@@ -1851,6 +1852,7 @@ include!("group_exit_tests.rs");
 include!("decision_frequency_tests.rs");
 include!("entry_confirmation_tests.rs");
 include!("independent_entry_tests.rs");
+include!("core_parity_tests.rs");
 
 #[test]
 fn five_minute_mean_excludes_old_prices_and_requires_real_coverage() {

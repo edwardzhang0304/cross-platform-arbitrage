@@ -1,6 +1,6 @@
 [package]
 name = "openai-paired-trader"
-version = "0.2.0-rc.1"
+version = "0.2.0-rc.2"
 edition = "2024"
 
 [features]
@@ -17,6 +17,10 @@ required-features = ["openai-inventory-live"]
 name = "paired-paper"
 path = "src/bin/paired-paper.rs"
 required-features = ["paper-runtime"]
+
+[build-dependencies]
+sha2 = "0.10"
+serde_json = "1"
 
 [dependencies]
 anyhow = "1"

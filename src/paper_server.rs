@@ -18,7 +18,7 @@ pub fn router(app: PaperApp) -> Router {
         .route("/api/openai-inventory",get(|s:State<PaperApp>,h:HeaderMap|status(s,h,MarketPair::Openai)))
         .route("/api/anth-paper",post(|s:State<PaperApp>,h:HeaderMap,r:Json<PaperCommand>|control(s,h,r,MarketPair::Anth)))
         .route("/api/openai-paper",post(|s:State<PaperApp>,h:HeaderMap,r:Json<PaperCommand>|control(s,h,r,MarketPair::Openai)))
-        .route("/health",get(||async{Json(json!({"application":"paired-paper","mode":"paper","live_orders":false,"markets":PAPER_MARKETS,"pid":std::process::id()}))}))
+        .route("/health",get(||async{Json(json!({"application":"paired-paper","mode":"paper","live_orders":false,"markets":PAPER_MARKETS,"pid":std::process::id(),"build":crate::build_info::current()}))}))
         .layer(DefaultBodyLimit::max(2048))
         .layer(axum::middleware::map_response(|mut r:axum::response::Response|async {
             for (k,v) in [("cache-control","no-store"),("x-frame-options","DENY"),("x-content-type-options","nosniff")] {
@@ -33,7 +33,9 @@ fn local(app:&PaperApp,h:&HeaderMap)->bool {
 }
 async fn status(State(app):State<PaperApp>,h:HeaderMap,market:MarketPair)->Json<Value> {
     if !local(&app,&h) {return Json(json!({"ok":false}));}
-    Json(json!({"ok":true,"data":{"view":app.services.get(&market).map(InventoryService::status),
+    let view=app.services.get(&market).map(InventoryService::status);
+    let rules=view.as_ref().map(|v|crate::build_info::rules_fingerprint(&v.snapshot.config));
+    Json(json!({"ok":true,"data":{"view":view,"build":crate::build_info::current(),"rules_fingerprint":rules,
         "profile":{"market":market,"mode":"paper"},"csrf":app.tokens.get(&market),"paper_build":true,
         "live_build":false,"process_dry_run":true,"residual_recovery_version":RESIDUAL_RECOVERY_VERSION}}))
 }

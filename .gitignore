@@ -12,4 +12,5 @@
 .DS_Store
 
 /output/
+/artifacts/
 /.playwright-cli/

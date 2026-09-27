@@ -7,6 +7,8 @@ use openai_paired_trader::{portable, server};
 #[derive(Parser)]
 #[command(version, about="OPENAI 双平台实盘：双击启动，浏览器配置，后台运行")]
 struct Cli {
+    /// Print public build identity and exit without reading any data or accounts.
+    #[arg(long)] build_info: bool,
     #[arg(long)] data_dir: Option<PathBuf>,
     #[arg(long, default_value_t=18794)] port: u16,
     #[arg(long)] no_browser: bool,
@@ -33,6 +35,10 @@ async fn main() {
 }
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    if cli.build_info {
+        println!("{}", openai_paired_trader::build_info::current());
+        return Ok(());
+    }
     if let Some(Command::ExportLegacy {source, account_config, output}) = cli.command {
         return portable::export_legacy(&source, &account_config, &output);
     }

@@ -58,13 +58,16 @@ fn local(headers: &HeaderMap, port: u16) -> Result<()> {
 }
 async fn health(State(app): State<App>, h: HeaderMap) -> Json<Value> {
     if local(&h, app.port).is_err() { return Json(json!({"ok":false})); }
-    Json(json!({"application":"openai-paired-trader","version":env!("CARGO_PKG_VERSION"),"data_dir":app.root.to_string_lossy(),"sleep_prevention":cfg!(windows)}))
+    Json(json!({"application":"openai-paired-trader","version":env!("CARGO_PKG_VERSION"),"build":crate::build_info::current(),"data_dir":app.root.to_string_lossy(),"sleep_prevention":cfg!(windows)}))
 }
 async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
     if local(&h, app.port).is_err() { return Json(json!({"ok":false,"error":"只允许本机访问"})); }
     let s = app.inner.lock().await;
+    let view = s.service.as_ref().map(InventoryService::status);
+    let rules = view.as_ref().map(|v| &v.snapshot.config).or(s.settings.as_ref().map(|x| &x.strategy)).map(crate::build_info::rules_fingerprint);
     Json(json!({"ok":true,"data":{
-        "view":s.service.as_ref().map(InventoryService::status),"csrf":app.token.as_str(),
+        "view":view,"csrf":app.token.as_str(),
+        "build":crate::build_info::current(),"rules_fingerprint":rules,
         "live_build":cfg!(feature="openai-inventory-live"),"process_dry_run":false,"kill_switch":false,
         "vault_unlocked":s.password.is_some(),"configured":s.settings.is_some(),
         "vault_exists":app.paths.vault.exists(),

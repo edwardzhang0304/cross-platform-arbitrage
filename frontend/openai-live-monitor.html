@@ -43,6 +43,7 @@
     <section class="card span"><h2>持有的配对仓位</h2><div class="scroll"><table><thead><tr><th>开仓时间</th><th>方向</th><th>每腿数量</th><th>开仓价差</th><th title="分摊给剩余持仓的已结算资金费：收入为正，支出为负">资金费净收支</th><th title="剩余持仓按当前盘口平仓，扣除开平仓成本并计入已结算资金费的估算">预计净利润</th></tr></thead><tbody id="lots"><tr><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
     <section class="card span"><h2>最近成交</h2><div class="scroll"><table><thead><tr><th>时间</th><th>平台</th><th>买 / 卖</th><th>数量</th><th>成交价</th><th>手续费</th></tr></thead><tbody id="fills"><tr><td colspan="6" class="empty">暂无成交</td></tr></tbody></table></div></section>
   </div>
+<p class="muted" id="build-identity"></p>
 </main>
 <script src="/assets/openai-market-visuals.js"></script>
 <script>
@@ -69,6 +70,7 @@ function render(payload){
   if(!payload.ok||!payload.view){throw new Error(payload.ok?'策略尚未启动':payload.error||'连接失败')}
   if(payload.view.snapshot?.config?.mode!==profile.mode||(payload.view.snapshot?.config?.market||'openai')!==profile.market||(profile.mode==='live'&&(!payload.live_build||payload.process_dry_run))||(profile.mode==='paper'&&(!payload.paper_build||!payload.process_dry_run||payload.live_build))){throw new Error('页面与账户标的或运行模式不匹配')}
   const v=payload.view,s=v.snapshot,a=v.accounts||[];
+  const b=payload.build;$('build-identity').textContent=b?`程序 ${b.version} · 核心 ${b.strategy_core_sha256.slice(0,12)} · 参数 ${(payload.rules_fingerprint||'未加载').slice(0,12)}${b.dirty?' · 开发版本':''}`:'核心版本：旧版未提供';
   $('mode-tag').textContent=profile.mode==='paper'?'模拟账户 · 虚拟资金':'真实账户 · 只读';$('mode-tag').className='tag';$('updated').textContent=`更新于 ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;
   $('status-line').textContent=`5 秒双次确认 · 逐组止盈 · 两边逐仓 3 倍${profile.mode==='paper'?' · 模拟成交与资金费估算':''}`;
   $('groups').textContent=`${(s.lots||[]).length} / ${s.closed_groups||0}`;

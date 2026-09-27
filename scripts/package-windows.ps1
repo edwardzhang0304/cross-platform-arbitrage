@@ -15,11 +15,11 @@ Copy-Item vendor/lighter-signing/licenses "$Package/licenses" -Recurse
 Copy-Item vendor/lighter-signing/LICENSE* "$Package/licenses/" -ErrorAction Stop
 Copy-Item vendor/hyperliquid_rust_sdk/LICENSE "$Package/licenses/Hyperliquid-MIT.txt"
 # Only explicit public files are included. No data/, runtime/, keys or local config.
-$Metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-if ($LASTEXITCODE) { throw 'Cannot read package version' }
-$Version = ($Metadata.packages | Where-Object name -eq 'openai-paired-trader').version
-if (!$Version) { throw 'Missing package version' }
-@{version=$Version;commit=$env:GITHUB_SHA;target='x86_64-pc-windows-msvc';rust=(rustc --version);built_at=(Get-Date).ToUniversalTime().ToString('o')} | ConvertTo-Json | Set-Content "$Package/build-info.json" -Encoding utf8
+$InfoPath = Join-Path (Resolve-Path $Package) 'build-info.json'
+$Inspect = Start-Process -FilePath (Resolve-Path "$Package/OPENAI-Trader.exe") -ArgumentList '--build-info' -RedirectStandardOutput $InfoPath -Wait -PassThru
+if ($Inspect.ExitCode -ne 0) { throw 'Cannot inspect packaged binary' }
+$Info = Get-Content $InfoPath -Raw | ConvertFrom-Json
+if ($Info.source_commit -ne $env:GITHUB_SHA -or $Info.dirty -or $Info.runtime -ne 'live' -or !$Info.strategy_core_sha256) { throw 'Packaged binary source identity mismatch' }
 $Zip='dist/OPENAI-Trader-Windows-x64.zip'
 Compress-Archive -Path $Package -DestinationPath $Zip -Force
 $Hash=(Get-FileHash $Zip -Algorithm SHA256).Hash.ToLower()

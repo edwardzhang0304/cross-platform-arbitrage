@@ -3,7 +3,7 @@
     "source": "src/strategies/openai_inventory/strategy.rs",
     "destination": "src/strategies/openai_inventory/strategy.rs",
     "source_sha256": "ba86ef45e615dd654a9bfe8536a5a6eefdcf4c688fe643849fd6fdec1146cd6a",
-    "packaged_sha256": "c9e0e91f5ef919f8583ba7c0cfc486e1698fb81348ab78a4d109565dda77a3f5",
+    "packaged_sha256": "63b629ba570fcf3ceb973fc6eb654ceba991f4c81c3b90faa3494ea927b2209f",
     "unchanged": false
   },
   {
@@ -17,8 +17,8 @@
     "source": "src/strategies/openai_inventory/independent_entry_tests.rs",
     "destination": "src/strategies/openai_inventory/independent_entry_tests.rs",
     "source_sha256": "0e1fcd1555f23590dfeeab87cb5289cd2e4a79add033bbd6069446284feb23ec",
-    "packaged_sha256": "0e1fcd1555f23590dfeeab87cb5289cd2e4a79add033bbd6069446284feb23ec",
-    "unchanged": true
+    "packaged_sha256": "5bd4a1dfa8e0519ba869f15fa721ccd38e479d64018934458f8d3b4250ef789e",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/repair_tests.rs",
@@ -31,7 +31,7 @@
     "source": "src/strategies/openai_inventory/config.rs",
     "destination": "src/strategies/openai_inventory/config.rs",
     "source_sha256": "ee44472f10e976fda885175dc2405258ed4e48d284c2ec2e1f0e868b4a73d675",
-    "packaged_sha256": "72d78a6d82c2a2d830d9e0673a52153920140161d44cee596e44e035d2e1cb65",
+    "packaged_sha256": "55b74b92c97678ffe553f5979b995bb222f4320797868b49b4430736385af489",
     "unchanged": false
   },
   {
@@ -101,7 +101,7 @@
     "source": "src/strategies/openai_inventory/group_exit_tests.rs",
     "destination": "src/strategies/openai_inventory/group_exit_tests.rs",
     "source_sha256": "1821057b2dd9b90fd99dfeb16b0850862ca394aa2585b0f5b8255ffe42d7e310",
-    "packaged_sha256": "51b9aa4e0bdda6140d5f241d3f183aedd6cd103b3e910d5dbb6616cca09131ac",
+    "packaged_sha256": "0d6913a72e759f9e80c3c6b6c980082b5eb9fad4686429e61e1e9e1dfd7713c1",
     "unchanged": false
   },
   {
@@ -129,7 +129,7 @@
     "source": "src/strategies/openai_inventory/accounting_tests.rs",
     "destination": "src/strategies/openai_inventory/accounting_tests.rs",
     "source_sha256": "088a618b0255d2b926947e10423d5cdd655b7b4fea26038638a052fa96dd5847",
-    "packaged_sha256": "0392d19b83e063c712bca571d75734f50b07a2b7f56bd11f6f95609ecd73505f",
+    "packaged_sha256": "0f9287dd43ff05a0923663247a273727aa39f0abbe081dda6f38eddbc9c83369",
     "unchanged": false
   },
   {
@@ -150,7 +150,7 @@
     "source": "src/strategies/openai_inventory/tests.rs",
     "destination": "src/strategies/openai_inventory/tests.rs",
     "source_sha256": "bf233c2010fcf3abc7f02374b6859ea2ce32afc023c2303b6e52630544bfe1ab",
-    "packaged_sha256": "08b823abe1ed5c71db1293dbe42485fe79fa7c2eaf9c815ff1048a1ef84af2dc",
+    "packaged_sha256": "1c0830a0bf018fefe9130260652895c9288dbc9dfb13641d944a948c47205058",
     "unchanged": false
   },
   {
@@ -192,7 +192,7 @@
     "source": "src/strategies/openai_inventory/model.rs",
     "destination": "src/strategies/openai_inventory/model.rs",
     "source_sha256": "2fffce61ddd8c36b255305f5de777e244374da6d84df154d24510c8eac41d3e7",
-    "packaged_sha256": "706b861eb2bedb8f3dc10ab3311e59682520887340dc1f5491f646b4720c85db",
+    "packaged_sha256": "2a30978f151ee1334fb7025cad8330eb56e957a5316e8f95e13548bd9e74b24f",
     "unchanged": false
   },
   {
@@ -283,7 +283,7 @@
     "source": "frontend/openai-live-monitor.html",
     "destination": "frontend/openai-live-monitor.html",
     "source_sha256": "d706db495c5f86be59c1655624fbaebc68e4061c25143aaa5efa5e9b7d61e16b",
-    "packaged_sha256": "4f7ca09fc817fed11ffb27d29eef69c885393b62ae07637823ddd0e21ff07427",
+    "packaged_sha256": "42f1fb73b6f301d3b407cdac5a9d42caedddecd07415c884d2d17371e1858fc3",
     "unchanged": false
   },
   {
@@ -311,7 +311,7 @@
     "source": "Cargo.lock",
     "destination": "Cargo.lock",
     "source_sha256": "8233e4ad7da8258d5feb7e263849097df33d81cad87566dd73eb9e716637c69d",
-    "packaged_sha256": "c48261244880d5225888474a41e7bccf57bf977e293807020c5f57962380c9e7",
+    "packaged_sha256": "3a7b212bf32bef24f0feb4f5da9732fa36c474996ec31376c2515b3cac273f0a",
     "unchanged": false
   },
   {
@@ -535,8 +535,8 @@
     "source": "src/profiles.rs",
     "destination": "src/profiles.rs",
     "source_sha256": "18165d04cad509c3076259f5fc5f85a8f9a492705791167d7ae5d90f1771278f",
-    "packaged_sha256": "18165d04cad509c3076259f5fc5f85a8f9a492705791167d7ae5d90f1771278f",
-    "unchanged": true
+    "packaged_sha256": "aea36d88a33c809379a94ed015efbe55387719ac12cfc5cdb75e7d0e235da87c",
+    "unchanged": false
   },
   {
     "source": "src/monitor.rs",
@@ -549,14 +549,14 @@
     "source": "src/paper_server.rs",
     "destination": "src/paper_server.rs",
     "source_sha256": "092fc93a91e1080b47219f40306d9115a5f08c4d7ba4e1db3cdb006ea428f116",
-    "packaged_sha256": "1a0f741bc3f6cd6d94174c9d987bf8623be89491c4a6b0e18c5f88d8d9295f4b",
+    "packaged_sha256": "684aa8560f4c0ccf4353e051179fcece3267a6370a522b9ba07e0d26b493a22b",
     "unchanged": false
   },
   {
     "source": "src/bin/paired-paper.rs",
     "destination": "src/bin/paired-paper.rs",
     "source_sha256": "e2d72505fb26d32927b7e9c7a7f888bab697b88f14c2fa33cf5d4cc5e15085d0",
-    "packaged_sha256": "5f9fc66d976d981dcb7ae3cc33105a3e23c0f510f52a96015898d1c503953c88",
+    "packaged_sha256": "65d83d29aa7a7ec5e7225dbe00d0ed34c972ac03e90c13d30039983675057457",
     "unchanged": false
   },
   {
@@ -591,15 +591,15 @@
     "source": "frontend/paper.html",
     "destination": "frontend/paper.html",
     "source_sha256": "48f7f3d3f3e8f5032fe8715763e1011275d4076251ac4d011d1becb98a306e81",
-    "packaged_sha256": "6a951d88def63c5d135f2a9609e404192a10d2d4b40bbf2b6de69b5fa66f2922",
+    "packaged_sha256": "504b73a687187ece8cf14beb97f0f701de63818dd1aaf100f4bfcf83eefa202a",
     "unchanged": false
   },
   {
     "source": "config/strategy.anth.example.json",
     "destination": "config/strategy.anth.example.json",
     "source_sha256": "bba5d62fde515a33d80aad54094f41fda5fc84f1216f727d2187c61d4ea4c296",
-    "packaged_sha256": "bba5d62fde515a33d80aad54094f41fda5fc84f1216f727d2187c61d4ea4c296",
-    "unchanged": true
+    "packaged_sha256": "34fae1ea2b077c3f6819eb65e807300a68e81ecc581cb3795fcf01daf3e1375a",
+    "unchanged": false
   },
   {
     "source": "scripts/start-paper-macos.command",
@@ -607,5 +607,12 @@
     "source_sha256": "d33cae9ba5f7458fb2ba1e7e6cc63e58bfa6d43a92f3f8b3c313855fba0528c2",
     "packaged_sha256": "d33cae9ba5f7458fb2ba1e7e6cc63e58bfa6d43a92f3f8b3c313855fba0528c2",
     "unchanged": true
+  },
+  {
+    "source": "tests/portable_rules.test.cjs",
+    "destination": "tests/portable_rules.test.cjs",
+    "source_sha256": "a46ece1fd525ecef2ad3bbfb58d6490501a4a56532e516e1a22a0f033f45d427",
+    "packaged_sha256": "6c53bc0d9e848aa446b5c7e0862e9694b8042ceb4cc57f4bac374b06f5dcc15f",
+    "unchanged": false
   }
 ]

@@ -109,6 +109,26 @@ pub fn load_paper_config(root: &Path, market: MarketPair) -> Result<InventoryCon
 mod tests {
     use super::*;
     #[test]
+    fn both_new_profiles_use_five_unit_grids_and_hourly_stage_quotas_but_legacy_is_unchanged() {
+        use crate::openai_inventory::TimeAddQuotaScope;
+        for market in [MarketPair::Openai, MarketPair::Anth] {
+            let mut config = paper_config(market).unwrap();
+            assert_eq!(config.grid.to_string(), "5");
+            let rules = config.accumulation.as_ref().unwrap();
+            assert_eq!(rules.interval_ms, 3_600_000);
+            assert_eq!(rules.max_time_adds, 5);
+            assert_eq!(rules.quota_scope, TimeAddQuotaScope::GridStage);
+            config.accumulation.as_mut().unwrap().interval_ms = 3_599_999;
+            assert!(config.validate().is_err());
+        }
+        let old: InventoryConfig = serde_json::from_str(include_str!("../tests/fixtures/inventory/live-strategy.json")).unwrap();
+        let old_rules = old.accumulation.as_ref().unwrap();
+        assert_eq!(old_rules.quota_scope, TimeAddQuotaScope::Round);
+        assert_eq!(old.grid.to_string(), "2");
+        assert_eq!(old_rules.interval_ms, 900_000);
+        assert!(!serde_json::to_value(old).unwrap()["accumulation"].as_object().unwrap().contains_key("quota_scope"));
+    }
+    #[test]
     fn profile_and_mode_cannot_be_swapped_or_given_real_accounts() {
         let a = paper_config(MarketPair::Anth).unwrap();
         assert_eq!(a.market.quantity(637).to_string(), "0.00637");

@@ -450,8 +450,9 @@ fn evaluate_inner(
     let mean = if warm { reference_mean(s, now) } else { None };
     let mid = books[1].mid().unwrap() - books[0].mid().unwrap();
     let entry = books[1].bids[0].price - books[0].asks[0].price;
-    let funding_ready = s.config.mode == Mode::Paper
-        || (s.funding_synced_ms > 0 && now.saturating_sub(s.funding_synced_ms) <= 90_000);
+    // Both backends supply funding evidence; simulation cannot bypass this gate.
+    let funding_ready = s.funding_synced_ms > 0 && s.funding_synced_ms <= now
+        && now - s.funding_synced_ms <= 90_000;
     let previous = [s.previous_signal, s.previous_reverse_signal];
     let exit_means = [mean, warm.then(|| reference_mean_for(s, now, Direction::LighterShort)).flatten()];
     let entry_progress = entry_sampling_progress(s, now);

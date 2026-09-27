@@ -23,12 +23,26 @@ pub enum ExitPolicy {
     PerGroup,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeAddQuotaScope {
+    /// Missing in legacy ledgers: retain their whole-round quota on upgrade.
+    #[default]
+    Round,
+    GridStage,
+}
+impl TimeAddQuotaScope {
+    fn is_round(&self) -> bool { *self == Self::Round }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccumulationRules {
     pub entry_floor: Decimal,
     pub interval_ms: u64,
     pub max_time_adds: usize,
+    #[serde(default, skip_serializing_if = "TimeAddQuotaScope::is_round")]
+    pub quota_scope: TimeAddQuotaScope,
     pub contraction_ratio: Decimal,
 }
 
@@ -175,7 +189,9 @@ impl InventoryConfig {
         if let Some(r)=&self.accumulation {
             ensure!(self.shared_exit_conditions
                 && self.entry_confirmation_ms.is_some() && self.entry_threshold_cap.is_none()
-                && r.entry_floor>Decimal::ZERO && r.interval_ms>=900_000 && r.max_time_adds<=5
+                && r.entry_floor>Decimal::ZERO
+                && r.interval_ms >= if r.quota_scope == TimeAddQuotaScope::GridStage { 3_600_000 } else { 900_000 }
+                && r.max_time_adds<=5
                 && r.contraction_ratio>Decimal::ZERO && r.contraction_ratio<=Decimal::ONE,
                 "invalid accumulation rules");
         }
