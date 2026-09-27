@@ -53,7 +53,9 @@ async fn run() -> Result<()> {
     let _awake = openai_paired_trader::power::Awake::acquire()?;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, cli.port)).await?;
     let app = server::router(root, cli.port);
-    if !cli.no_browser { open_browser(&url)?; }
+    // A missing default browser must not tear down the background service.
+    // The same local address remains available for manual navigation.
+    if !cli.no_browser { let _ = open_browser(&url); }
     axum::serve(listener, app).await?;
     Ok(())
 }

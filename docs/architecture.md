@@ -12,3 +12,5 @@
 参考：[Microsoft 电源 API](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate)、[Rust 静态 CRT](https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes)。
 
 密钥管理保留原加密格式；交付版增加原子写入、解密明文临时缓冲区清零和 Debug 脱敏。源码清单分别记录原始与交付文件哈希；精简的模块清单见 Cargo.toml 与 src/lib.rs。
+
+Windows 回归测试清理 SQLite 临时文件时，需等待异步模拟工作器释放文件句柄；仅调整该测试的清理等待，交易核心不变。
