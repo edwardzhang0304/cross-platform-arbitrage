@@ -57,7 +57,7 @@ fn incident(now: u64, direction: Direction) -> (Snapshot, [AccountEvidence; 2], 
 }
 
 fn result(req:&OrderRequest, units:i64, terminal:bool)->OrderResult {
-    OrderResult {terminal,reason:"fixture result".into(),fills: if units==0 {vec![]} else {vec![Fill {
+    OrderResult { exchange_created_ms: None, terminal,reason:"fixture result".into(),fills: if units==0 {vec![]} else {vec![Fill {
         id:format!("{}-fill",req.id),order_id:req.id.clone(),venue:req.venue,side:req.side,
         units,price:req.limit,fee:Decimal::ZERO,time_ms:req.created_ms,
     }]}}

@@ -589,6 +589,7 @@ impl venue::VenueBackend for FaultVenue {
             };
             remote.position.apply(&f)?;
             let result = OrderResult {
+                exchange_created_ms: None,
                 terminal: true,
                 fills: vec![f],
                 reason: "fixture exchange execution".into(),
@@ -1455,6 +1456,7 @@ async fn late_terminal_lookup_can_finish_without_reentering_timeout_halt() {
         backend.orders.insert(
             "original-late-first".into(),
             OrderResult {
+                exchange_created_ms: None,
                 terminal: true,
                 fills: vec![],
                 reason: "verified expired absence".into(),
@@ -1599,6 +1601,7 @@ impl venue::VenueBackend for ExpiredCloseHedge {
                 remote.orders.insert(
                     r.id,
                     OrderResult {
+                        exchange_created_ms: None,
                         terminal: true,
                         fills: vec![],
                         reason: "expired; verified no execution".into(),

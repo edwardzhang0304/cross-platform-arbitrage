@@ -234,11 +234,11 @@ mod tests {
                 a.position_units += r.side.sign() * r.units;
                 submitted.lock().unwrap().push(r);
                 if uncertain { anyhow::bail!("simulated lost acknowledgement after fill"); }
-                Ok(OrderResult { terminal: true, fills: vec![], reason: "mock terminal".into() })
+                Ok(OrderResult { exchange_created_ms: None, terminal: true, fills: vec![], reason: "mock terminal".into() })
             })
         }
         fn lookup(&mut self, _r: OrderRequest) -> BoxFuture<'_, OrderResult> {
-            Box::pin(async { Ok(OrderResult { terminal: true, fills: vec![], reason: "mock terminal".into() }) })
+            Box::pin(async { Ok(OrderResult { exchange_created_ms: None, terminal: true, fills: vec![], reason: "mock terminal".into() }) })
         }
     }
     #[test]

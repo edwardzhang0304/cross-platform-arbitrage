@@ -9,7 +9,7 @@ use crate::{
         LighterClient, LighterEnvironment, LighterExactBaseOrderRequest, LighterMarket,
         LighterOrderKind, LighterSide, build_exact_base_order_plan_with_reference,
     },
-    lighter_reconcile::{LighterAccountObservation, LighterRemoteOrderState, parse_rest_orders},
+    lighter_reconcile::{LighterAccountObservation, LighterOrderObservation, LighterRemoteOrderState, parse_rest_orders},
     lighter_runtime::{
         LIGHTER_NONCE_LOCK_DIR, LighterApiCredential, LighterNonceOwner, LighterNonceProcessGuard,
     },
@@ -40,6 +40,16 @@ fn decimal(v: &Value) -> Result<Decimal> {
 fn integer(v: &Value) -> Option<i64> {
     v.as_i64().or_else(|| v.as_str()?.parse().ok())
 }
+/// Account reads remain available with a bad clock; signing requires fresh server time.
+fn verify_submission_clock(evidence: Option<(u64, u64, u64)>, now: u64) -> Result<()> {
+    let (sent, server, received) = evidence.context("missing exchange clock evidence; sync system time before trading")?;
+    ensure!(sent > 0 && server > 0 && received >= sent && received - sent <= 5_000
+        && server >= sent.saturating_sub(5_000) && server <= received.saturating_add(5_000)
+        && now >= received && now - received <= 15_000,
+        "system clock differs from exchange or time evidence is stale; sync system time before trading");
+    Ok(())
+}
+
 fn lighter_account_equity(account: &Value) -> Result<Decimal> {
     // REST collateral excludes margin allocated to isolated positions. Use the
     // venue's total valuation instead of reconstructing equity from collateral.
@@ -131,6 +141,56 @@ fn client_id(r: &OrderRequest) -> i64 {
     ((u64::from_le_bytes(bytes[..8].try_into().unwrap()) & ((1u64 << bits) - 1)).max(1)) as i64
 }
 
+struct BoundLighterOrder {
+    observation: LighterOrderObservation,
+    order_index: i64,
+    created_ms: u64,
+    filled_units: i64,
+}
+
+/// A short client ID alone cannot authenticate a historical fill. Bind the
+/// exchange order ID, owner, market, side, quantity, limit and reduction flag.
+fn bound_lighter_order(page: &Value, config: &InventoryConfig, account: i64,
+    r: &OrderRequest) -> Result<Option<BoundLighterOrder>> {
+    let rows = page["orders"].as_array().context("missing RH orders array")?;
+    let matches: Vec<_> = rows.iter().filter(|row|
+        integer(&row["client_order_index"]).or_else(|| integer(&row["client_order_id"])) == Some(client_id(r))).collect();
+    ensure!(matches.len() <= 1, "ambiguous RH client order identity");
+    let Some(row) = matches.first() else { return Ok(None); };
+    ensure!(integer(&row["owner_account_index"]) == Some(account)
+        && integer(&row["market_index"]).or_else(|| integer(&row["market_id"])) == Some(config.market.lighter_market_id().into())
+        && row["is_ask"].as_bool() == Some(r.side == Side::Sell)
+        && row["reduce_only"].as_bool() == Some(r.reduce_only)
+        && config.units(decimal(&row["initial_base_amount"])?)? == r.units,
+        "RH order identity mismatch");
+    let scale = Decimal::from(10u64.pow(config.market.lighter_price_decimals()));
+    let price = if r.side == Side::Buy { (r.limit * scale).floor() / scale }
+        else { (r.limit * scale).ceil() / scale };
+    ensure!(decimal(&row["price"])? == price, "RH order limit mismatch");
+    let created_ms = r.verified_exchange_created(timestamp(&row["created_at"])?)?;
+    let order_index = integer(&row["order_index"]).or_else(|| integer(&row["order_id"]))
+        .filter(|id| *id > 0).context("missing RH exchange order identity")?;
+    let filled_units = config.units(decimal(&row["filled_base_amount"])?)?;
+    let remaining = config.units(decimal(&row["remaining_base_amount"])?)?;
+    ensure!(filled_units >= 0 && filled_units <= r.units && remaining >= 0 && remaining <= r.units - filled_units,
+        "RH order quantity mismatch");
+    let parsed = inventory_orders(&json!({"orders":[row]}))?;
+    let LighterAccountObservation::Order(observation) = parsed.into_iter().next().context("missing RH order")?
+        else { anyhow::bail!("invalid RH order evidence"); };
+    Ok(Some(BoundLighterOrder { observation, order_index, created_ms, filled_units }))
+}
+
+fn lighter_exact_request(config: &InventoryConfig, r: &OrderRequest) -> LighterExactBaseOrderRequest {
+    LighterExactBaseOrderRequest {
+        symbol: config.market.lighter_symbol().into(),
+        side: if r.side == Side::Buy { LighterSide::Buy } else { LighterSide::Sell },
+        base_amount: r.units,
+        size_decimals: config.market.quantity_decimals(),
+        kind: LighterOrderKind::Market, limit_price: None, reduce_only: r.reduce_only,
+        max_slippage_bps: 0., client_order_index: client_id(r),
+    }
+}
+
 /// RH order history can contain transaction_time=0 while updated_at and
 /// created_at are Unix seconds. Normalize a positive fallback before using
 /// the shared order parser; never substitute the local receipt time.
@@ -151,6 +211,7 @@ fn inventory_orders(value: &Value) -> Result<Vec<LighterAccountObservation>> {
 }
 fn rejected(reason: impl ToString) -> OrderResult {
     OrderResult {
+        exchange_created_ms: None,
         terminal: true,
         fills: vec![],
         reason: reason.to_string(),
@@ -322,6 +383,7 @@ async fn build_backends(
             feed: lfeed,
             last_rest: 0,
             leverage_confirmed: false,
+            clock_evidence: None,
         }),
         Box::new(EntropyLive {
             config: config.clone(),
@@ -331,6 +393,7 @@ async fn build_backends(
             feed: efeed,
             last_rest: 0,
             leverage_confirmed: false,
+            clock_evidence: None,
             abstraction: None,
         }),
     ])
@@ -346,23 +409,17 @@ struct LighterLive {
     feed: super::feed::AccountFeed,
     last_rest: u64,
     leverage_confirmed: bool,
+    clock_evidence: Option<(u64, u64, u64)>,
 }
 impl LighterLive {
     async fn inspect(&self, r: &OrderRequest) -> Result<OrderResult> {
         let auth = self.credential.auth_token(600)?;
         let cid = client_id(r);
-        let mut order = None;
         let active = self
             .client
             .account_active_orders(&auth, self.credential.account_index, self.market.market_id)
             .await?;
-        for obs in inventory_orders(&active)? {
-            if let LighterAccountObservation::Order(o) = obs {
-                if o.client_order_index == cid {
-                    order = Some(o);
-                }
-            }
-        }
+        let mut order = bound_lighter_order(&active, &self.config, self.credential.account_index, r)?;
         let mut cursor = None;
         for _ in 0..32 {
             if order.is_some() {
@@ -378,14 +435,7 @@ impl LighterLive {
                     cursor,
                 )
                 .await?;
-            for obs in inventory_orders(&page)? {
-                if let LighterAccountObservation::Order(o) = obs {
-                    if o.client_order_index == cid {
-                        order = Some(o);
-                        break;
-                    }
-                }
-            }
+            order = bound_lighter_order(&page, &self.config, self.credential.account_index, r)?;
             cursor = page["next_cursor"]
                 .as_str()
                 .filter(|s| !s.is_empty())
@@ -426,17 +476,13 @@ impl LighterLive {
                 }
             }
             return Ok(OrderResult {
+                exchange_created_ms: None,
                 terminal: false,
                 fills: vec![],
                 reason: "client order id not yet found; do not resend".into(),
             });
         };
-        ensure!(
-            order.market_index == self.market.market_id
-                && order.exchange_time_ms >= r.created_ms.saturating_sub(1000) as i64,
-            "RH order identity/time mismatch"
-        );
-        let reported = self.config.units(Decimal::from_str(&order.filled_base_size.to_string())?)?;
+        let reported = order.filled_units;
         let mut fills = vec![];
         let mut cursor = None;
         let mut seen = std::collections::BTreeSet::new();
@@ -466,6 +512,10 @@ impl LighterLive {
                     "bid_client_id"
                 };
                 if integer(&row[key]).or_else(|| integer(&row[format!("{key}_str")])) != Some(cid) {
+                    continue;
+                }
+                let exchange_id_key = if ask { "ask_id" } else { "bid_id" };
+                if integer(&row[exchange_id_key]).or_else(|| integer(&row[format!("{exchange_id_key}_str")])) != Some(order.order_index) {
                     continue;
                 }
                 ensure!(
@@ -509,10 +559,10 @@ impl LighterLive {
             }
         }
         let complete = fills.iter().map(|x| x.units).sum::<i64>() == reported;
-        Ok(OrderResult {
+        Ok(OrderResult { exchange_created_ms: Some(order.created_ms),
             terminal: complete
                 && matches!(
-                    order.state,
+                    order.observation.state,
                     LighterRemoteOrderState::Filled | LighterRemoteOrderState::Cancelled
                 ),
             fills,
@@ -602,21 +652,10 @@ impl VenueBackend for LighterLive {
             if let Err(e) = final_risk(&self.config, &a, &r) {
                 return Ok(rejected(e));
             }
-            let req = LighterExactBaseOrderRequest {
-                symbol: self.config.market.lighter_symbol().into(),
-                side: if r.side == Side::Buy {
-                    LighterSide::Buy
-                } else {
-                    LighterSide::Sell
-                },
-                base_amount: r.units,
-                size_decimals: 4,
-                kind: LighterOrderKind::Market,
-                limit_price: None,
-                reduce_only: r.reduce_only,
-                max_slippage_bps: 0.,
-                client_order_index: client_id(&r),
-            };
+            if let Err(e) = verify_submission_clock(self.clock_evidence, crate::domain::now_ms()) {
+                return Ok(rejected(e));
+            }
+            let req = lighter_exact_request(&self.config, &r);
             let scale = Decimal::from(10u64.pow(self.market.effective_price_decimals()));
             let protected = if r.side == Side::Buy {
                 (r.limit * scale).floor() / scale
@@ -705,10 +744,9 @@ impl VenueBackend for LighterLive {
                     "account stream unavailable; bounded REST fallback cooling down"
                 );
                 self.last_rest = now;
-                let data = self
-                    .client
-                    .inventory_account_evidence(self.credential.account_index)
-                    .await?;
+                let started = crate::domain::now_ms();
+                let (server_ms, data) = self.client.inventory_dated_account(self.credential.account_index).await?;
+                self.clock_evidence = Some((started, server_ms, crate::domain::now_ms()));
                 data["accounts"]
                     .as_array()
                     .context("missing accounts")?
@@ -812,7 +850,7 @@ fn expired_lighter_absence_for(
                 .or_else(|| row.get("transaction_time"))
                 .context("missing trade time")?,
         )?;
-        if t >= r.created_ms.saturating_sub(1000) {
+        if t >= r.created_ms.saturating_sub(300_000) {
             return Ok(false);
         }
     }
@@ -827,7 +865,53 @@ struct EntropyLive {
     feed: super::feed::AccountFeed,
     last_rest: u64,
     leverage_confirmed: bool,
+    clock_evidence: Option<(u64, u64, u64)>,
     abstraction: Option<(String, u64)>,
+}
+
+fn entropy_price(r: &OrderRequest) -> Result<Decimal> {
+    let magnitude = r.limit.to_f64().context("invalid price")?.log10().floor() as i32;
+    let scale = Decimal::from(10u64.pow((4 - magnitude).clamp(0, 3) as u32));
+    Ok(if r.side == Side::Buy { (r.limit * scale).floor() / scale }
+        else { (r.limit * scale).ceil() / scale })
+}
+
+fn bound_entropy_created(config: &InventoryConfig, r: &OrderRequest,
+    order: &hyperliquid::OrderStatusInfo) -> Result<u64> {
+    let cloid = format!("0x{}", id(r).simple());
+    ensure!(order.order.coin == config.market.entropy_symbol()
+        && order.order.oid > 0 && order.order.cloid.as_deref() == Some(cloid.as_str())
+        && config.units(Decimal::from_str(&order.order.orig_sz)?)? == r.units
+        && order.order.side == (if r.side == Side::Buy { "B" } else { "A" })
+        && order.order.reduce_only == r.reduce_only
+        && Decimal::from_str(&order.order.limit_px)? == entropy_price(r)?,
+        "Entropy order identity mismatch");
+    r.verified_exchange_created(order.order.timestamp)
+}
+
+fn entropy_result(config: &InventoryConfig, r: &OrderRequest,
+    order: &hyperliquid::OrderStatusInfo, rows: &[hyperliquid::UserFill]) -> Result<OrderResult> {
+    let created_ms = bound_entropy_created(config, r, order)?;
+    let mut fills = Vec::new();
+    for f in rows.iter().filter(|f| f.oid == order.order.oid && f.coin == config.market.entropy_symbol()) {
+        let side = match f.side.as_str() { "B" => Side::Buy, "A" => Side::Sell,
+            _ => anyhow::bail!("invalid Entropy fill side") };
+        ensure!(side == r.side, "Entropy fill side mismatch");
+        fills.push(Fill {
+            id: hyperliquid::user_fill_identity(f), order_id: r.id.clone(), venue: Venue::Entropy,
+            side, units: config.units(Decimal::from_str(&f.sz)?)?, price: Decimal::from_str(&f.px)?,
+            fee: Decimal::from_str(&f.fee)?, time_ms: f.time,
+        });
+    }
+    let terminal = matches!(order.status.as_str(), "filled" | "canceled" | "rejected")
+        || order.status.ends_with("Rejected") || order.status.ends_with("Canceled");
+    let remaining = config.units(Decimal::from_str(&order.order.sz)?)?;
+    ensure!((0..=r.units).contains(&remaining), "invalid remaining size");
+    // A filled order can never be reconciled as a zero-fill rejection.
+    let expected = if order.status == "filled" { r.units } else { r.units - remaining };
+    let enough = fills.iter().map(|f| f.units).sum::<i64>() == expected;
+    Ok(OrderResult { exchange_created_ms: Some(created_ms), terminal: terminal && enough,
+        fills, reason: if terminal && !enough { "Entropy fill history incomplete".into() } else { order.status.clone() } })
 }
 impl EntropyLive {
     async fn inspect(&self, r: &OrderRequest) -> Result<OrderResult> {
@@ -856,7 +940,7 @@ impl EntropyLive {
                         "mainnet",
                         "io",
                         &self.config.entropy_address,
-                        r.created_ms.saturating_sub(1000),
+                        r.created_ms.saturating_sub(300_000),
                         None
                     )
                 )?;
@@ -867,6 +951,7 @@ impl EntropyLive {
                     fills.iter().any(|f| f.coin == self.config.market.entropy_symbol()),
                 ) {
                     return Ok(OrderResult {
+                        exchange_created_ms: None,
                         terminal: true,
                         fills: vec![],
                         reason: "signed request expired; chain confirms no order or fills".into(),
@@ -874,59 +959,22 @@ impl EntropyLive {
                 }
             }
             return Ok(OrderResult {
+                exchange_created_ms: None,
                 terminal: false,
                 fills: vec![],
                 reason: "Entropy cloid not yet found".into(),
             });
         };
-        ensure!(order.order.coin == self.config.market.entropy_symbol(), "cloid market mismatch");
+        let created_ms = bound_entropy_created(&self.config, r, &order)?;
         let rows = hyperliquid::fetch_user_fills_by_time(
             "mainnet",
             "io",
             &self.config.entropy_address,
-            r.created_ms.saturating_sub(1000),
+            created_ms.saturating_sub(1000),
             None,
         )
         .await?;
-        let mut fills = vec![];
-        for f in rows
-            .iter()
-            .filter(|f| f.oid == order.order.oid && f.coin == self.config.market.entropy_symbol())
-        {
-            let side = if f.side == "B" { Side::Buy } else { Side::Sell };
-            ensure!(side == r.side, "Entropy fill side mismatch");
-            // userFills.fee is the charged fee; builderFee is attribution, not charged again.
-            fills.push(Fill {
-                id: hyperliquid::user_fill_identity(f),
-                order_id: r.id.clone(),
-                venue: Venue::Entropy,
-                side,
-                units: self.config.units(Decimal::from_str(&f.sz)?)?,
-                price: Decimal::from_str(&f.px)?,
-                fee: Decimal::from_str(&f.fee)?,
-                time_ms: f.time,
-            });
-        }
-        let terminal = matches!(order.status.as_str(), "filled" | "canceled" | "rejected")
-            || order.status.ends_with("Rejected")
-            || order.status.ends_with("Canceled");
-        ensure!(
-            self.config.units(Decimal::from_str(&order.order.orig_sz)?)? == r.units,
-            "cloid original quantity mismatch"
-        );
-        ensure!(
-            order.order.side == if r.side == Side::Buy { "B" } else { "A" },
-            "cloid side mismatch"
-        );
-        let remaining = self.config.units(Decimal::from_str(&order.order.sz)?)?;
-        ensure!((0..=r.units).contains(&remaining), "invalid remaining size");
-        let expected = r.units - remaining;
-        let enough = fills.iter().map(|x| x.units).sum::<i64>() == expected;
-        Ok(OrderResult {
-            terminal: terminal && enough,
-            fills,
-            reason: order.status,
-        })
+        entropy_result(&self.config, r, &order, &rows)
     }
 }
 impl VenueBackend for EntropyLive {
@@ -1007,14 +1055,10 @@ impl VenueBackend for EntropyLive {
             if let Err(e) = final_risk(&self.config, &a, &r) {
                 return Ok(rejected(e));
             }
-            let magnitude = r.limit.to_f64().context("invalid price")?.log10().floor() as i32;
-            let decimals = (4 - magnitude).clamp(0, 3) as u32;
-            let scale = Decimal::from(10u64.pow(decimals));
-            let price = if r.side == Side::Buy {
-                (r.limit * scale).floor() / scale
-            } else {
-                (r.limit * scale).ceil() / scale
-            };
+            if let Err(e) = verify_submission_clock(self.clock_evidence, crate::domain::now_ms()) {
+                return Ok(rejected(e));
+            }
+            let price = entropy_price(&r)?;
             let request = ClientOrderRequest {
                 asset: self.config.market.entropy_symbol().into(),
                 is_buy: r.side == Side::Buy,
@@ -1092,12 +1136,14 @@ impl VenueBackend for EntropyLive {
                     "account stream unavailable; bounded REST fallback cooling down"
                 );
                 self.last_rest = now;
+                let started = crate::domain::now_ms();
                 let a = hyperliquid::fetch_clearinghouse_state(
                     "mainnet",
                     "io",
                     &self.config.entropy_address,
                 )
                 .await?;
+                self.clock_evidence = a.time.map(|server| (started, server, crate::domain::now_ms()));
                 let orders =
                     hyperliquid::fetch_open_orders("mainnet", "io", &self.config.entropy_address)
                         .await?;
@@ -1520,3 +1566,7 @@ mod tests {
         assert!(lighter_leverage(&json!("10001")).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "live_clock_tests.rs"]
+mod clock_tests;

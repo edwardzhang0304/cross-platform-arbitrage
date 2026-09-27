@@ -43,6 +43,8 @@ pub struct InventoryView {
     pub submission_enabled: bool,
     pub funding_note: String,
     pub transient_warning: String,
+    /// Last unresolved-order lookup detail, retained across account refreshes.
+    pub order_lookup_note: String,
     pub sampling: strategy::SamplingProgress,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,7 +227,7 @@ impl InventoryService {
         let mut accounting_cache=accounting::AccountingCache::default();
         let profit_accounting=accounting_cache.report(&state,&books.read().unwrap(),crate::domain::now_ms());
         let view=Arc::new(RwLock::new(InventoryView{entry_first_venue:Venue::Entropy,close_first_venue:Venue::Lighter,snapshot:state.clone(),books:books.read().unwrap().clone(),chart_points:state.entry_mean.points.clone(),marks:marks.read().unwrap().clone(),accounts:None,mean:None,directional_means:[None,None],net_pnl:None,estimated_exit_net:None,profit_accounting,cumulative_fees:state.cumulative_fees(),cumulative_execution_cost:state.execution_cost,execution_cost_started_ms:state.execution_cost_started_ms,execution_cost_tracked_fills:state.execution_cost_tracked_fills,execution_cost_untracked_fills:state.untracked_execution_fills(),
-            submission_enabled:false,transient_warning:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:if config.mode==Mode::Paper {"虚拟成交；手续费按配置扣除；资金费为模拟估算，并非真实账户结算".into()} else {"Settled funding synchronized from venue history; pending payments are not yet realized".into()}}));
+            submission_enabled:false,transient_warning:String::new(),order_lookup_note:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:if config.mode==Mode::Paper {"虚拟成交；手续费按配置扣除；资金费为模拟估算，并非真实账户结算".into()} else {"Settled funding synchronized from venue history; pending payments are not yet realized".into()}}));
         let (commands, mut rx) = mpsc::channel::<Command>(16);
         let output = view.clone();
         tokio::spawn(async move {
@@ -238,6 +240,7 @@ impl InventoryService {
             let mut funding_warning = String::new();
             let mut last_position_check = 0;
             let mut last_timeout_lookup = 0;
+            let mut order_lookup_note = String::new();
             let mut last_repair_check = 0;
             loop {
                 tokio::select! {
@@ -306,7 +309,9 @@ impl InventoryService {
                                 && state.reason.starts_with("order unresolved past execution deadline")
                                 && now.saturating_sub(last_timeout_lookup)>=30_000 {
                                 last_timeout_lookup=now;
-                                execution::recheck_timed_out(&mut state,&mut store,&workers,now).await?;
+                                let lookup = execution::recheck_timed_out(&mut state,&mut store,&workers,now).await;
+                                order_lookup_note = match &lookup {Ok(note)=>note.clone(),Err(e)=>format!("{e:#}")};
+                                lookup?;
                             } else if state.pending.is_some() && state.status!=Status::NeedsAttention {
                                 execution::advance(&mut state,&mut store,&workers,&current,now).await?;
                                 last_accounts=0;
@@ -408,6 +413,8 @@ impl InventoryService {
                         append_chart_samples(&mut v.chart_points, &state.entry_mean.points, mean_now);
                         if state.status==Status::NeedsAttention && (v.snapshot.status!=state.status || v.snapshot.reason!=state.reason) {tracing::warn!(reason=%state.reason,"OPENAI inventory needs operator attention");}
                         v.transient_warning=transient_warning;
+                        if state.pending.is_none() { order_lookup_note.clear(); }
+                        v.order_lookup_note=order_lookup_note.clone();
                         v.submission_enabled=v.transient_warning.is_empty() && state.live_orphan.is_none() && config.mode==Mode::Live && workers.iter().all(AccountWorker::is_alive) && matches!(state.status,Status::Running|Status::Closing|Status::PausedEntries);
                         v.snapshot=state.clone();v.books=current.clone();v.accounts=accounts.clone();v.mean=mean;v.directional_means=[Direction::LighterLong,Direction::LighterShort].map(|d|strategy::entry_reference_mean_for(&state,mean_now,d));v.net_pnl=if state.live_orphan.is_some(){None}else{state.total_pnl(&current).ok()};v.estimated_exit_net=if state.live_orphan.is_some(){None}else{state.remaining_net(&current).ok()};v.cumulative_fees=state.cumulative_fees();v.cumulative_execution_cost=state.execution_cost;v.execution_cost_started_ms=state.execution_cost_started_ms;v.execution_cost_tracked_fills=state.execution_cost_tracked_fills;v.execution_cost_untracked_fills=state.untracked_execution_fills();
                         v.profit_accounting=accounting_cache.report(&state,&current,mean_now);

@@ -260,9 +260,19 @@ impl OrderRequest {
     pub fn signed_expiry(&self) -> u64 {
         self.signed_expires_ms.unwrap_or(self.expires_ms)
     }
+    /// Used only after the adapter binds an exchange order to this exact request.
+    /// Keep the original local timestamp and the actual exchange fill timestamps.
+    pub fn verified_exchange_created(&self, exchange_ms: u64) -> Result<u64> {
+        ensure!(exchange_ms > 0 && exchange_ms.abs_diff(self.created_ms) <= 300_000,
+            "exchange order time outside bounded reconciliation window");
+        Ok(exchange_ms)
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderResult {
+    /// Exchange creation time from an identity-validated order, never a guessed fill time.
+    #[serde(default)]
+    pub exchange_created_ms: Option<u64>,
     pub terminal: bool,
     pub fills: Vec<Fill>,
     pub reason: String,

@@ -45,6 +45,10 @@ fn recovery_phase(s: &Snapshot) -> Option<RecoveryPhase> {
 #[path = "repair_tests.rs"]
 mod repair_tests;
 
+#[cfg(test)]
+#[path = "execution_clock_tests.rs"]
+mod clock_tests;
+
 /// Explicit reconciliation may construct a fresh reducing repair only after
 /// the prior request is terminal and fresh account evidence matches the owned
 /// ledger. A submitted/unknown request is never reset or reissued.
@@ -267,15 +271,19 @@ fn request(
 }
 
 fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult) -> Result<()> {
+    let created = result.exchange_created_ms
+        .map(|at| req.verified_exchange_created(at)).transpose()?.unwrap_or(req.created_ms);
     for f in result.fills {
         ensure!(
             f.order_id == req.id && f.venue == req.venue && f.side == req.side,
             "fill is not owned by request"
         );
         ensure!(
-            f.time_ms >= req.created_ms.saturating_sub(1000),
+            f.time_ms >= created.saturating_sub(1000),
             "fill predates order"
         );
+        ensure!(f.time_ms <= req.signed_expiry().saturating_add(300_000),
+            "fill exceeds bounded order lifetime");
         let was_new = s.record_fill(&f, req.arrival_mid)?;
         if was_new {
             let op = s.pending.as_mut().unwrap();
@@ -692,7 +700,7 @@ pub async fn recheck_timed_out(
     store: &mut Store,
     workers: &[AccountWorker; 2],
     now: u64,
-) -> Result<()> {
+) -> Result<String> {
     ensure!(
         s.status == Status::NeedsAttention
             && s.reason
@@ -716,6 +724,7 @@ pub async fn recheck_timed_out(
     };
     let r = r.context("no persisted request to query")?.clone();
     let result = workers[r.venue.index()].lookup(r.clone()).await?;
+    let mut lookup_note = result.reason.clone();
     let mut next = s.clone();
     match apply(&mut next, which, &r, result) {
         Ok(()) => {
@@ -736,9 +745,10 @@ pub async fn recheck_timed_out(
         Err(e) => {
             next = s.clone();
             next.reason = format!("invalid authenticated fill evidence: {e}");
+            lookup_note = next.reason.clone();
         }
     }
     store.commit(&next, now, "timed_out_request_rechecked")?;
     *s = next;
-    Ok(())
+    Ok(lookup_note)
 }

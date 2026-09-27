@@ -103,7 +103,7 @@ async fn anth_partial_close_finishes_five_digit_tail_before_entropy() {
 fn anth_funding_uses_position_at_payment_time_and_correct_sign() {
     let mut orders=std::collections::BTreeMap::new();
     let fill=Fill{id:"f".into(),order_id:"o".into(),venue:Venue::Lighter,side:Side::Sell,units:637,price:d(2100),fee:Decimal::ZERO,time_ms:100};
-    orders.insert("o".into(),OrderResult{terminal:true,fills:vec![fill],reason:String::new()});
+    orders.insert("o".into(),OrderResult{exchange_created_ms: None, terminal:true,fills:vec![fill],reason:String::new()});
     assert_eq!(paper_funding::estimate(Venue::Lighter,MarketPair::Anth,&orders,100,d(1)).unwrap().amount,Decimal::ZERO);
     assert_eq!(paper_funding::estimate(Venue::Lighter,MarketPair::Anth,&orders,200,d(1)).unwrap().amount,Decimal::new(637,5));
     assert_eq!(paper_funding::estimate(Venue::Lighter,MarketPair::Anth,&orders,200,d(-1)).unwrap().amount,-Decimal::new(637,5));
