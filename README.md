@@ -86,3 +86,21 @@ cargo build --locked --release --bin openai-paired-trader
 签名组件从实际使用的 `nautilus-lighter 0.60.0` 中仅提取 Rust 签名模块，保留其密码学实现和公开测试向量，避免引入整个无关交易框架。来源、许可证和提取说明见 `vendor/lighter-signing`。补丁版 Hyperliquid SDK 保留在 `vendor/hyperliquid_rust_sdk`。
 
 Windows 自动验收不等于用户账户上的真实交易验收；真实凭据和现有仓位仍由本人迁移并核对。程序未做商业代码签名，Windows 可能显示发行者未知；请核对下载来源及 SHA256。
+
+
+## ANTH 扩展（开发候选版）
+
+Windows 同一 `18794` 程序下，OPENAI 和 ANTH 分别有独立监控页 `/openai-inventory`、`/anth-inventory`，配置入口分别为 `/`、`/anth`。原 OPENAI 数据保持原位置；ANTH 配置、加密密钥库及账本位于 `data/profiles/anth-live/`。两个策略独立启动、暂停和停止；退出整个程序前须分别停止两个策略。只有所有真实账户校验通过后才能加载实盘。
+
+当前 Mac 验证使用独立的模拟编译版本。它不编译实盘适配器、不加载 Vault，也不提供实盘控制接口。模拟和实盘两个 feature 不允许一起构建。
+
+```sh
+cargo run --locked --no-default-features --features paper-runtime --bin paired-paper -- \
+  --data-dir /path/to/new-anth-paper-data --start
+```
+
+打开 `http://127.0.0.1:18794/anth-inventory`。默认仅运行 ANTH 模拟；如需并行测试 OPENAI 模拟，另加 `--include-openai`，它仍使用虚拟账户，与 Windows 实盘没有数据连接。新模拟数据目录必须为空，不复制实盘的 `data`。
+
+策略参数沿用当前 OPENAI 模板。每个平台初始虚拟资金 100U，订单按公开盘口的可成交深度、数量精度和保护价格模拟 IOC；可能部分成交，恢复共用同一双腿执行状态机。手续费按模板费率计算。资金费按公开历史结算数据和当时的虚拟持仓估算；Entropy 的历史结算价格以结算前一小时的公开 K 线收盘价近似，不是真实账户到账金额。估算数据缺失时不冒充零值。模拟不包含排队和自身市场冲击；逐仓强平使用明确的全平近似，不能替代平台的真实强平引擎。
+
+详情见 `docs/ANTH实施与隔离验收.md`。当前 Windows OPENAI 继续使用已交付版本，此分支不会自动替换运行中的 EXE。

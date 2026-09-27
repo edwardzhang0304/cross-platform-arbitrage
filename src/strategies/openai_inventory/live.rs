@@ -218,9 +218,14 @@ async fn build_backends(
     ensure!(Some(lighter.account_index) == config.lighter_account_index,
         "Lighter credential account index mismatch");
     let client = LighterClient::official(LighterEnvironment::Robinhood)?;
-    let market = client.market_by_symbol("OPENAI").await?;
+    if let Some(address)=&config.lighter_address {
+        ensure!(client.account_by_index(lighter.account_index).await?.l1_address.eq_ignore_ascii_case(address),
+            "RH account belongs to a different master address");
+    }
+    let market = client.market_by_symbol(config.market.lighter_symbol()).await?;
+        config.market.validate_lighter(&market)?;
     ensure!(
-        market.is_active_perp() && market.effective_size_decimals() == 4,
+        market.is_active_perp() && market.market_id == config.market.lighter_market_id() && market.effective_size_decimals() == config.market.quantity_decimals(),
         "RH OPENAI metadata mismatch"
     );
     // Until fee-bearing RH fills have a tested account-fee field, require the actual zero-fee market.
@@ -254,9 +259,9 @@ async fn build_backends(
     let hlguard = signer_guard(&entropy.private_key)?;
     verify_entropy_fee_contract(config).await?;
     let meta = hyperliquid::fetch_xyz_market_snapshot_cached("mainnet", "io", 0).await?;
-    let asset = meta.asset("io:OAI")?;
+    let asset = meta.asset(config.market.entropy_symbol())?;
     ensure!(
-        asset.meta.sz_decimals == 3 && asset.meta.margin_mode.as_deref() == Some("noCross"),
+        asset.meta.sz_decimals == 3 && asset.meta.margin_mode.as_deref() == Some(config.market.entropy_margin_mode()),
         "OAI margin/precision changed"
     );
     let wallet: LocalWallet = entropy
@@ -292,17 +297,19 @@ async fn build_backends(
         meta.coin_to_asset.clone(),
         None,
     )?;
-    let lfeed = super::feed::AccountFeed::start(
+    let lfeed = super::feed::AccountFeed::start_for(
         Venue::Lighter,
         client.endpoints().ws_url.clone(),
         lighter.account_index.to_string(),
         Some(credential.clone()),
+        config.market,
     );
-    let efeed = super::feed::AccountFeed::start(
+    let efeed = super::feed::AccountFeed::start_for(
         Venue::Entropy,
         "wss://api.hyperliquid.xyz/ws".into(),
         config.entropy_address.clone(),
         None,
+        config.market,
     );
     Ok([
         Box::new(LighterLive {
@@ -405,12 +412,13 @@ impl LighterLive {
                     .client
                     .inventory_dated_account(self.credential.account_index)
                     .await?;
-                if expired_lighter_absence(
+                if expired_lighter_absence_for(
                     r,
                     server_ms,
                     &account,
                     &history,
                     self.credential.account_index,
+                    self.market.market_id,
                 )? {
                     return Ok(rejected(
                         "signed RH request expired; fresh account and trade history confirm no execution",
@@ -428,7 +436,7 @@ impl LighterLive {
                 && order.exchange_time_ms >= r.created_ms.saturating_sub(1000) as i64,
             "RH order identity/time mismatch"
         );
-        let reported = units(Decimal::from_str(&order.filled_base_size.to_string())?)?;
+        let reported = self.config.units(Decimal::from_str(&order.filled_base_size.to_string())?)?;
         let mut fills = vec![];
         let mut cursor = None;
         let mut seen = std::collections::BTreeSet::new();
@@ -482,7 +490,7 @@ impl LighterLive {
                     order_id: r.id.clone(),
                     venue: Venue::Lighter,
                     side,
-                    units: units(decimal(&row["size"])?)?,
+                    units: self.config.units(decimal(&row["size"])?)?,
                     price: decimal(&row["price"])?,
                     fee: Decimal::ZERO,
                     time_ms: timestamp(
@@ -595,7 +603,7 @@ impl VenueBackend for LighterLive {
                 return Ok(rejected(e));
             }
             let req = LighterExactBaseOrderRequest {
-                symbol: "OPENAI".into(),
+                symbol: self.config.market.lighter_symbol().into(),
                 side: if r.side == Side::Buy {
                     LighterSide::Buy
                 } else {
@@ -715,7 +723,7 @@ impl VenueBackend for LighterLive {
                 .iter()
                 .find(|p| integer(&p["market_id"]) == Some(self.market.market_id as i64));
             let (position_units, leverage, isolated) = if let Some(p) = p {
-                let q = units(decimal(&p["position"])?)?
+                let q = self.config.units(decimal(&p["position"])?)?
                     * integer(&p["sign"]).context("missing position sign")?;
                 (q, lighter_leverage(&p["initial_margin_fraction"])?,
                     integer(&p["margin_mode"]) == Some(1))
@@ -753,12 +761,13 @@ impl VenueBackend for LighterLive {
     }
 }
 
-fn expired_lighter_absence(
+fn expired_lighter_absence_for(
     r: &OrderRequest,
     server_ms: u64,
     account: &Value,
     history: &Value,
     account_index: i64,
+    market_id: i32,
 ) -> Result<bool> {
     let now = crate::domain::now_ms();
     if r.venue != Venue::Lighter
@@ -777,7 +786,7 @@ fn expired_lighter_absence(
     let ps = a["positions"].as_array().context("missing positions")?;
     let p = ps
         .iter()
-        .find(|p| integer(&p["market_id"]) == Some(42))
+        .find(|p| integer(&p["market_id"]) == Some(i64::from(market_id)))
         .context("missing OPENAI position")?;
     if !decimal(&p["position"])?.is_zero()
         || integer(&p["open_order_count"]) != Some(0)
@@ -854,8 +863,8 @@ impl EntropyLive {
                 if expired_entropy_absence(
                     r,
                     chain.time,
-                    orders.iter().any(|o| o.coin == "io:OAI"),
-                    fills.iter().any(|f| f.coin == "io:OAI"),
+                    orders.iter().any(|o| o.coin == self.config.market.entropy_symbol()),
+                    fills.iter().any(|f| f.coin == self.config.market.entropy_symbol()),
                 ) {
                     return Ok(OrderResult {
                         terminal: true,
@@ -870,7 +879,7 @@ impl EntropyLive {
                 reason: "Entropy cloid not yet found".into(),
             });
         };
-        ensure!(order.order.coin == "io:OAI", "cloid market mismatch");
+        ensure!(order.order.coin == self.config.market.entropy_symbol(), "cloid market mismatch");
         let rows = hyperliquid::fetch_user_fills_by_time(
             "mainnet",
             "io",
@@ -882,7 +891,7 @@ impl EntropyLive {
         let mut fills = vec![];
         for f in rows
             .iter()
-            .filter(|f| f.oid == order.order.oid && f.coin == "io:OAI")
+            .filter(|f| f.oid == order.order.oid && f.coin == self.config.market.entropy_symbol())
         {
             let side = if f.side == "B" { Side::Buy } else { Side::Sell };
             ensure!(side == r.side, "Entropy fill side mismatch");
@@ -892,7 +901,7 @@ impl EntropyLive {
                 order_id: r.id.clone(),
                 venue: Venue::Entropy,
                 side,
-                units: units(Decimal::from_str(&f.sz)?)?,
+                units: self.config.units(Decimal::from_str(&f.sz)?)?,
                 price: Decimal::from_str(&f.px)?,
                 fee: Decimal::from_str(&f.fee)?,
                 time_ms: f.time,
@@ -902,14 +911,14 @@ impl EntropyLive {
             || order.status.ends_with("Rejected")
             || order.status.ends_with("Canceled");
         ensure!(
-            units(Decimal::from_str(&order.order.orig_sz)?)? == r.units,
+            self.config.units(Decimal::from_str(&order.order.orig_sz)?)? == r.units,
             "cloid original quantity mismatch"
         );
         ensure!(
             order.order.side == if r.side == Side::Buy { "B" } else { "A" },
             "cloid side mismatch"
         );
-        let remaining = units(Decimal::from_str(&order.order.sz)?)?;
+        let remaining = self.config.units(Decimal::from_str(&order.order.sz)?)?;
         ensure!((0..=r.units).contains(&remaining), "invalid remaining size");
         let expected = r.units - remaining;
         let enough = fills.iter().map(|x| x.units).sum::<i64>() == expected;
@@ -954,7 +963,7 @@ impl VenueBackend for EntropyLive {
                 let rows = rows.as_array().context("invalid funding history")?;
                 for row in rows {
                     let t = timestamp(&row["time"])?;
-                    if row["delta"]["coin"] != "io:OAI" || t < start || t > end {
+                    if row["delta"]["coin"] != self.config.market.entropy_symbol() || t < start || t > end {
                         continue;
                     }
                     out.push(Funding {
@@ -984,10 +993,10 @@ impl VenueBackend for EntropyLive {
     fn submit(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult> {
         Box::pin(async move {
             ensure!(
-                cfg!(feature = "openai-inventory-live") && r.units % 10 == 0,
+                cfg!(feature = "openai-inventory-live") && r.units % self.config.common_step() == 0,
                 "Entropy live/precision gate"
             );
-            if !r.reduce_only && quantity(r.units) * r.limit < Decimal::from(10) {
+            if !r.reduce_only && self.config.quantity(r.units) * r.limit < Decimal::from(10) {
                 return Ok(rejected("below Entropy minimum"));
             }
             // Perp prices: at most 6-sizeDecimals decimal places and five significant figures.
@@ -1007,11 +1016,11 @@ impl VenueBackend for EntropyLive {
                 (r.limit * scale).ceil() / scale
             };
             let request = ClientOrderRequest {
-                asset: "io:OAI".into(),
+                asset: self.config.market.entropy_symbol().into(),
                 is_buy: r.side == Side::Buy,
                 reduce_only: r.reduce_only,
                 limit_px: price.to_f64().context("price overflow")?,
-                sz: quantity(r.units).to_f64().context("size overflow")?,
+                sz: self.config.quantity(r.units).to_f64().context("size overflow")?,
                 cloid: Some(id(&r)),
                 order_type: ClientOrder::Limit(ClientLimit { tif: "Ioc".into() }),
             };
@@ -1070,7 +1079,7 @@ impl VenueBackend for EntropyLive {
                     .as_array()
                     .context("missing streamed orders")?
                     .iter()
-                    .filter(|o| o["coin"] == "io:OAI")
+                    .filter(|o| o["coin"] == self.config.market.entropy_symbol())
                     .count();
                 Ok((serde_json::from_value(state)?, count, active, serde_json::from_value(spot)?))
             })();
@@ -1093,15 +1102,15 @@ impl VenueBackend for EntropyLive {
                     hyperliquid::fetch_open_orders("mainnet", "io", &self.config.entropy_address)
                         .await?;
                 let active = hyperliquid::fetch_active_asset_data(
-                    "mainnet", &self.config.entropy_address, "io:OAI").await?;
+                    "mainnet", &self.config.entropy_address, self.config.market.entropy_symbol()).await?;
                 let spot = hyperliquid::fetch_spot_clearinghouse_state(
                     "mainnet", &self.config.entropy_address).await?;
-                (a, orders.iter().filter(|o| o.coin == "io:OAI").count(), active, spot)
+                (a, orders.iter().filter(|o| o.coin == self.config.market.entropy_symbol()).count(), active, spot)
             };
             let p = a
                 .asset_positions
                 .iter()
-                .find(|p| p.position.coin == "io:OAI");
+                .find(|p| p.position.coin == self.config.market.entropy_symbol());
             let (position_units, leverage, isolated) = if let Some(p) = p {
                 let l = p
                     .position
@@ -1109,7 +1118,7 @@ impl VenueBackend for EntropyLive {
                     .as_ref()
                     .context("missing isolated leverage")?;
                 (
-                    units(Decimal::from_str(&p.position.szi)?)?,
+                    self.config.units(Decimal::from_str(&p.position.szi)?)?,
                     l.value.context("missing leverage value")?,
                     l.leverage_type == "isolated",
                 )
@@ -1179,9 +1188,9 @@ fn final_risk(c: &InventoryConfig, a: &AccountEvidence, r: &OrderRequest) -> Res
             a.position_units == 0 || a.position_units.signum() == r.side.sign(),
             "unexpected opposite position"
         );
-        let notional = quantity(r.units) * r.limit;
+        let notional = c.quantity(r.units) * r.limit;
         ensure!(
-            quantity(a.position_units.abs() + r.units) * r.limit <= c.max_notional_per_venue,
+            c.quantity(a.position_units.abs() + r.units) * r.limit <= c.max_notional_per_venue,
             "final notional cap"
         );
         let fee = if a.venue == Venue::Lighter {
@@ -1251,7 +1260,7 @@ async fn verify_entropy_fee_contract(c: &InventoryConfig) -> Result<()> {
         .as_array()
         .context("missing universe")?
         .iter()
-        .find(|x| x["name"] == "io:OAI")
+        .find(|x| x["name"] == c.market.entropy_symbol())
         .context("OAI metadata missing")?;
     ensure!(
         asset["growthMode"] == "enabled",
@@ -1265,6 +1274,10 @@ async fn verify_entropy_fee_contract(c: &InventoryConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+fn expired_lighter_absence(r:&OrderRequest,server_ms:u64,account:&Value,history:&Value,account_index:i64)->Result<bool> {
+    expired_lighter_absence_for(r,server_ms,account,history,account_index,42)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

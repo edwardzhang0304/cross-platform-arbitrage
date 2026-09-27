@@ -10,6 +10,58 @@ pub const STRATEGY: &str = "config/strategy.json";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings { pub accounts: AppConfig, pub strategy: InventoryConfig }
+#[derive(Clone)]
+pub struct ProfilePaths { pub accounts:PathBuf, pub strategy:PathBuf, pub vault:PathBuf, pub database:PathBuf, pub market:crate::openai_inventory::MarketPair }
+#[derive(Serialize,Deserialize,PartialEq)]
+#[serde(deny_unknown_fields)]
+struct PublicBinding { market:crate::openai_inventory::MarketPair, lighter_alias:String, lighter_index:i64, lighter_address:String, entropy_alias:String, entropy_address:String }
+impl ProfilePaths {
+    pub fn new(root:&Path,market:crate::openai_inventory::MarketPair)->Self {
+        use crate::openai_inventory::{MarketPair,Mode};
+        if market==MarketPair::Openai {return Self {accounts:root.join(SETTINGS),strategy:root.join(STRATEGY),vault:root.join(VAULT),database:root.join(DATABASE),market};}
+        let id=crate::profiles::ProfileId::new(market,Mode::Live);let folder=id.directory(root);
+        Self {accounts:folder.join("config/profile.json"),strategy:folder.join("config/profile.json"),vault:id.vault(root).unwrap(),database:id.ledger(root),market}
+    }
+    pub fn load(&self)->Result<Option<Settings>> {
+        use crate::openai_inventory::{MarketPair,Mode};
+        if !self.accounts.exists() && !self.strategy.exists() {return Ok(None);}
+        let mut s:Settings=if self.market==MarketPair::Openai {
+            Settings {accounts:serde_json::from_slice(&fs::read(&self.accounts)?)?,strategy:serde_json::from_slice(&fs::read(&self.strategy)?)?}
+        } else {serde_json::from_slice(&fs::read(&self.accounts)?)?};
+        crate::profiles::ProfileId::new(self.market,Mode::Live).validate(&s.strategy)?;
+        s.accounts.secrets.vault_path=self.vault.to_string_lossy().into_owned();s.accounts.secrets.allow_env_fallback=false;
+        Ok(Some(s))
+    }
+    pub fn save(&self,s:&Settings)->Result<()> {
+        crate::profiles::ProfileId::new(self.market,crate::openai_inventory::Mode::Live).validate(&s.strategy)?;
+        if self.market==crate::openai_inventory::MarketPair::Openai {
+            atomic_json(&self.accounts,&s.accounts)?;atomic_json(&self.strategy,&s.strategy)
+        } else {atomic_json(&self.accounts,s)}
+    }
+    /// Keep legacy ledger/config bytes intact when learning the missing L1 address.
+    pub fn bind_public_address(&self,c:&InventoryConfig,lighter_address:&str)->Result<()> {self.check_or_bind_public_address(c,lighter_address,true)}
+    pub fn check_public_address(&self,c:&InventoryConfig,lighter_address:&str)->Result<()> {self.check_or_bind_public_address(c,lighter_address,false)}
+    fn check_or_bind_public_address(&self,c:&InventoryConfig,lighter_address:&str,persist:bool)->Result<()> {
+        crate::profiles::ProfileId::new(self.market,crate::openai_inventory::Mode::Live).validate(c)?;
+        ensure!(lighter_address.len()==42 && lighter_address.starts_with("0x") && lighter_address[2..].bytes().all(|b|b.is_ascii_hexdigit()),"invalid public Lighter address");
+        if let Some(expected)=&c.lighter_address {ensure!(expected.eq_ignore_ascii_case(lighter_address),"Lighter public binding mismatch");}
+        let binding=PublicBinding{market:self.market,lighter_alias:c.lighter_account.clone(),lighter_index:c.lighter_account_index.context("missing account index")?,lighter_address:lighter_address.to_ascii_lowercase(),entropy_alias:c.entropy_account.clone(),entropy_address:c.entropy_address.to_ascii_lowercase()};
+        let path=self.strategy.with_file_name("account-bindings.json");
+        if path.exists() {ensure!(serde_json::from_slice::<PublicBinding>(&fs::read(path)?)?==binding,"account binding changed; refuse to redirect an existing profile");}
+        else if persist {atomic_json(&path,&binding)?;}
+        Ok(())
+    }
+    pub fn bound_strategy(&self,c:&InventoryConfig)->Result<InventoryConfig> {
+        let mut out=c.clone();
+        if out.lighter_address.is_none() {
+            let path=self.strategy.with_file_name("account-bindings.json");
+            let b:PublicBinding=serde_json::from_slice(&fs::read(path).context("请先解锁 OPENAI，核对原 Lighter 地址后再配置另一标的")?)?;
+            self.bind_public_address(c,&b.lighter_address)?;
+            out.lighter_address=Some(b.lighter_address);
+        }
+        Ok(out)
+    }
+}
 impl Settings {
     pub fn load() -> Result<Self> {
         let mut accounts: AppConfig = serde_json::from_slice(&fs::read(SETTINGS)?)?;
@@ -55,9 +107,11 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
 pub fn prepare(path: &Path) -> Result<(PathBuf, File)> {
     fs::create_dir_all(path)?;
     let root = path.canonicalize()?;
+    ensure!(!root.ancestors().any(|p|p.join("paper-only.json").exists()),"模拟数据目录不能用于实盘程序");
     let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true)
         .open(root.join("program.lock"))?;
     lock.try_lock().context("该数据目录已有程序运行")?;
+    atomic_json(&root.join("live-only.json"),&serde_json::json!({"schema":1,"mode":"live"}))?;
     for folder in ["config", "keys", "runtime/openai-inventory"] { fs::create_dir_all(root.join(folder))?; }
     Ok((root, lock))
 }
@@ -161,4 +215,29 @@ mod tests {
         drop(db);
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn profile_paths_preserve_legacy_and_pin_public_wallets() {
+        use crate::openai_inventory::MarketPair;
+        let dir=std::env::temp_dir().join(format!("profile-paths-{}",uuid::Uuid::new_v4()));
+        let openai=ProfilePaths::new(&dir,MarketPair::Openai);let anth=ProfilePaths::new(&dir,MarketPair::Anth);
+        assert_eq!(openai.database,dir.join(DATABASE));assert_ne!(openai.vault,anth.vault);
+        assert_ne!(openai.database,anth.database);assert_ne!(openai.accounts,anth.accounts);
+        let c:InventoryConfig=serde_json::from_str(include_str!("../tests/fixtures/inventory/live-strategy.json")).unwrap();
+        let address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert!(openai.bound_strategy(&c).is_err());
+        openai.check_public_address(&c,address).unwrap();assert!(!openai.strategy.with_file_name("account-bindings.json").exists());
+        openai.bind_public_address(&c,address).unwrap();
+        assert_eq!(openai.bound_strategy(&c).unwrap().lighter_address.as_deref(),Some(address));
+        assert!(openai.check_public_address(&c,"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").is_err());
+        assert_eq!(openai.bound_strategy(&c).unwrap().lighter_address.as_deref(),Some(address));
+        assert!(!openai.vault.exists());std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn live_program_rejects_simulation_data_and_nested_directories() {
+        let dir=std::env::temp_dir().join(format!("mode-roots-{}",uuid::Uuid::new_v4()));
+        let (_,lock)=crate::profiles::prepare_paper_root(&dir).unwrap();
+        assert!(prepare(&dir).is_err());assert!(prepare(&dir.join("nested")).is_err());
+        drop(lock);std::fs::remove_dir_all(dir).unwrap();
+    }
+
 }

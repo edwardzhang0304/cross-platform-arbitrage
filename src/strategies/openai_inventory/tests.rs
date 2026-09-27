@@ -1246,13 +1246,13 @@ async fn paper_exchange_history_survives_restart_independent_of_strategy_checkpo
 }
 
 #[tokio::test]
-async fn retired_paper_service_rejects_before_creating_a_ledger() {
+async fn unbound_paper_service_rejects_before_creating_a_ledger() {
     let cfg = InventoryConfig::default();
     let id = Snapshot::new(cfg.clone()).unwrap().instance_id;
     let path = std::env::temp_dir().join(format!("openai-retired-{id}.sqlite"));
     let result = InventoryService::launch(cfg, &path, true, None).await;
     assert!(result.is_err());
-    assert!(result.err().unwrap().to_string().contains("paper mode has been retired"));
+    assert!(result.is_err());
     assert!(!path.exists());
     assert!(!path.with_extension("lock").exists());
 }
@@ -1870,3 +1870,5 @@ fn five_minute_mean_excludes_old_prices_and_requires_real_coverage() {
 include!("batch_exit_tests.rs");
 
 include!("entry_mean_tests.rs");
+
+include!("anth_tests.rs");

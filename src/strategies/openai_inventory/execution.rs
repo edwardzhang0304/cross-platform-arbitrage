@@ -30,12 +30,12 @@ fn recovery_phase(s: &Snapshot) -> Option<RecoveryPhase> {
         && p.first_filled > p.paired_filled() + p.repair_filled {
         Some(RecoveryPhase::Repair)
     } else if s.reason == ALIGNMENT_HALT && p.action == Action::Close
-        && p.align_close_terminal && p.first_filled % 10 != 0
+        && p.align_close_terminal && p.first_filled % s.config.common_step() != 0
         && p.hedge.is_none() && p.hedge_filled == 0 && p.repair.is_none() && p.repair_filled == 0 {
         Some(RecoveryPhase::Alignment)
     } else if s.reason == UNWIND_HALT && p.action == Action::Open
         && p.first_venue == Venue::Entropy && p.hedge_terminal
-        && p.hedge_filled % 10 != 0 && p.unwind_hedge_terminal
+        && p.hedge_filled % s.config.common_step() != 0 && p.unwind_hedge_terminal
         && p.unwind_hedge_filled < p.hedge_filled && p.repair.is_none() && p.repair_filled == 0 {
         Some(RecoveryPhase::Unwind)
     } else { None }
@@ -112,14 +112,14 @@ pub(super) fn resume_protected_repair(
     let close = p.action == Action::Close;
     if close {
         ensure!(p.first_venue == Venue::Lighter
-            && (phase == RecoveryPhase::Alignment || p.first_filled % 10 == 0)
+            && (phase == RecoveryPhase::Alignment || p.first_filled % s.config.common_step() == 0)
             && p.unwind_hedge.is_none(), "close residual precision or leg ordering is unresolved");
         let planned = if p.close_allocations.is_empty() {
             s.lots.iter().filter(|l| p.close_lot_id.as_ref().is_none_or(|id| id == &l.id))
                 .map(|l| CloseAllocation { lot_id: l.id.clone(), units: l.units }).collect::<Vec<_>>()
         } else { p.close_allocations.clone() };
         let mut ids = std::collections::BTreeSet::new();
-        ensure!(planned.iter().all(|a| a.units > 0 && a.units % 10 == 0
+        ensure!(planned.iter().all(|a| a.units > 0 && a.units % s.config.common_step() == 0
             && ids.insert(&a.lot_id)
             && s.lots.iter().any(|l| l.id == a.lot_id && l.units >= a.units)),
             "close residual allocation is not owned inventory");
@@ -147,7 +147,7 @@ pub(super) fn resume_protected_repair(
         RecoveryPhase::Repair => (if close { p.hedge_venue() } else { p.first_venue },
             p.first_filled - p.paired_filled() - p.repair_filled, "repair"),
         RecoveryPhase::Alignment => {
-            let remaining = 10 - p.first_filled % 10;
+            let remaining = s.config.common_step() - p.first_filled % s.config.common_step();
             ensure!(p.first_filled + remaining <= p.requested_units, "close alignment exceeds original quantity");
             (Venue::Lighter, remaining, "align-close")
         }
@@ -190,6 +190,9 @@ pub(super) fn protected_limit(
     let limit = best
         * (Decimal::ONE
             + Decimal::from(side.sign()) * s.config.execution_slippage_bps / Decimal::from(10_000));
+    let limit=if s.config.market==MarketPair::Anth {
+        s.config.market.protected_price(venue,limit,side==Side::Buy)?
+    }else{limit};
     ensure!(
         if side == Side::Buy {
             worst <= limit
@@ -214,13 +217,13 @@ fn request(
     let b = &books[venue.index()];
     b.validate(now, s.config.book_max_age_ms)?;
     ensure!(
-        qty > 0 && (venue == Venue::Lighter || qty % 10 == 0),
+        qty > 0 && (venue == Venue::Lighter || qty % s.config.common_step() == 0),
         "unrepresentable hedge quantity"
     );
     let (vwap, worst) = b.vwap(side, qty)?;
     if !reduce {
         ensure!(
-            quantity(qty) * vwap >= Decimal::from(10),
+            s.config.quantity(qty) * vwap >= Decimal::from(10),
             "hedge below minimum notional"
         );
     }
@@ -450,7 +453,7 @@ pub async fn advance(
         store.commit(s, now, "operation_empty")?;
         return Ok(());
     } else if close
-        && (op.first_filled % 10 != 0 || (op.align_close.is_some() && !op.align_close_terminal))
+        && (op.first_filled % s.config.common_step() != 0 || (op.align_close.is_some() && !op.align_close_terminal))
     {
         // A finer-precision IOC may close 0.0195 of the requested 0.0200.
         // Close the remaining 0.0005 on Lighter first, never exceed the original
@@ -463,7 +466,7 @@ pub async fn advance(
             store.commit(s, now, "unresolved_close_alignment")?;
             return Ok(());
         }
-        let remaining = 10 - op.first_filled % 10;
+        let remaining = s.config.common_step() - op.first_filled % s.config.common_step();
         ensure!(
             op.first_filled + remaining <= op.requested_units || op.align_close.is_some(),
             "close alignment exceeds original quantity"
@@ -488,7 +491,7 @@ pub async fn advance(
         )
     } else if !op.hedge_terminal {
         let q = if op.hedge_venue() == Venue::Entropy {
-            op.first_filled / 10 * 10
+            op.first_filled / s.config.common_step() * s.config.common_step()
         } else {
             op.first_filled
         };
@@ -512,7 +515,7 @@ pub async fn advance(
         )
     } else if !close
         && op.first_venue == Venue::Entropy
-        && op.hedge_filled % 10 != 0
+        && op.hedge_filled % s.config.common_step() != 0
         && op.unwind_hedge_filled < op.hedge_filled
     {
         // An IOC on the finer-precision venue can still partially fill a

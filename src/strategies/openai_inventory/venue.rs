@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
-#[cfg(test)]
+#[cfg(any(test, feature="paper-runtime"))]
 use std::sync::RwLock;
 use std::{
     future::Future,
@@ -57,7 +57,7 @@ impl AccountWorker {
     }
     /// Only a concrete paper backend may use recorded historical request time.
     /// Real workers always keep the wall-clock expiry gate in `spawn`.
-    #[cfg(test)]
+    #[cfg(any(test, feature="paper-runtime"))]
     pub fn spawn_replay(venue: Venue, backend: PaperBackend,
         clock: Arc<std::sync::atomic::AtomicU64>) -> Result<Self> {
         ensure!(backend.config.mode == Mode::Paper && backend.venue == venue,
@@ -71,7 +71,7 @@ impl AccountWorker {
         replay_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
     ) -> Result<Self> {
         ensure!(
-            mode != Mode::Live || !process_dry_run,
+            mode != Mode::Live || (cfg!(feature="openai-inventory-live") && !process_dry_run),
             "process dry-run blocks live account workers"
         );
         let (tx, mut rx) = mpsc::channel(16);
@@ -197,9 +197,11 @@ impl AccountWorker {
     }
 }
 
-/// Offline fault-injection backend; absent from normal and live builds.
-#[cfg(test)]
+/// Virtual backend; absent from ordinary live builds.
+#[cfg(any(test, feature="paper-runtime"))]
 pub struct PaperBackend {
+    orderbook_matching: bool,
+    funding_history: std::collections::BTreeMap<String,Funding>,
     isolation: Option<(super::liquidation::IsolationSpec,super::liquidation::PaperIsolation,Arc<RwLock<[super::liquidation::Mark;2]>>)>,
     logical_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
     pub venue: Venue,
@@ -209,7 +211,7 @@ pub struct PaperBackend {
     pub orders: std::collections::BTreeMap<String, OrderResult>,
     journal: Option<rusqlite::Connection>,
 }
-#[cfg(test)]
+#[cfg(any(test, feature="paper-runtime"))]
 impl PaperBackend {
     pub fn new(
         venue: Venue,
@@ -218,6 +220,8 @@ impl PaperBackend {
         books: Arc<RwLock<[Book; 2]>>,
     ) -> Self {
         Self {
+            orderbook_matching: false,
+            funding_history: Default::default(),
             isolation: None,
             logical_clock: None,
             venue,
@@ -229,8 +233,9 @@ impl PaperBackend {
         }
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature="paper-runtime"))]
 impl PaperBackend {
+    pub fn with_orderbook_matching(mut self) -> Self { self.orderbook_matching=true; self }
     pub fn with_isolation(mut self,spec:super::liquidation::IsolationSpec,marks:Arc<RwLock<[super::liquidation::Mark;2]>>)->Result<Self> {
         use rusqlite::OptionalExtension;
         spec.validate(&self.config)?;
@@ -253,9 +258,9 @@ impl PaperBackend {
         if let Some((spec,isolated,marks))=&mut self.isolation {
             let i=self.venue.index();
             if let Some(mark)=marks.read().unwrap()[i].valid(now,spec.mark_max_age_ms) {
-                if isolated.breached(&self.position,mark,spec.maintenance_rates[i]) {
-                    let fill=isolated.forced_fill(&self.position,self.venue,mark,spec.liquidation_fee_rates[i],now)?;
-                    self.position.apply(&fill)?;
+                if isolated.breached_for(&self.position,mark,spec.maintenance_rates[i],self.config.market) {
+                    let fill=isolated.forced_fill_for(&self.position,self.venue,mark,spec.liquidation_fee_rates[i],now,self.config.market)?;
+                    self.position.apply_for(&fill, self.config.market)?;
                     isolated.collateral=Decimal::ZERO;
                     isolated.events.push(fill);
                     changed=true;
@@ -284,15 +289,30 @@ impl PaperBackend {
         path: &std::path::Path,
     ) -> Result<Self> {
         use rusqlite::OptionalExtension;
+        ensure!(config.mode == Mode::Paper, "virtual journal cannot accept a live profile");
         let mut out = Self::new(venue, config, position, books);
         let db = rusqlite::Connection::open(path)?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS paper_remote(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS profile_binding(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);")?;
+        let c=&out.config;
+        let identity = serde_json::to_string(&(venue,c.market,c.mode,&c.lighter_account,&c.entropy_account,
+            c.lighter_account_index,&c.lighter_address,&c.entropy_address,c.leverage,c.paper_capital_per_venue,c.fee_lighter,c.fee_entropy))?;
+        let old: Option<String> = db.query_row("SELECT body FROM profile_binding WHERE id=1",[],|r|r.get(0)).optional()?;
+        if let Some(old) = old { ensure!(old==identity, "virtual journal profile/venue/config mismatch"); }
+        else {
+            let count:i64=db.query_row("SELECT COUNT(*) FROM paper_remote",[],|r|r.get(0))?;
+            ensure!(count==0, "unbound virtual journal cannot be imported");
+            db.execute("INSERT INTO profile_binding VALUES(1,?1)",[identity])?;
+        }
         let body: Option<String> = db
             .query_row("SELECT body FROM paper_remote WHERE id=1", [], |r| r.get(0))
             .optional()?;
         if let Some(body) = body {
             (out.position, out.orders) = serde_json::from_str(&body)?;
         }
+        db.execute_batch("CREATE TABLE IF NOT EXISTS virtual_funding(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);")?;
+        let funding: Option<String> = db.query_row("SELECT body FROM virtual_funding WHERE id=1",[],|r|r.get(0)).optional()?;
+        if let Some(body) = funding {out.funding_history=serde_json::from_str(&body)?;}
         out.journal = Some(db);
         out.persist()?;
         Ok(out)
@@ -307,13 +327,35 @@ impl PaperBackend {
             if let Some((spec,state,_))=&self.isolation {
                 tx.execute("INSERT INTO paper_isolation VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body",[serde_json::to_string(&(spec,state))?])?;
             }
+            tx.execute("INSERT INTO virtual_funding VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body",[serde_json::to_string(&self.funding_history)?])?;
             tx.commit()?;
         }
         Ok(())
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature="paper-runtime"))]
 impl VenueBackend for PaperBackend {
+    fn funding(&mut self,start:u64,end:u64)->BoxFuture<'_,Vec<Funding>> {
+        Box::pin(async move {
+            if !self.orderbook_matching { return Ok(vec![]); }
+            if let Some(first)=self.orders.values().flat_map(|o|&o.fills).map(|f|f.time_ms).min() {
+                let hour=paper_funding::HOUR;
+                let from=self.funding_history.values().map(|f|f.time_ms).max().map(|t|t+hour).unwrap_or((first/hour+1)*hour);
+                let until=end/hour*hour;
+                if from<=until {
+                    let values=paper_funding::per_base(self.venue,self.config.market,from,until).await?;
+                    for (t,rate) in values {
+                        let f=paper_funding::estimate(self.venue,self.config.market,&self.orders,t,rate)?;
+                        ensure!(!self.funding_history.contains_key(&f.id),"duplicate virtual funding");
+                        self.position.funding+=f.amount;
+                        self.funding_history.insert(f.id.clone(),f);
+                    }
+                    self.persist()?;
+                }
+            }
+            Ok(self.funding_history.values().filter(|f|f.time_ms>=start&&f.time_ms<=end).cloned().collect())
+        })
+    }
     fn liquidations(&mut self)->BoxFuture<'_,Vec<Fill>> {
         Box::pin(async move {
             self.simulate_liquidation()?;
@@ -341,6 +383,22 @@ impl VenueBackend for PaperBackend {
                     "invalid reduce-only order"
                 );
             }
+            let mut r = r;
+            if self.orderbook_matching {
+                ensure!(r.venue==self.venue && r.units>0 && r.units%self.config.market.venue_step(self.venue)==0,
+                    "paper venue/quantity binding rejected");
+                if !r.reduce_only && (r.units<self.config.market.minimum_units(self.venue)
+                    || self.config.quantity(r.units)*r.limit<Decimal::from(10)) {
+                    return self.reject(r.id,"paper minimum order size");
+                }
+                r.limit=self.config.market.protected_price(self.venue,r.limit,r.side==Side::Buy)?;
+                let levels=if r.side==Side::Buy {&book.asks} else {&book.bids};
+                let available:i64=levels.iter().take_while(|l|if r.side==Side::Buy {l.price<=r.limit}else{l.price>=r.limit})
+                    .map(|l|l.units).sum();
+                let step=self.config.market.venue_step(self.venue);
+                r.units=r.units.min(available)/step*step;
+                if r.units==0 {return self.reject(r.id,"paper IOC: no protected depth");}
+            }
             let (price, worst) = book.vwap(r.side, r.units)?;
             if (r.side == Side::Buy && worst > r.limit) || (r.side == Side::Sell && worst < r.limit)
             {
@@ -353,16 +411,18 @@ impl VenueBackend for PaperBackend {
                 self.persist()?;
                 return Ok(out);
             }
-            let price = price
+            // Runtime simulation walks visible depth. The slippage setting is a
+            // limit, not an extra charge on an already executable book price.
+            let price = if self.orderbook_matching { price } else { price
                 * (Decimal::ONE
                     + Decimal::from(r.side.sign()) * self.config.execution_slippage_bps
-                        / Decimal::from(10_000));
+                        / Decimal::from(10_000)) };
             let price = if r.side == Side::Buy {
                 price.min(r.limit)
             } else {
                 price.max(r.limit)
             };
-            let fee = quantity(r.units)
+            let fee = self.config.quantity(r.units)
                 * price
                 * if self.venue == Venue::Entropy {
                     self.config.fee_entropy
@@ -382,13 +442,13 @@ impl VenueBackend for PaperBackend {
             if let Some((_,state,_))=&mut self.isolation {
                 if !r.reduce_only {
                     let free=self.config.paper_capital_per_venue+self.position.realized-self.position.fees+self.position.funding-state.collateral;
-                    if free<quantity(f.units)*f.price/Decimal::from(self.config.leverage) {
+                    if free<self.config.quantity(f.units)*f.price/Decimal::from(self.config.leverage) {
                         return self.reject(r.id,"insufficient isolated paper cash");
                     }
                 }
-                state.apply(&self.position,&f,self.config.leverage)?;
+                state.apply_for(&self.position,&f,self.config.leverage,self.config.market)?;
             }
-            self.position.apply(&f)?;
+            self.position.apply_for(&f, self.config.market)?;
             let out = OrderResult {
                 terminal: true,
                 fills: vec![f],
@@ -417,7 +477,7 @@ impl VenueBackend for PaperBackend {
             let p = &self.position;
             let equity = self.config.paper_capital_per_venue + p.realized - p.fees
                 + p.funding
-                + p.unrealized(mid);
+                + p.unrealized_for(mid, self.config.market);
             Ok(AccountEvidence {
                 venue: self.venue,
                 account: if self.venue == Venue::Lighter {
@@ -428,13 +488,13 @@ impl VenueBackend for PaperBackend {
                 observed_ms: self.now_ms(),
                 position_units: p.units,
                 free_margin: self.isolation.as_ref().map(|(_,s,_)|self.config.paper_capital_per_venue+p.realized-p.fees+p.funding-s.collateral)
-                    .unwrap_or(equity-quantity(p.units.abs())*mid/Decimal::from(self.config.leverage)),
+                    .unwrap_or(equity-self.config.quantity(p.units.abs())*mid/Decimal::from(self.config.leverage)),
                 equity,
                 leverage: self.config.leverage,
                 isolated: true,
                 open_orders: 0,
                 authenticated: true,
-                liquidation_price: self.isolation.as_ref().and_then(|(spec,s,_)|s.liquidation_price(p,spec.maintenance_rates[self.venue.index()])),
+                liquidation_price: self.isolation.as_ref().and_then(|(spec,s,_)|s.liquidation_price_for(p,spec.maintenance_rates[self.venue.index()],self.config.market)),
             })
         })
     }

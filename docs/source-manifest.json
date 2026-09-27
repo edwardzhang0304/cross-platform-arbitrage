@@ -3,15 +3,15 @@
     "source": "src/strategies/openai_inventory/strategy.rs",
     "destination": "src/strategies/openai_inventory/strategy.rs",
     "source_sha256": "ba86ef45e615dd654a9bfe8536a5a6eefdcf4c688fe643849fd6fdec1146cd6a",
-    "packaged_sha256": "ba86ef45e615dd654a9bfe8536a5a6eefdcf4c688fe643849fd6fdec1146cd6a",
-    "unchanged": true
+    "packaged_sha256": "c9e0e91f5ef919f8583ba7c0cfc486e1698fb81348ab78a4d109565dda77a3f5",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/feed.rs",
     "destination": "src/strategies/openai_inventory/feed.rs",
     "source_sha256": "4e6eb78bdab5f2b462e6e33eabd9f1e2e79f602551fc5dd8dcb8abbb58a10d1e",
-    "packaged_sha256": "4e6eb78bdab5f2b462e6e33eabd9f1e2e79f602551fc5dd8dcb8abbb58a10d1e",
-    "unchanged": true
+    "packaged_sha256": "b61c6964becf4fd730dbf3909bb37e8fac7246a01801036a173aae2a1d65a48a",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/independent_entry_tests.rs",
@@ -31,22 +31,22 @@
     "source": "src/strategies/openai_inventory/config.rs",
     "destination": "src/strategies/openai_inventory/config.rs",
     "source_sha256": "ee44472f10e976fda885175dc2405258ed4e48d284c2ec2e1f0e868b4a73d675",
-    "packaged_sha256": "c44081a7930aac70cf477922bb6dca28da2eaeeb6f0f44b3552d469c121182cb",
+    "packaged_sha256": "72d78a6d82c2a2d830d9e0673a52153920140161d44cee596e44e035d2e1cb65",
     "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/accounting.rs",
     "destination": "src/strategies/openai_inventory/accounting.rs",
     "source_sha256": "b90daaca763e9409e20477627ae7d832d1e2c4618b596415dc617e87c7f199ad",
-    "packaged_sha256": "10448f545ac4dbcaa6dc0888673d66c99b23806be38615457a2fd64bd962226e",
+    "packaged_sha256": "04bb283dcb0e3263db7f1ca20b5135139694b985c46aa7101308525ae96d0c93",
     "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/execution.rs",
     "destination": "src/strategies/openai_inventory/execution.rs",
     "source_sha256": "ac2d001fcf2c98d624f1a37ac221c33c6f5f08dd3403382b375f16dc781b8cd8",
-    "packaged_sha256": "ac2d001fcf2c98d624f1a37ac221c33c6f5f08dd3403382b375f16dc781b8cd8",
-    "unchanged": true
+    "packaged_sha256": "399fa57e321911177a072111b65612856df6f998e00a12c9940e2a9d8cb1463c",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/charts.rs",
@@ -59,8 +59,8 @@
     "source": "src/strategies/openai_inventory/venue.rs",
     "destination": "src/strategies/openai_inventory/venue.rs",
     "source_sha256": "2489c8315677c7c723a26ddb78c5ba1b1fbc9dc47dec01d40b1b91dc8f70999d",
-    "packaged_sha256": "2489c8315677c7c723a26ddb78c5ba1b1fbc9dc47dec01d40b1b91dc8f70999d",
-    "unchanged": true
+    "packaged_sha256": "0af56f8a7b485ec1bc6544bfb5ba944c4225a0b3869cea34ec364aec7a6a33c8",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/store.rs",
@@ -94,8 +94,8 @@
     "source": "src/strategies/openai_inventory/service.rs",
     "destination": "src/strategies/openai_inventory/service.rs",
     "source_sha256": "f67a6d722e809be377a05a6b7b89c6c1a3604d6075eb6a4b2807363bc2aac4ae",
-    "packaged_sha256": "f67a6d722e809be377a05a6b7b89c6c1a3604d6075eb6a4b2807363bc2aac4ae",
-    "unchanged": true
+    "packaged_sha256": "b0ab7798fc1c64f8f1400532892c01d8dba6a4cbd5712d470ce1c34f611c5d8a",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/group_exit_tests.rs",
@@ -122,8 +122,8 @@
     "source": "src/strategies/openai_inventory/mod.rs",
     "destination": "src/strategies/openai_inventory/mod.rs",
     "source_sha256": "7832c5de67055a333eb94612462869dbba6265dafedf1288a0ce2b834f4b0518",
-    "packaged_sha256": "7832c5de67055a333eb94612462869dbba6265dafedf1288a0ce2b834f4b0518",
-    "unchanged": true
+    "packaged_sha256": "229d8a9a2e3013a67dd094450724bb5e18a855fd405018939ad4b191be23472d",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/accounting_tests.rs",
@@ -136,29 +136,29 @@
     "source": "src/strategies/openai_inventory/live_orphan.rs",
     "destination": "src/strategies/openai_inventory/live_orphan.rs",
     "source_sha256": "c0ca3c9a3ed211fe835fd7bdf27af31fb9b14c0a92aab4747cf7d934d9ac0e7d",
-    "packaged_sha256": "c0ca3c9a3ed211fe835fd7bdf27af31fb9b14c0a92aab4747cf7d934d9ac0e7d",
-    "unchanged": true
+    "packaged_sha256": "62721e0040bb3dcf248a7b4865606832e9f135c95469fa2ebb708c9646f73d9e",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/liquidation.rs",
     "destination": "src/strategies/openai_inventory/liquidation.rs",
     "source_sha256": "056505a792ca7a95b69c0545742dde7e7075110629bfce9d928e6e314179e3d0",
-    "packaged_sha256": "056505a792ca7a95b69c0545742dde7e7075110629bfce9d928e6e314179e3d0",
-    "unchanged": true
+    "packaged_sha256": "96db1ad9c741efd20a36dabfc9ce465be1a5cf6aa784794cb774d5693c28c889",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/tests.rs",
     "destination": "src/strategies/openai_inventory/tests.rs",
     "source_sha256": "bf233c2010fcf3abc7f02374b6859ea2ce32afc023c2303b6e52630544bfe1ab",
-    "packaged_sha256": "bf233c2010fcf3abc7f02374b6859ea2ce32afc023c2303b6e52630544bfe1ab",
-    "unchanged": true
+    "packaged_sha256": "08b823abe1ed5c71db1293dbe42485fe79fa7c2eaf9c815ff1048a1ef84af2dc",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/account_binding.rs",
     "destination": "src/strategies/openai_inventory/account_binding.rs",
     "source_sha256": "fb2e5541f6bf21821e1e1cc341c9648a3243bd201f6b623f55dfbfce75e7e15f",
-    "packaged_sha256": "fb2e5541f6bf21821e1e1cc341c9648a3243bd201f6b623f55dfbfce75e7e15f",
-    "unchanged": true
+    "packaged_sha256": "a5253f99daef9eac49456bf7d588172a033aebe51d69766bd33488a9d81e6703",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/batch_exit_tests.rs",
@@ -171,7 +171,7 @@
     "source": "src/strategies/openai_inventory/live.rs",
     "destination": "src/strategies/openai_inventory/live.rs",
     "source_sha256": "12124282962ff2cbaa5b06e83de62f1dfbfa3348606e98273307c28fc39d2fba",
-    "packaged_sha256": "d689e9477bc0bbabf72d585922a00933e1e472c98f19f85ee4a12b96c99e213f",
+    "packaged_sha256": "855d2352324a2301b5343f82ec24686d6b7a844c9fc6ac33537f4f1caf6117dd",
     "unchanged": false
   },
   {
@@ -192,8 +192,8 @@
     "source": "src/strategies/openai_inventory/model.rs",
     "destination": "src/strategies/openai_inventory/model.rs",
     "source_sha256": "2fffce61ddd8c36b255305f5de777e244374da6d84df154d24510c8eac41d3e7",
-    "packaged_sha256": "2fffce61ddd8c36b255305f5de777e244374da6d84df154d24510c8eac41d3e7",
-    "unchanged": true
+    "packaged_sha256": "706b861eb2bedb8f3dc10ab3311e59682520887340dc1f5491f646b4720c85db",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/entry_mean.rs",
@@ -283,15 +283,15 @@
     "source": "frontend/openai-live-monitor.html",
     "destination": "frontend/openai-live-monitor.html",
     "source_sha256": "d706db495c5f86be59c1655624fbaebc68e4061c25143aaa5efa5e9b7d61e16b",
-    "packaged_sha256": "fd282dfa136daf0d7708aea406c5f8c2883444c7b350f7c90865ec4edd1121b3",
+    "packaged_sha256": "4f7ca09fc817fed11ffb27d29eef69c885393b62ae07637823ddd0e21ff07427",
     "unchanged": false
   },
   {
     "source": "frontend/openai-market-visuals.js",
     "destination": "frontend/openai-market-visuals.js",
     "source_sha256": "4431af53b8d5c200f4c411668e34702508aab84c3e37d587ed4dcffb8279aad6",
-    "packaged_sha256": "4431af53b8d5c200f4c411668e34702508aab84c3e37d587ed4dcffb8279aad6",
-    "unchanged": true
+    "packaged_sha256": "5e5ad5d2f4b220925f13bfbffb1d69e40fc498dd88ee85b7ebaf0d209e9df964",
+    "unchanged": false
   },
   {
     "source": "tests/openai_market_visuals.test.cjs",
@@ -304,14 +304,14 @@
     "source": "tests/openai_profit_display.test.cjs",
     "destination": "tests/openai_profit_display.test.cjs",
     "source_sha256": "fd3320b78efefadf0aa337e83233a5ea2db22ef24ca64576dbc3ac09b58287e5",
-    "packaged_sha256": "323921007a04268f9491f688b0d209d67bd22c01efdef7f6d4d0b85653e3487c",
+    "packaged_sha256": "de061c9db4c2f4eaecb2bb4c5a510bde685b89f2a2d8a3e0d416d3cd2310d54e",
     "unchanged": false
   },
   {
     "source": "Cargo.lock",
     "destination": "Cargo.lock",
     "source_sha256": "8233e4ad7da8258d5feb7e263849097df33d81cad87566dd73eb9e716637c69d",
-    "packaged_sha256": "374c30f892884191769be7b0ffd022a7bcd4266196a66c3c6ca02675becc46ad",
+    "packaged_sha256": "c48261244880d5225888474a41e7bccf57bf977e293807020c5f57962380c9e7",
     "unchanged": false
   },
   {
@@ -529,6 +529,76 @@
     "destination": "vendor/hyperliquid_rust_sdk/src/ws/mod.rs",
     "source_sha256": "60116ad16638f676bdb5106f972285ab125453d06a8fd3adeecf7ba63508bc91",
     "packaged_sha256": "60116ad16638f676bdb5106f972285ab125453d06a8fd3adeecf7ba63508bc91",
+    "unchanged": true
+  },
+  {
+    "source": "src/profiles.rs",
+    "destination": "src/profiles.rs",
+    "source_sha256": "18165d04cad509c3076259f5fc5f85a8f9a492705791167d7ae5d90f1771278f",
+    "packaged_sha256": "18165d04cad509c3076259f5fc5f85a8f9a492705791167d7ae5d90f1771278f",
+    "unchanged": true
+  },
+  {
+    "source": "src/monitor.rs",
+    "destination": "src/monitor.rs",
+    "source_sha256": "2aaf9d8276bd42dd3535dc35ca31ce486c6acdf1cc8c87028a9df9f856d4653e",
+    "packaged_sha256": "2aaf9d8276bd42dd3535dc35ca31ce486c6acdf1cc8c87028a9df9f856d4653e",
+    "unchanged": true
+  },
+  {
+    "source": "src/paper_server.rs",
+    "destination": "src/paper_server.rs",
+    "source_sha256": "092fc93a91e1080b47219f40306d9115a5f08c4d7ba4e1db3cdb006ea428f116",
+    "packaged_sha256": "092fc93a91e1080b47219f40306d9115a5f08c4d7ba4e1db3cdb006ea428f116",
+    "unchanged": true
+  },
+  {
+    "source": "src/bin/paired-paper.rs",
+    "destination": "src/bin/paired-paper.rs",
+    "source_sha256": "e2d72505fb26d32927b7e9c7a7f888bab697b88f14c2fa33cf5d4cc5e15085d0",
+    "packaged_sha256": "e2d72505fb26d32927b7e9c7a7f888bab697b88f14c2fa33cf5d4cc5e15085d0",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/market.rs",
+    "destination": "src/strategies/openai_inventory/market.rs",
+    "source_sha256": "b94564481c35e64e94b3a0e162da95d81617ccf70eb83a4fab6fec4081c5f1be",
+    "packaged_sha256": "b94564481c35e64e94b3a0e162da95d81617ccf70eb83a4fab6fec4081c5f1be",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/paper_funding.rs",
+    "destination": "src/strategies/openai_inventory/paper_funding.rs",
+    "source_sha256": "4493b54110e8af08820aa51ac249f7fcb044d8e8948447bf28e82189955c3cc3",
+    "packaged_sha256": "4493b54110e8af08820aa51ac249f7fcb044d8e8948447bf28e82189955c3cc3",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/anth_tests.rs",
+    "destination": "src/strategies/openai_inventory/anth_tests.rs",
+    "source_sha256": "663d99fb679a9c84e1ce324b234156155b1651516e69018ed8bbc948912eb878",
+    "packaged_sha256": "663d99fb679a9c84e1ce324b234156155b1651516e69018ed8bbc948912eb878",
+    "unchanged": true
+  },
+  {
+    "source": "tests/public_anth.rs",
+    "destination": "tests/public_anth.rs",
+    "source_sha256": "df584bb44275ca3891457db36100a7a7be5a00856a6ace6bc7e04fb298431bc7",
+    "packaged_sha256": "df584bb44275ca3891457db36100a7a7be5a00856a6ace6bc7e04fb298431bc7",
+    "unchanged": true
+  },
+  {
+    "source": "frontend/paper.html",
+    "destination": "frontend/paper.html",
+    "source_sha256": "48f7f3d3f3e8f5032fe8715763e1011275d4076251ac4d011d1becb98a306e81",
+    "packaged_sha256": "48f7f3d3f3e8f5032fe8715763e1011275d4076251ac4d011d1becb98a306e81",
+    "unchanged": true
+  },
+  {
+    "source": "config/strategy.anth.example.json",
+    "destination": "config/strategy.anth.example.json",
+    "source_sha256": "bba5d62fde515a33d80aad54094f41fda5fc84f1216f727d2187c61d4ea4c296",
+    "packaged_sha256": "bba5d62fde515a33d80aad54094f41fda5fc84f1216f727d2187c61d4ea4c296",
     "unchanged": true
   }
 ]

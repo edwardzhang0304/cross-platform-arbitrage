@@ -132,7 +132,7 @@
   }
   function quoteRows(payload,now,connectionOk) {
     const s=payload?.available?payload.status:{}, maxAge=Number(payload?.rules?.book_max_age_ms??1500);
-    return [['Lighter RH','OPENAI'],['Entropy','io:OAI']].map(([platform,symbol],i)=>{
+    return [['Lighter RH',payload?.symbols?.[0]||'OPENAI'],['Entropy',payload?.symbols?.[1]||'io:OAI']].map(([platform,symbol],i)=>{
       const b=s.books?.[i], buy=quotePrice(b?.ask?.price), sell=quotePrice(b?.bid?.price);
       const time=Number(b?.received_ms), hasTime=Number.isFinite(time)&&time>0;
       let state='行情有效';

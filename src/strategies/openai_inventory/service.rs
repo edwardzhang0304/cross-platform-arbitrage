@@ -9,7 +9,7 @@ use crate::crossvenue_a::{
 };
 use crate::lighter::{LighterClient, LighterEnvironment};
 use anyhow::{Context, Result, ensure};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use rust_decimal::{Decimal};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
@@ -91,7 +91,13 @@ impl InventoryService {
         live: Option<[Box<dyn VenueBackend>; 2]>, upgrade: bool,
     ) -> Result<Self> {
         config.validate()?;
-        ensure!(config.mode == Mode::Live, "OPENAI paper mode has been retired");
+        ensure!((config.mode == Mode::Live && cfg!(feature="openai-inventory-live"))
+            || (config.mode == Mode::Paper && cfg!(feature="paper-runtime") && process_dry_run && live.is_none()),
+            "build, execution mode and backend do not match");
+        if config.mode == Mode::Paper {
+            crate::profiles::ProfileId::new(config.market, Mode::Paper).validate(&config)?;
+        }
+        let pair = config.market;
         ensure!(
             config.mode != Mode::Live || (!process_dry_run && live.is_some()),
             "live workers unavailable or process dry-run enabled"
@@ -100,9 +106,10 @@ impl InventoryService {
             else { Store::open(path, &config)? };
         quarantine_live_start(&mut state);
         let client = LighterClient::official(LighterEnvironment::Robinhood)?;
-        let market = client.market_by_symbol("OPENAI").await?;
+        let market = client.market_by_symbol(pair.lighter_symbol()).await?;
+        pair.validate_lighter(&market)?;
         ensure!(
-            market.is_active_perp() && market.effective_size_decimals() == 4,
+            market.is_active_perp() && market.market_id == pair.lighter_market_id() && market.effective_size_decimals() == pair.quantity_decimals(),
             "Lighter OPENAI metadata drift"
         );
         let meta = crate::hyperliquid::fetch_xyz_market_snapshot_cached("mainnet", "io", 0).await?;
@@ -110,11 +117,11 @@ impl InventoryService {
             .meta
             .universe
             .iter()
-            .find(|x| x.name == "io:OAI")
+            .find(|x| x.name == pair.entropy_symbol())
             .context("Entropy OAI missing")?;
         ensure!(
             asset.sz_decimals == 3
-                && asset.margin_mode.as_deref() == Some("noCross")
+                && asset.margin_mode.as_deref() == Some(pair.entropy_margin_mode())
                 && asset.max_leverage.is_some_and(|v| v >= config.leverage),
             "Entropy OAI precision/margin metadata drift"
         );
@@ -129,7 +136,7 @@ impl InventoryService {
             )?,
             spawn_trade_fast_market_stream(
                 "mainnet",
-                "io:OAI".into(),
+                pair.entropy_symbol().into(),
                 PriceSource::Unknown,
                 MarketStreamConfig::default(),
             )?,
@@ -154,11 +161,7 @@ impl InventoryService {
                                     a.into_iter()
                                         .map(|l| {
                                             let price = Decimal::from_str(&l.price.to_string())?;
-                                            let units = (Decimal::from_str(&l.size.to_string())?
-                                                * Decimal::from(10_000))
-                                            .floor()
-                                            .to_i64()
-                                            .context("depth overflow")?;
+                                            let units = pair.depth_units(Decimal::from_str(&l.size.to_string())?)?;
                                             Ok(Level { price, units })
                                         })
                                         .filter(|x| !matches!(x,Ok(l) if l.units==0))
@@ -188,7 +191,27 @@ impl InventoryService {
                 }
             }));
         }
-        let backends = live.context("live workers unavailable")?;
+        let backends = match config.mode {
+            Mode::Live => live.context("live workers unavailable")?,
+            Mode::Paper => {
+                #[cfg(feature="paper-runtime")]
+                {
+                    let parent = path.parent().context("paper ledger directory missing")?;
+                    let make = |venue: Venue| -> Result<Box<dyn VenueBackend>> {
+                        let backend = venue::PaperBackend::durable(venue,config.clone(),Position::default(),books.clone(),
+                            &parent.join(format!("virtual-{:?}.sqlite",venue)))?.with_orderbook_matching().with_isolation(liquidation::IsolationSpec {
+                            maintenance_rates:[Decimal::from(market.maintenance_margin_fraction)/Decimal::from(10_000),
+                                Decimal::ONE/Decimal::from(asset.max_leverage.context("missing maximum leverage")?*2)],
+                            liquidation_fee_rates:[Decimal::new(5,3);2],mark_max_age_ms:5000,
+                        },marks.clone())?;
+                        Ok(Box::new(backend))
+                    };
+                    [make(Venue::Lighter)?,make(Venue::Entropy)?]
+                }
+                #[cfg(not(feature="paper-runtime"))]
+                { anyhow::bail!("paper backend not compiled") }
+            }
+        };
         let [l, e] = backends;
         let workers = [
             AccountWorker::spawn(Venue::Lighter, config.mode, process_dry_run, l)?,
@@ -202,7 +225,7 @@ impl InventoryService {
         let mut accounting_cache=accounting::AccountingCache::default();
         let profit_accounting=accounting_cache.report(&state,&books.read().unwrap(),crate::domain::now_ms());
         let view=Arc::new(RwLock::new(InventoryView{entry_first_venue:Venue::Entropy,close_first_venue:Venue::Lighter,snapshot:state.clone(),books:books.read().unwrap().clone(),chart_points:state.entry_mean.points.clone(),marks:marks.read().unwrap().clone(),accounts:None,mean:None,directional_means:[None,None],net_pnl:None,estimated_exit_net:None,profit_accounting,cumulative_fees:state.cumulative_fees(),cumulative_execution_cost:state.execution_cost,execution_cost_started_ms:state.execution_cost_started_ms,execution_cost_tracked_fills:state.execution_cost_tracked_fills,execution_cost_untracked_fills:state.untracked_execution_fills(),
-            submission_enabled:false,transient_warning:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:"Settled funding synchronized from venue history; pending payments are not yet realized".into()}));
+            submission_enabled:false,transient_warning:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:if config.mode==Mode::Paper {"虚拟成交；手续费按配置扣除；资金费为模拟估算，并非真实账户结算".into()} else {"Settled funding synchronized from venue history; pending payments are not yet realized".into()}}));
         let (commands, mut rx) = mpsc::channel::<Command>(16);
         let output = view.clone();
         tokio::spawn(async move {
@@ -260,6 +283,10 @@ impl InventoryService {
                     _=timer.tick()=>{
                         let now=crate::domain::now_ms();let current=books.read().unwrap().clone();
                         let result=async {
+                            #[cfg(feature="paper-runtime")]
+                            if liquidation::protect(&mut state,&mut store,&workers,&current,now).await? {
+                                return Ok::<(),anyhow::Error>(());
+                            }
                             // Persist the very same one-second quotes later sent to the chart,
                             // including gaps, before any account I/O or order dispatch.
                             if strategy::observe_entry_mean(&mut state,&current,now) {
@@ -654,7 +681,7 @@ pub(super) fn start_one_entry(
             || (s.funding_synced_ms > 0 && now.saturating_sub(s.funding_synced_ms) <= 90_000),
         "funding evidence stale"
     );
-    let qty = common_units(
+    let qty = s.config.common_units(
         s.config.group_notional,
         (books[0].mid().context("missing book")? + books[1].mid().context("missing book")?)
             / Decimal::TWO,

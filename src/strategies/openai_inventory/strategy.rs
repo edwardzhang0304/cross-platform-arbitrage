@@ -223,7 +223,7 @@ pub fn risk_check(
     qty: i64,
     action: Action,
 ) -> Result<()> {
-    ensure!(qty > 0 && qty % 10 == 0, "invalid common quantity");
+    ensure!(qty > 0 && qty % s.config.common_step() == 0, "invalid common quantity");
     if action == Action::Open {
         ensure!(
             s.loss_stop.is_none(),
@@ -255,6 +255,7 @@ pub fn risk_check(
         );
         ensure!(a.open_orders == 0, "unresolved venue orders");
         if action == Action::Open {
+            ensure!(qty>=s.config.market.minimum_units(a.venue),"below venue minimum base quantity");
             ensure!(
                 a.leverage == s.config.leverage && (i == 0 || a.isolated),
                 "leverage/margin mode mismatch"
@@ -270,10 +271,10 @@ pub fn risk_check(
         let (px, _) = books[i].vwap(side, qty)?;
         if action == Action::Open {
             ensure!(
-                quantity(qty) * px >= Decimal::from(10),
+                s.config.quantity(qty) * px >= Decimal::from(10),
                 "below venue minimum notional"
             );
-            let ntl = quantity(qty) * px;
+            let ntl = s.config.quantity(qty) * px;
             let fee = ntl
                 * if i == 0 {
                     s.config.fee_lighter
@@ -286,7 +287,7 @@ pub fn risk_check(
                 "insufficient free margin"
             );
             ensure!(
-                quantity(a.position_units.abs() + qty) * px <= s.config.max_notional_per_venue,
+                s.config.quantity(a.position_units.abs() + qty) * px <= s.config.max_notional_per_venue,
                 "inventory notional cap"
             );
         } else {
@@ -319,7 +320,7 @@ fn timed_entry_candidates(s: &mut Snapshot, books: &[Book; 2], accounts: &[Accou
         (0..s.config.max_groups).find(|k| s.armed[*k] && !s.lots.iter().any(|l| l.level == *k))
     } else if *armed { Some(0) } else { None };
     if s.lots.len() >= s.config.max_groups { return Ok([None; 2]); }
-    let qty = common_units(s.config.group_notional, (books[0].mid().unwrap() + books[1].mid().unwrap()) / Decimal::TWO)?;
+    let qty = s.config.common_units(s.config.group_notional, (books[0].mid().unwrap() + books[1].mid().unwrap()) / Decimal::TWO)?;
     let e = execution::protected_limit(s, books, Venue::Entropy, direction.open_side(Venue::Entropy), qty, now)?;
     let l = execution::protected_limit(s, books, Venue::Lighter, direction.open_side(Venue::Lighter), qty, now)?;
     let entry = entry.min(direction.entry(books, qty)?).min((e - l) * Decimal::from(direction.sign()));
@@ -497,9 +498,9 @@ fn evaluate_inner(
             let previous = std::mem::take(&mut s.previous_group_exit);
             let mut confirmed = Vec::new();
             for lot in &s.lots {
-                let mut qty = common_units(s.config.close_slice_notional, books[0].mid().unwrap())?.min(lot.units);
+                let mut qty = s.config.common_units(s.config.close_slice_notional, books[0].mid().unwrap())?.min(lot.units);
                 if s.config.shared_exit_conditions && lot.units-qty>0
-                    && quantity(lot.units-qty)*books[0].mid().unwrap()<Decimal::from(10) {qty=lot.units;}
+                    && s.config.quantity(lot.units-qty)*books[0].mid().unwrap()<Decimal::from(10) {qty=lot.units;}
                 let eligible = funding_ready && if s.config.shared_exit_conditions {
                     shared_profit_exit_eligible(s,Some(lot),books,qty,mean,now).unwrap_or(false)
                 } else {group_exit_eligible(s, lot, books, qty, now).unwrap_or(false)};
@@ -535,8 +536,8 @@ fn evaluate_inner(
         let normal_exit = s.exit_batch_active && eligible;
         if s.close_requested || normal_exit {
             let mut qty =
-                common_units(s.config.close_slice_notional, books[0].mid().unwrap())?.min(held);
-            if held - qty > 0 && quantity(held - qty) * books[0].mid().unwrap() < Decimal::from(10)
+                s.config.common_units(s.config.close_slice_notional, books[0].mid().unwrap())?.min(held);
+            if held - qty > 0 && s.config.quantity(held - qty) * books[0].mid().unwrap() < Decimal::from(10)
             {
                 qty = held;
             }
@@ -592,7 +593,7 @@ fn evaluate_inner(
             let grid_threshold = s.anchor.map(|a| a + Decimal::from(level) * s.config.grid).unwrap_or(threshold);
             let required = threshold.max(grid_threshold).max(Decimal::ZERO);
             if entry < required || prev_entry < s.config.entry_threshold(prev_mean).max(grid_threshold) { continue; }
-            let qty = common_units(s.config.group_notional, (books[0].mid().unwrap() + books[1].mid().unwrap()) / Decimal::TWO)?;
+            let qty = s.config.common_units(s.config.group_notional, (books[0].mid().unwrap() + books[1].mid().unwrap()) / Decimal::TWO)?;
             if direction.entry(books, qty)? >= required {
                 s.direction = direction;
                 action = Some((Action::Open, level, qty));
@@ -700,8 +701,8 @@ pub fn group_exit_eligible(s: &Snapshot, lot: &Lot, books: &[Book; 2], qty: i64,
         execution::protected_limit(s, books, v, s.direction.side(v, Action::Close), qty, now));
     let [l, e] = prices; let prices = [l?, e?];
     let exit_spread = prices[short] - prices[long];
-    let exit_fees = quantity(qty) * (prices[0]*s.config.fee_lighter + prices[1]*s.config.fee_entropy);
-    let net = quantity(qty) * (entry_net - exit_spread) - exit_fees;
+    let exit_fees = s.config.quantity(qty) * (prices[0]*s.config.fee_lighter + prices[1]*s.config.fee_entropy);
+    let net = s.config.quantity(qty) * (entry_net - exit_spread) - exit_fees;
     Ok(lot.entry_spread - exit_spread >= s.config.group_take_profit && net > s.config.exit_profit_reserve)
 }
 
@@ -713,7 +714,7 @@ pub fn select_close_batch(s: &Snapshot, books: &[Book; 2], candidates: &[CloseAl
     let mut total = 0_i64;
     let mut seen = std::collections::BTreeSet::new();
     for allocation in candidates {
-        ensure!(allocation.units > 0 && allocation.units % 10 == 0 && seen.insert(&allocation.lot_id),
+        ensure!(allocation.units > 0 && allocation.units % s.config.common_step() == 0 && seen.insert(&allocation.lot_id),
             "invalid or duplicate batch exit allocation");
         let lot = s.lots.iter().find(|l| l.id == allocation.lot_id)
             .ok_or_else(|| anyhow::anyhow!("selected group missing"))?;
@@ -772,18 +773,18 @@ fn shared_profit_exit_eligible(s: &Snapshot, lot: Option<&Lot>, books: &[Book;2]
     ensure!(qty>0,"empty exit inventory");
     let opening = if let Some(lot)=lot {
         ensure!(qty<=lot.units,"invalid group exit size");
-        quantity(qty)*lot.entry_net_spread.ok_or_else(|| anyhow::anyhow!("group opening costs unavailable"))?
+        s.config.quantity(qty)*lot.entry_net_spread.ok_or_else(|| anyhow::anyhow!("group opening costs unavailable"))?
     } else {
         ensure!(qty==s.paired_units(),"round exit must evaluate all remaining groups");
-        s.lots.iter().map(|lot|Ok(quantity(lot.units)*lot.entry_net_spread
+        s.lots.iter().map(|lot|Ok(s.config.quantity(lot.units)*lot.entry_net_spread
             .ok_or_else(|| anyhow::anyhow!("group opening costs unavailable"))?)).collect::<Result<Vec<Decimal>>>()?.into_iter().sum()
     };
     let [l,e]=[Venue::Lighter,Venue::Entropy].map(|v|
         execution::protected_limit(s,books,v,s.direction.side(v,Action::Close),qty,now));
     let prices=[l?,e?];
     let exit_spread=prices[s.direction.short()]-prices[s.direction.long()];
-    let fees=quantity(qty)*(prices[0]*s.config.fee_lighter+prices[1]*s.config.fee_entropy);
-    let net=opening-quantity(qty)*exit_spread-fees;
+    let fees=s.config.quantity(qty)*(prices[0]*s.config.fee_lighter+prices[1]*s.config.fee_entropy);
+    let net=opening-s.config.quantity(qty)*exit_spread-fees;
     let target_met = lot.is_none_or(|lot| {
         let target=s.config.accumulation.as_ref().map_or(s.config.group_take_profit,
             |r|(lot.entry_spread*r.contraction_ratio).max(s.config.group_take_profit));

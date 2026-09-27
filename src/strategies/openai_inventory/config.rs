@@ -35,6 +35,11 @@ pub struct AccumulationRules {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InventoryConfig {
+    /// Omitted only for the original OPENAI ledger format.
+    #[serde(skip_serializing_if = "super::MarketPair::is_openai")]
+    pub market: super::MarketPair,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lighter_address: Option<String>,
     /// Both aggregation policies use the same mean/net-profit test.
     pub shared_exit_conditions: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,6 +87,8 @@ pub struct InventoryConfig {
 impl Default for InventoryConfig {
     fn default() -> Self {
         Self {
+            market: super::MarketPair::Openai,
+            lighter_address: None,
             shared_exit_conditions: false,
             accumulation: None,
             exit_policy: ExitPolicy::Round,
@@ -120,6 +127,10 @@ impl Default for InventoryConfig {
     }
 }
 impl InventoryConfig {
+    pub fn quantity(&self, n: i64) -> Decimal { self.market.quantity(n) }
+    pub fn units(&self, q: Decimal) -> Result<i64> { self.market.units(q) }
+    pub fn common_units(&self, notional: Decimal, price: Decimal) -> Result<i64> { self.market.common_units(notional, price) }
+    pub fn common_step(&self) -> i64 { self.market.common_step() }
     /// The approved transition changes inventory/loss bounds only, never account,
     /// pricing, sizing, confirmation, or execution protections.
     pub fn validate_live_limit_upgrade(&self, previous: &Self) -> Result<()> {
@@ -137,6 +148,9 @@ impl InventoryConfig {
     }
     /// Also required for read-only checks against real accounts, regardless of mode.
     pub fn validate_live_identity(&self) -> Result<()> {
+        ensure!(self.market != super::MarketPair::Anth || self.lighter_address.as_ref().is_some_and(|a| valid_address(a)
+            && a[2..].bytes().any(|b| b != b'0') && !a.eq_ignore_ascii_case(PAPER_ENTROPY_ADDRESS)),
+            "ANTH requires an explicitly bound Lighter master address");
         ensure!(valid_address(&self.entropy_address)
             && !self.entropy_address.eq_ignore_ascii_case(PAPER_ENTROPY_ADDRESS)
             && self.entropy_address[2..].bytes().any(|b| b != b'0'),

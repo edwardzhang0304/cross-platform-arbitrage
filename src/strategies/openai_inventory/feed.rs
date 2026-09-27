@@ -28,7 +28,8 @@ impl AccountFeed {
         url: String,
         user: String,
         credential: Option<Arc<crate::lighter_runtime::LighterApiCredential>>,
-    ) -> Self {
+    ) -> Self { Self::start_for(venue,url,user,credential,super::MarketPair::Openai) }
+    pub fn start_for(venue:Venue,url:String,user:String,credential:Option<Arc<crate::lighter_runtime::LighterApiCredential>>,market:super::MarketPair)->Self {
         let cache = Arc::new(RwLock::new(Cache::default()));
         let shared = cache.clone();
         let task = tokio::spawn(async move {
@@ -51,7 +52,7 @@ impl AccountFeed {
                 let subscriptions=if venue==Venue::Lighter {
                     let token=credential.as_ref().context("missing account credential")?.auth_token(600)?;
                     vec![json!({"type":"subscribe","channel":format!("account_all_positions/{user}"),"auth":token.as_str()}),json!({"type":"subscribe","channel":format!("user_stats/{user}"),"auth":token.as_str()})]
-                }else{[json!({"type":"clearinghouseState","user":user,"dex":"io"}),json!({"type":"openOrders","user":user,"dex":"io"}),json!({"type":"activeAssetData","user":user,"coin":"io:OAI"}),json!({"type":"spotState","user":user})].into_iter().map(|s|json!({"method":"subscribe","subscription":s})).collect()};
+                }else{[json!({"type":"clearinghouseState","user":user,"dex":"io"}),json!({"type":"openOrders","user":user,"dex":"io"}),json!({"type":"activeAssetData","user":user,"coin":market.entropy_symbol()}),json!({"type":"spotState","user":user})].into_iter().map(|s|json!({"method":"subscribe","subscription":s})).collect()};
                 for sub in subscriptions {writer.send(Message::Text(sub.to_string())).await?;}
                 // Account snapshots are event driven and may remain unchanged for
                 // minutes. Keep their evidence fresh only while this same private
@@ -67,6 +68,7 @@ impl AccountFeed {
                             let key=if venue==Venue::Lighter {v["channel"].as_str().unwrap_or("").split(':').next().unwrap_or("")}else{v["channel"].as_str().unwrap_or("")};
                             if key.is_empty(){continue;}
                             let body=if venue==Venue::Lighter {v.clone()}else{v["data"].clone()};
+                            if venue==Venue::Entropy && key=="activeAssetData" && body["coin"].as_str()!=Some(market.entropy_symbol()) {continue;}
                             let mut cache=shared.write().unwrap();
                             if venue==Venue::Lighter && key=="account_all_positions" {
                                 let prior=cache.values.get(key).map(|(_,v)|v);

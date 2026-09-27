@@ -70,7 +70,7 @@ fn request(s: &Snapshot, a: &AccountEvidence, book: &Book, attempt: usize, now: 
         .take_while(|level| if side == Side::Buy { level.price <= limit } else { level.price >= limit })
         .map(|level| level.units)
         .sum();
-    let step = if venue == Venue::Entropy { 10 } else { 1 };
+    let step = s.config.market.venue_step(venue);
     let units = available.min(a.position_units.abs()) / step * step;
     ensure!(units > 0, "no protected depth for emergency reduction");
     Ok(OrderRequest {
@@ -299,6 +299,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature="openai-inventory-live")]
     #[tokio::test]
     async fn live_missing_leg_closes_survivor_and_restart_remains_locked() {
       for uncertain in [false, true] {

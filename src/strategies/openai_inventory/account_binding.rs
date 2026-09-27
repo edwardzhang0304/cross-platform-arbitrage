@@ -49,6 +49,13 @@ fn resolve_with_worker_requirement<'a>(
     ensure!(lighter.len() == 1, "expected exactly one Lighter API credential for configured account");
     ensure!(lighter[0].lighter_account_index == config.lighter_account_index,
         "Lighter credential account index mismatch");
+    if let Some(address)=&config.lighter_address {
+        ensure!(lighter[0].address.eq_ignore_ascii_case(address), "Lighter master address mismatch");
+    }
+    if config.market==super::MarketPair::Anth {
+        ensure!(entropy_id=="anth:live:entropy:trading" && lighter[0].secret_id=="anth:live:lighter:trading",
+            "ANTH credential namespace mismatch");
+    }
     Ok((entropy, lighter[0]))
 }
 

@@ -16,6 +16,14 @@ try {
   $Status = (Invoke-RestMethod "$Base/api/openai-inventory").data
   if ($Status.vault_unlocked -or $Status.configured -or $Status.view) { throw 'Clean package contains account state' }
   if ($Status.residual_recovery_version -ne 2) { throw 'Residual recovery version is incorrect' }
+  $Anth = (Invoke-RestMethod "$Base/api/anth-inventory").data
+  if ($Anth.profile.market -ne 'anth' -or $Anth.profile.mode -ne 'live' -or $Anth.view -or $Anth.configured -or $Anth.vault_unlocked) { throw 'ANTH profile is not empty/isolated' }
+  if ($Anth.csrf -eq $Status.csrf) { throw 'Profiles share a control token' }
+  $CrossProfile = Invoke-RestMethod "$Base/api/anth-portable" -Method Post -ContentType 'application/json' -Headers @{'X-Inventory-Token'=$Status.csrf} -Body '{"command":"start","id":"cross-profile","confirmation":"START_ANTH_LIVE_STRATEGY"}'
+  if ($CrossProfile.ok) { throw 'OPENAI token controlled ANTH' }
+  $AnthPage=(Invoke-WebRequest "$Base/anth").Content
+  if ($AnthPage -notmatch '/api/anth-portable' -or $AnthPage -notmatch 'START_ANTH_LIVE_STRATEGY') { throw 'ANTH control routing is incorrect' }
+  if ((Invoke-WebRequest "$Base/anth-inventory").Content -notmatch 'quantityDecimals":5') { throw 'ANTH quantity scale missing' }
   $Monitor = (Invoke-WebRequest "$Base/openai-inventory").Content
   if ($Monitor -notmatch '/assets/openai-market-visuals.js') { throw 'Chart asset missing' }
   if ((Invoke-WebRequest "$Base/").Content -notmatch '/api/portable') { throw 'Control page missing' }

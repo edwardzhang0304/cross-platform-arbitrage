@@ -40,35 +40,39 @@ pub struct PaperIsolation {
     pub events: Vec<Fill>,
 }
 impl PaperIsolation {
-    pub fn apply(&mut self, before: &Position, f: &Fill, leverage: u32) -> Result<()> {
+    pub fn apply(&mut self, before: &Position, f: &Fill, leverage: u32) -> Result<()> { self.apply_for(before,f,leverage,MarketPair::Openai) }
+    pub fn apply_for(&mut self, before: &Position, f: &Fill, leverage: u32, market:MarketPair) -> Result<()> {
         if before.units==0 || before.units.signum()==f.side.sign() {
             ensure!(self.events.is_empty(), "paper liquidation latch blocks new exposure");
-            self.collateral+=quantity(f.units)*f.price/Decimal::from(leverage)-f.fee;
+            self.collateral+=market.quantity(f.units)*f.price/Decimal::from(leverage)-f.fee;
         } else {
             ensure!(f.units<=before.units.abs(), "isolated close cannot flip position");
             self.collateral*=Decimal::from(before.units.abs()-f.units)/Decimal::from(before.units.abs());
         }
         Ok(())
     }
-    pub fn liquidation_price(&self, p:&Position, rate:Decimal) -> Option<Decimal> {
+    pub fn liquidation_price(&self, p:&Position, rate:Decimal) -> Option<Decimal> { self.liquidation_price_for(p,rate,MarketPair::Openai) }
+    pub fn liquidation_price_for(&self, p:&Position, rate:Decimal, market:MarketPair) -> Option<Decimal> {
         if p.units==0 {return None;}
         let sign=Decimal::from(p.units.signum());
-        let price=(p.average-sign*self.collateral/quantity(p.units.abs()))/(Decimal::ONE-sign*rate);
+        let price=(p.average-sign*self.collateral/market.quantity(p.units.abs()))/(Decimal::ONE-sign*rate);
         (price>Decimal::ZERO).then_some(price)
     }
-    pub fn breached(&self,p:&Position,mark:Decimal,rate:Decimal)->bool {
-        p.units!=0 && self.collateral+p.unrealized(mark)<=quantity(p.units.abs())*mark*rate
+    pub fn breached(&self,p:&Position,mark:Decimal,rate:Decimal)->bool { self.breached_for(p,mark,rate,MarketPair::Openai) }
+    pub fn breached_for(&self,p:&Position,mark:Decimal,rate:Decimal,market:MarketPair)->bool {
+        p.units!=0 && self.collateral+p.unrealized_for(mark,market)<=market.quantity(p.units.abs())*mark*rate
     }
-    pub fn forced_fill(&self,p:&Position,venue:Venue,mark:Decimal,rate:Decimal,now:u64)->Result<Fill> {
+    pub fn forced_fill(&self,p:&Position,venue:Venue,mark:Decimal,rate:Decimal,now:u64)->Result<Fill> { self.forced_fill_for(p,venue,mark,rate,now,MarketPair::Openai) }
+    pub fn forced_fill_for(&self,p:&Position,venue:Venue,mark:Decimal,rate:Decimal,now:u64,market:MarketPair)->Result<Fill> {
         ensure!(p.units!=0 && mark>Decimal::ZERO,"invalid liquidation position/mark");
-        let q=quantity(p.units.abs());
+        let q=market.quantity(p.units.abs());
         // Model insurance/backstop absorption beyond the position's isolated collateral.
         // Never debit the unused wallet balance following a price gap.
         let bankruptcy=if p.units>0 {(p.average-self.collateral/q)/(Decimal::ONE-rate)}
             else {(p.average+self.collateral/q)/(Decimal::ONE+rate)};
         let price=if p.units>0 {mark.max(bankruptcy)} else {mark.min(bankruptcy)};
         ensure!(price>Decimal::ZERO,"invalid simulated liquidation price");
-        let fee=(q*price*rate).min((self.collateral+p.unrealized(price)).max(Decimal::ZERO));
+        let fee=(q*price*rate).min((self.collateral+p.unrealized_for(price,market)).max(Decimal::ZERO));
         let id=format!("paper-liquidation-{:?}-{}",venue,self.events.len());
         Ok(Fill{id:id.clone(),order_id:id,venue,side:if p.units>0{Side::Sell}else{Side::Buy},
             units:p.units.abs(),price,fee,time_ms:now})
@@ -125,7 +129,7 @@ fn request(s:&Snapshot,b:&Book,venue:Venue,now:u64)->Result<OrderRequest> {
     let levels=if side==Side::Buy{&b.asks}else{&b.bids};
     let limit=levels[0].price*(Decimal::ONE+Decimal::from(side.sign())*s.config.execution_slippage_bps/Decimal::from(10_000));
     let available:i64=levels.iter().take_while(|l|if side==Side::Buy{l.price<=limit}else{l.price>=limit}).map(|l|l.units).sum();
-    let step=if venue==Venue::Entropy{10}else{1};
+    let step=s.config.market.venue_step(venue);
     let qty=available.min(p.units.abs())/step*step;
     ensure!(qty>0,"protective close waiting for executable depth");
     let guard=s.liquidation_protection.as_ref().context("missing liquidation latch")?;

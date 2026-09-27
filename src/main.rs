@@ -52,7 +52,7 @@ async fn run() -> Result<()> {
     std::env::set_current_dir(&root)?;
     let _awake = openai_paired_trader::power::Awake::acquire()?;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, cli.port)).await?;
-    let app = server::router(root, cli.port);
+    let app = server::router(root, cli.port)?;
     // A missing default browser must not tear down the background service.
     // The same local address remains available for manual navigation.
     if !cli.no_browser { let _ = open_browser(&url); }

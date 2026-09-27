@@ -4,13 +4,13 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const path=require('node:path');
 
-function fixture(){
+function fixture(profile){
   const html=fs.readFileSync(path.join(__dirname,'../frontend/openai-live-monitor.html'),'utf8');
   const code=html.match(/<script>\s*([\s\S]*?)<\/script>/)[1];
   const elements=new Map();
   const element=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)};
   const context=vm.createContext({document:{getElementById:element},
-    window:{OpenaiMarketVisuals:{renderCharts(){},displayDirection(){return 'shortL'},renderQuoteCards(){},quoteRows(){return []}}},
+    window:{InventoryProfile:profile,OpenaiMarketVisuals:{renderCharts(){},displayDirection(){return 'shortL'},renderQuoteCards(){},quoteRows(){return []}}},
     fetch:()=>new Promise(()=>{}),setInterval(){}});
   vm.runInContext(code,context);
   const payload={ok:true,live_build:true,process_dry_run:false,view:{
@@ -59,4 +59,17 @@ test('group rows bind by ID, use signed funding and never subtract it again from
   assert.match(rows[1],/class="good" title="0\.012000 U">0\.01 U/);
   assert.equal(f.element('pnl').textContent,'-0.28 U');
   assert.equal(f.element('pnl').className,'badtext');
+});
+
+
+test('ANTH paper page checks market/mode and keeps five decimal quantities',()=>{
+  const f=fixture({market:'anth',mode:'paper',quantityDecimals:5,api:'/api/anth-inventory',symbols:['ANTHROPIC','io:ANTH']});
+  assert.throws(()=>f.render(),/不匹配/);
+  Object.assign(f.payload,{live_build:false,paper_build:true,process_dry_run:true});
+  f.payload.view.snapshot.config={market:'anth',mode:'paper'};
+  f.payload.view.snapshot.lots[0].units=637;
+  f.render();assert.match(f.element('lots').innerHTML,/0\.00637/);
+  assert.equal(f.element('mode-tag').textContent,'模拟账户 · 虚拟资金');
+  f.payload.view.snapshot.config.market='openai';assert.throws(()=>f.render(),/不匹配/);
+  f.payload.view.snapshot.config.market='anth';f.payload.view.snapshot.config.mode='live';assert.throws(()=>f.render(),/不匹配/);
 });

@@ -14,3 +14,13 @@
 `accounts.example.json` 和 `strategy.example.json` 不含真实账户数据。交易 API 私钥不等于 MetaMask 主私钥；这里不要填写助记词或主钱包私钥。
 
 已有 Mac 实盘的用户，应先迁移原配置、完整账本和加密 Vault，再用原密码解锁；不要把旧持仓当作新账户重新配置。升级只替换程序，保留整个 `data` 目录。
+
+
+## 两个标的的配置隔离
+
+- OPENAI 继续使用原来的 `data/config`、`data/keys/trading.vault`、`data/runtime/openai-inventory`，旧账本不用改名。
+- ANTH 实盘配置由 `/anth` 页面保存到 `data/profiles/anth-live/config/profile.json`；密钥库和账本分别在同目录的 `keys`、`runtime`。
+- `strategy.anth.example.json` 只作公开模板，空地址不能启动。请在 ANTH 页面填写新账户，不复制 OPENAI 密钥库。
+- 首次升级后的 OPENAI 解锁会保存公开账户绑定（`account-bindings.json`）；不改变旧账本。在录入 ANTH 前先解锁一次原 OPENAI，以便检查新钱包没有串用。
+- Mac 模拟另用全新的数据根目录。目录标记、配置、远端虚拟成交记录和主账本都会核对标的和模式；模拟配置拒绝真实地址或账户编号。
+- 不要手动改已有账本的标的、账户或小数位。不上传 `data`、账户配置、绑定文件、密钥库和运行日志到 GitHub。

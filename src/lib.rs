@@ -1,3 +1,5 @@
+#[cfg(all(feature="paper-runtime", feature="openai-inventory-live"))]
+compile_error!("Build paper and live executables separately; do not enable both features");
 pub mod config;
 pub mod domain;
 pub mod hyperliquid;
@@ -12,4 +14,9 @@ pub mod crossvenue_a;
 pub mod openai_inventory;
 pub mod power;
 pub mod portable;
+#[cfg(feature="openai-inventory-live")]
 pub mod server;
+pub mod profiles;
+pub mod monitor;
+#[cfg(feature="paper-runtime")]
+pub mod paper_server;

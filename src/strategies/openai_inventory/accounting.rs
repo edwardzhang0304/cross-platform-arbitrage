@@ -157,7 +157,7 @@ fn attribute(s: &Snapshot) -> Attribution {
 fn apply_fill(f: &Fill, s: &Snapshot, ids: &BTreeSet<String>, result: &mut Attribution,
     other: &mut [Bucket; 2], used: &mut BTreeMap<(String, usize), i64>) {
     let i = f.venue.index();
-    let cash = -quantity(f.units) * f.price * Decimal::from(f.side.sign()) - f.fee;
+    let cash = -s.config.quantity(f.units) * f.price * Decimal::from(f.side.sign()) - f.fee;
     if let Some(id) = ids.iter().find(|id| owns(&f.order_id, id)) {
         let b = &mut result.groups.get_mut(id).unwrap()[i];
         b.opening_units += f.units * f.side.sign();
@@ -278,7 +278,7 @@ impl AccountingCache {
 
 fn estimate_lot(s: &Snapshot, lot: &Lot, books: &[Book; 2], now: u64, funding: Decimal) -> Result<Decimal> {
     let opening = lot.entry_net_spread.ok_or_else(|| anyhow::anyhow!("opening costs unavailable"))?;
-    let mut net = quantity(lot.units) * opening + funding;
+    let mut net = s.config.quantity(lot.units) * opening + funding;
     for venue in [Venue::Lighter, Venue::Entropy] {
         let book = &books[venue.index()];
         book.validate(now, s.config.book_max_age_ms)?;
@@ -287,7 +287,7 @@ fn estimate_lot(s: &Snapshot, lot: &Lot, books: &[Book; 2], now: u64, funding: D
         let price = vwap * (Decimal::ONE + Decimal::from(side.sign())
             * s.config.execution_slippage_bps / Decimal::from(10_000));
         let rate = if venue == Venue::Lighter { s.config.fee_lighter } else { s.config.fee_entropy };
-        net -= quantity(lot.units) * price * (Decimal::from(side.sign()) + rate);
+        net -= s.config.quantity(lot.units) * price * (Decimal::from(side.sign()) + rate);
     }
     Ok(net)
 }

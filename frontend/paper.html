@@ -1,0 +1,21 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>双平台模拟控制台</title>
+<style>body{font:16px system-ui;background:#f5f5f7;color:#1d1d1f;margin:0}main{max-width:960px;margin:40px auto;padding:24px}.card{background:white;border:1px solid #e8e8ed;border-radius:20px;padding:26px;margin:20px 0}a{color:#078393}button{padding:10px 18px;border:1px solid #c6c6c8;background:white;border-radius:9px;margin:6px;cursor:pointer}small{color:#6e6e73}#result{white-space:pre-wrap}</style>
+<main><h1>双平台模拟控制台</h1><p>这台 Mac 使用公开行情与虚拟资金。Windows 的 OPENAI 实盘独立运行。</p>
+<p>本程序没有实盘下单入口，不读取地址、密钥或原来的账户账本。</p>
+<div id="profiles"></div><p id="result"></p>
+<script>
+const tokens={};
+async function refresh(){for(const market of ['anth','openai']){
+const r=await (await fetch(`/api/${market}-inventory`,{cache:'no-store'})).json();
+if(!r.ok||!r.data.paper_build||r.data.live_build)continue;
+tokens[market]=r.data.csrf;const s=r.data.view?.snapshot;
+let el=document.getElementById(market);if(!el){el=document.createElement('section');el.id=market;el.className='card';document.getElementById('profiles').append(el)}
+el.replaceChildren();const h=document.createElement('h2');h.textContent=`${market.toUpperCase()} 模拟`;el.append(h);
+const p=document.createElement('p');p.textContent=s?`状态：${s.status} · 持仓 ${s.lots.length} 组 / 平仓 ${s.closed_groups} 组`:'本机未启动该模拟策略';el.append(p);
+if(s){const a=document.createElement('a');a.href=`/${market}-inventory`;a.textContent='打开模拟监控';el.append(a);
+for(const [cmd,text] of [['start','启动模拟'],['pause','暂停新增组'],['stop','停止模拟'],['close_all','模拟全部平仓']]){const b=document.createElement('button');b.textContent=text;b.onclick=()=>control(market,cmd);el.append(b)}}
+}}
+async function control(market,command){const r=await(await fetch(`/api/${market}-paper`,{method:'POST',headers:{'content-type':'application/json','x-inventory-token':tokens[market]},body:JSON.stringify({market,mode:'paper',command,id:crypto.randomUUID()})})).json();document.getElementById('result').textContent=r.ok?'模拟操作已接受':r.error;await refresh()}
+refresh();setInterval(()=>refresh().catch(()=>{}),3000);
+</script></main></html>

@@ -4,7 +4,7 @@ use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-/// All quantities use 1/10000 base units. Entropy requires multiples of ten.
+/// Legacy OPENAI fixture conversion. Runtime code uses InventoryConfig.market.
 pub fn quantity(units: i64) -> Decimal {
     Decimal::new(units, 4)
 }
@@ -177,7 +177,8 @@ pub struct Position {
     pub funding: Decimal,
 }
 impl Position {
-    pub fn apply(&mut self, f: &Fill) -> Result<()> {
+    pub fn apply(&mut self, f: &Fill) -> Result<()> { self.apply_for(f, super::MarketPair::Openai) }
+    pub fn apply_for(&mut self, f: &Fill, market: super::MarketPair) -> Result<()> {
         ensure!(f.units > 0 && f.price > Decimal::ZERO, "invalid fill");
         let signed = f.units * f.side.sign();
         if self.units == 0 || self.units.signum() == signed.signum() {
@@ -187,7 +188,7 @@ impl Position {
         } else {
             let closed = self.units.abs().min(f.units);
             self.realized +=
-                quantity(closed) * (f.price - self.average) * Decimal::from(self.units.signum());
+                market.quantity(closed) * (f.price - self.average) * Decimal::from(self.units.signum());
             if f.units > self.units.abs() {
                 self.average = f.price;
             }
@@ -202,8 +203,9 @@ impl Position {
         self.fees += f.fee;
         Ok(())
     }
-    pub fn unrealized(&self, exit: Decimal) -> Decimal {
-        quantity(self.units) * (exit - self.average)
+    pub fn unrealized(&self, exit: Decimal) -> Decimal { self.unrealized_for(exit, super::MarketPair::Openai) }
+    pub fn unrealized_for(&self, exit: Decimal, market: super::MarketPair) -> Decimal {
+        market.quantity(self.units) * (exit - self.average)
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,7 +527,7 @@ impl Snapshot {
         if let Some(mid) = arrival_mid {
             ensure!(mid > Decimal::ZERO, "invalid execution arrival midpoint");
             self.execution_cost +=
-                quantity(f.units) * (f.price - mid) * Decimal::from(f.side.sign());
+                self.config.quantity(f.units) * (f.price - mid) * Decimal::from(f.side.sign());
             self.execution_cost_tracked_fills = self.execution_cost_tracked_fills.saturating_add(1);
             self.execution_cost_started_ms = Some(
                 self.execution_cost_started_ms
@@ -534,7 +536,7 @@ impl Snapshot {
         }
         let position = &self.positions[f.venue.index()];
         let opening = position.units == 0 || position.units.signum() == f.side.sign();
-        self.positions[f.venue.index()].apply(f)?;
+        self.positions[f.venue.index()].apply_for(f, self.config.market)?;
         self.fill_opening.insert(key.clone(), opening);
         self.fills.insert(key, f.clone());
         Ok(true)
@@ -581,7 +583,7 @@ impl Snapshot {
             };
             let slip = self.config.execution_slippage_bps / Decimal::from(10_000);
             let px = price * (Decimal::ONE - Decimal::from(p.units.signum()) * slip);
-            net += p.unrealized(px) - quantity(p.units.abs()) * px * rate;
+            net += p.unrealized_for(px, self.config.market) - self.config.quantity(p.units.abs()) * px * rate;
         }
         net += self
             .positions
@@ -612,7 +614,7 @@ impl Snapshot {
         }
         let paired = op.paired_filled();
         ensure!(
-            paired >= 0 && paired % 10 == 0 && op.first_filled == paired + op.repair_filled,
+            paired >= 0 && paired % self.config.common_step() == 0 && op.first_filled == paired + op.repair_filled,
             "operation has residual exposure"
         );
         // Order counters alone cannot mark an operation complete. The fill
@@ -645,8 +647,8 @@ impl Snapshot {
                 operation_fills.iter().filter(|f|f.venue==v).map(|f|f.units*f.side.sign()).sum::<i64>()
                     == paired*self.direction.open_side(v).sign());
             let opening_net = operation_fills.into_iter()
-                .map(|f| -Decimal::from(f.side.sign()) * quantity(f.units) * f.price - f.fee)
-                .sum::<Decimal>() / quantity(paired);
+                .map(|f| -Decimal::from(f.side.sign()) * self.config.quantity(f.units) * f.price - f.fee)
+                .sum::<Decimal>() / self.config.quantity(paired);
             self.lots.push(Lot {
                 entry_net_spread: known.then_some(opening_net),
                 id: op.id,
@@ -674,7 +676,7 @@ impl Snapshot {
             // invalid persisted reservation must not partly consume inventory.
             let mut seen = BTreeSet::new();
             for allocation in &planned {
-                ensure!(allocation.units > 0 && allocation.units % 10 == 0 && seen.insert(&allocation.lot_id),
+                ensure!(allocation.units > 0 && allocation.units % self.config.common_step() == 0 && seen.insert(&allocation.lot_id),
                     "invalid or duplicate batch exit allocation");
                 ensure!(self.lots.iter().any(|l| l.id == allocation.lot_id && l.units >= allocation.units),
                     "batch exit exceeds selected group inventory");

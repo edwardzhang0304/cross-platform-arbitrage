@@ -41,6 +41,10 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node --test tests/openai_market_visuals.test.cjs tests/openai_profit_display.test.cjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Paper-only feature and isolation regressions
+        run: |
+          cargo test --locked --release --no-default-features --features paper-runtime --lib --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build standalone EXE
         run: |
           cargo build --locked --release --target x86_64-pc-windows-msvc --bin openai-paired-trader

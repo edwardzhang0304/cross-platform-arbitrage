@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN" data-openai-mode="live">
-<meta charset="utf-8">
+<meta charset="utf-8"><link rel="icon" href="data:,">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OPENAI 实盘监控</title>
 <style>
@@ -31,6 +31,7 @@
   @media(max-width:580px){#comparison-quotes{grid-template-columns:1fr}}
 </style>
 <main>
+<nav style="margin-bottom:18px;display:flex;gap:24px"><a href="/">控制台</a><a href="/openai-inventory">OPENAI</a><a href="/anth-inventory">ANTH</a></nav>
   <div class="top"><div><h1>OPENAI 实盘监控</h1><p id="status-line">正在连接实盘策略…</p></div><div><span id="mode-tag" class="tag warn">检查中</span><p id="updated"></p></div></div>
   <div class="grid">
     <div id="comparison" class="span"><div class="market-layout">
@@ -45,10 +46,12 @@
 </main>
 <script src="/assets/openai-market-visuals.js"></script>
 <script>
+/*PROFILE_CONFIG*/
+const profile=window.InventoryProfile||{market:"openai",mode:"live",quantityDecimals:4,api:"/api/openai-inventory",symbols:["OPENAI","io:OAI"]};
 const $=id=>document.getElementById(id);
 const n=value=>Number(value);
 const money=value=>Number.isFinite(n(value))?n(value).toFixed(2):'—';
-const qty=value=>Number.isFinite(n(value))?(n(value)/10000).toFixed(4):'—';
+const qty=value=>Number.isFinite(n(value))?(n(value)/(10**profile.quantityDecimals)).toFixed(profile.quantityDecimals):'—';
 const time=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—';
 const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function profitCell(value){
@@ -60,14 +63,14 @@ function profitCell(value){
 function best(book,side){const row=book?.[side]?.[0];return row?Number(row.price):NaN}
 function marketPayload(view){
   const books=(view.books||[]).map(b=>({bid:b.bids?.[0]?{price:b.bids[0].price}:null,ask:b.asks?.[0]?{price:b.asks[0].price}:null,connected:b.connected,received_ms:b.received_ms}));
-  return {available:true,status:{books,running:true,started_ms:view.snapshot.created_ms,observed_ms:Date.now()},rules:{book_max_age_ms:view.snapshot.config.book_max_age_ms},chart_points:view.chart_points||[]};
+  return {symbols:profile.symbols,available:true,status:{books,running:true,started_ms:view.snapshot.created_ms,observed_ms:Date.now()},rules:{book_max_age_ms:view.snapshot.config.book_max_age_ms},chart_points:view.chart_points||[]};
 }
 function render(payload){
   if(!payload.ok||!payload.view){throw new Error(payload.ok?'策略尚未启动':payload.error||'连接失败')}
-  if(!payload.live_build||payload.process_dry_run||payload.view.snapshot?.config?.mode!=='live'){throw new Error('连接到的不是实盘策略')}
+  if(payload.view.snapshot?.config?.mode!==profile.mode||(payload.view.snapshot?.config?.market||'openai')!==profile.market||(profile.mode==='live'&&(!payload.live_build||payload.process_dry_run))||(profile.mode==='paper'&&(!payload.paper_build||!payload.process_dry_run||payload.live_build))){throw new Error('页面与账户标的或运行模式不匹配')}
   const v=payload.view,s=v.snapshot,a=v.accounts||[];
-  $('mode-tag').textContent='真实账户 · 只读';$('mode-tag').className='tag';$('updated').textContent=`更新于 ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;
-  $('status-line').textContent=`5 秒双次确认 · 逐组止盈 · 两边逐仓 3 倍`;
+  $('mode-tag').textContent=profile.mode==='paper'?'模拟账户 · 虚拟资金':'真实账户 · 只读';$('mode-tag').className='tag';$('updated').textContent=`更新于 ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;
+  $('status-line').textContent=`5 秒双次确认 · 逐组止盈 · 两边逐仓 3 倍${profile.mode==='paper'?' · 模拟成交与资金费估算':''}`;
   $('groups').textContent=`${(s.lots||[]).length} / ${s.closed_groups||0}`;
   const pnl=v.net_pnl==null?NaN:Number(money(v.net_pnl));
   $('pnl').textContent=Number.isFinite(pnl)?`${money(pnl)} U`:'—';
@@ -90,7 +93,7 @@ function render(payload){
   const fills=Object.values(s.fills||{}).sort((x,y)=>n(y.time_ms)-n(x.time_ms)).slice(0,20);
   $('fills').innerHTML=fills.length?fills.map(x=>`<tr><td>${time(x.time_ms)}</td><td>${x.venue==='lighter'?'Lighter RH':'Entropy'}</td><td>${x.side==='buy'?'买入':'卖出'}</td><td>${qty(x.units)}</td><td>${money(x.price)}</td><td>${money(x.fee)} U</td></tr>`).join(''):'<tr><td colspan="6" class="empty">暂无成交</td></tr>';
 }
-async function refresh(){try{const r=await fetch('/api/openai-inventory',{cache:'no-store'});const response=await r.json();render(response.ok?{ok:true,...response.data}:{ok:false,error:response.error})}catch{$('groups').textContent='—';$('pnl').textContent='—';$('pnl').className='';$('closed-pnl').textContent='—';$('closed-pnl').className='';$('mode-tag').textContent='—';$('mode-tag').className='tag'}}
+async function refresh(){try{const r=await fetch(profile.api,{cache:'no-store'});const response=await r.json();render(response.ok?{ok:true,...response.data}:{ok:false,error:response.error})}catch{$('groups').textContent='—';$('pnl').textContent='—';$('pnl').className='';$('closed-pnl').textContent='—';$('closed-pnl').className='';$('mode-tag').textContent='—';$('mode-tag').className='tag'}}
 refresh();setInterval(refresh,2000);
 </script>
 </html>
