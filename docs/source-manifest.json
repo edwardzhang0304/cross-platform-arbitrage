@@ -171,8 +171,8 @@
     "source": "src/strategies/openai_inventory/live.rs",
     "destination": "src/strategies/openai_inventory/live.rs",
     "source_sha256": "12124282962ff2cbaa5b06e83de62f1dfbfa3348606e98273307c28fc39d2fba",
-    "packaged_sha256": "12124282962ff2cbaa5b06e83de62f1dfbfa3348606e98273307c28fc39d2fba",
-    "unchanged": true
+    "packaged_sha256": "d689e9477bc0bbabf72d585922a00933e1e472c98f19f85ee4a12b96c99e213f",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/entry_confirmation_tests.rs",
@@ -311,7 +311,7 @@
     "source": "Cargo.lock",
     "destination": "Cargo.lock",
     "source_sha256": "8233e4ad7da8258d5feb7e263849097df33d81cad87566dd73eb9e716637c69d",
-    "packaged_sha256": "812dadae4921672b9bc9a994b02cc0c10050d4b95876ca1ab9154fb3c127090b",
+    "packaged_sha256": "a792729966505bda6d40009e4044dd6fc4bd15f3c4ec324303550a35dd876c7f",
     "unchanged": false
   },
   {

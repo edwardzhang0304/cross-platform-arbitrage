@@ -32,7 +32,9 @@ jobs:
             ~/.cargo/git
             target
           key: windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ github.sha }}
-          restore-keys: windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+          restore-keys: |
+            windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+            windows-rust-1.98.1-static-
       - name: Offline strategy and signer regressions
         run: |
           cargo test --locked --release --workspace --lib --target x86_64-pc-windows-msvc

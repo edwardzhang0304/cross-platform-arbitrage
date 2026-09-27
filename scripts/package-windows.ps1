@@ -15,7 +15,11 @@ Copy-Item vendor/lighter-signing/licenses "$Package/licenses" -Recurse
 Copy-Item vendor/lighter-signing/LICENSE* "$Package/licenses/" -ErrorAction Stop
 Copy-Item vendor/hyperliquid_rust_sdk/LICENSE "$Package/licenses/Hyperliquid-MIT.txt"
 # Only explicit public files are included. No data/, runtime/, keys or local config.
-@{version='0.1.0';commit=$env:GITHUB_SHA;target='x86_64-pc-windows-msvc';rust=(rustc --version);built_at=(Get-Date).ToUniversalTime().ToString('o')} | ConvertTo-Json | Set-Content "$Package/build-info.json" -Encoding utf8
+$Metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+if ($LASTEXITCODE) { throw 'Cannot read package version' }
+$Version = ($Metadata.packages | Where-Object name -eq 'openai-paired-trader').version
+if (!$Version) { throw 'Missing package version' }
+@{version=$Version;commit=$env:GITHUB_SHA;target='x86_64-pc-windows-msvc';rust=(rustc --version);built_at=(Get-Date).ToUniversalTime().ToString('o')} | ConvertTo-Json | Set-Content "$Package/build-info.json" -Encoding utf8
 $Zip='dist/OPENAI-Trader-Windows-x64.zip'
 Compress-Archive -Path $Package -DestinationPath $Zip -Force
 $Hash=(Get-FileHash $Zip -Algorithm SHA256).Hash.ToLower()

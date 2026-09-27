@@ -40,6 +40,16 @@ fn decimal(v: &Value) -> Result<Decimal> {
 fn integer(v: &Value) -> Option<i64> {
     v.as_i64().or_else(|| v.as_str()?.parse().ok())
 }
+fn lighter_account_equity(account: &Value) -> Result<Decimal> {
+    // REST collateral excludes margin allocated to isolated positions. Use the
+    // venue's total valuation instead of reconstructing equity from collateral.
+    // The WebSocket adapter maps user_stats.portfolio_value to `equity`.
+    if let Some(total) = account.get("total_asset_value") {
+        return decimal(total).context("invalid Lighter total_asset_value");
+    }
+    decimal(account.get("equity").context("missing Lighter account equity")?)
+        .context("invalid Lighter portfolio value")
+}
 fn lighter_leverage(v: &Value) -> Result<u32> {
     let reported = decimal(v)?;
     ensure!(reported > Decimal::ZERO, "missing leverage evidence");
@@ -727,19 +737,7 @@ impl VenueBackend for LighterLive {
                 observed_ms: crate::domain::now_ms(),
                 position_units,
                 free_margin: decimal(&a["available_balance"])?,
-                equity: if a.get("equity").is_some() {
-                    decimal(&a["equity"])?
-                } else {
-                    decimal(&a["collateral"])?
-                        + a["positions"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .map(|p| decimal(&p["unrealized_pnl"]))
-                            .collect::<Result<Vec<_>>>()?
-                            .into_iter()
-                            .sum::<Decimal>()
-                },
+                equity: lighter_account_equity(&a)?,
                 leverage,
                 isolated,
                 open_orders: p
@@ -1270,6 +1268,33 @@ async fn verify_entropy_fee_contract(c: &InventoryConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lighter_equity_rest_includes_isolated_margin_without_double_counting_pnl() {
+        let account = json!({
+            "collateral":"40", "available_balance":"41", "total_asset_value":"101.5",
+            "positions":[{"margin_mode":1,"allocated_margin":"60","unrealized_pnl":"1.5"}]
+        });
+        assert_eq!(lighter_account_equity(&account).unwrap(), Decimal::new(1015, 1));
+        assert_eq!(decimal(&account["available_balance"]).unwrap(), Decimal::from(41));
+    }
+    #[test]
+    fn lighter_equity_stream_and_rest_use_total_valuation() {
+        let rest = json!({"total_asset_value":"101.5","collateral":"40"});
+        let stream = json!({"equity":"101.5","collateral":"40"});
+        assert_eq!(lighter_account_equity(&rest).unwrap(), lighter_account_equity(&stream).unwrap());
+        for total in [json!("0"), json!("-2.5"), json!(100)] {
+            assert_eq!(lighter_account_equity(&json!({"total_asset_value":total})).unwrap(), decimal(&total).unwrap());
+        }
+    }
+    #[test]
+    fn lighter_equity_missing_or_invalid_total_cannot_fall_back_to_collateral() {
+        let missing = json!({"collateral":"40","positions":[{"unrealized_pnl":"1.5"}]});
+        assert!(lighter_account_equity(&missing).is_err());
+        for total in [Value::Null, json!("NaN"), json!("bad"), json!({})] {
+            assert!(lighter_account_equity(&json!({"total_asset_value":total,"equity":"101.5","collateral":"40"})).is_err());
+        }
+        assert!(lighter_account_equity(&json!({"equity":null,"collateral":"40"})).is_err());
+    }
     #[test]
     fn unified_collateral_uses_spot_usdc_capped_by_active_asset_capacity() {
         let spot: hyperliquid::SpotClearinghouseState = serde_json::from_value(json!({
