@@ -117,4 +117,48 @@ mod tests {
         assert!(!path.with_extension("tmp").exists());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn export_requires_stopped_balanced_unlocked_ledger_and_never_copies_keys() {
+        use crate::openai_inventory::{Status, store::Store};
+        let dir = std::env::temp_dir().join(format!("portable-export-{}", uuid::Uuid::new_v4()));
+        let source = dir.join("source");
+        let cfg: InventoryConfig = serde_json::from_str(include_str!("../tests/fixtures/inventory/live-strategy.json")).unwrap();
+        let (mut store, mut state) = Store::open(&source.join(DATABASE), &cfg).unwrap();
+        let account_file = source.join("accounts.toml");
+        fs::write(&account_file, format!("[[accounts]]\naccount_id = \"{}\"\naddress = \"{}\"\nsecret_id = \"original-reference\"\n", cfg.entropy_account, cfg.entropy_address)).unwrap();
+        let output = dir.join("transfer");
+        state.status = Status::Stopped;
+        state.stop_requested = true;
+        state.closed_groups = 4;
+        store.commit(&state, 42, "synthetic-stopped").unwrap();
+        assert!(export_legacy(&source, &account_file, &output).is_err());
+        assert!(!output.exists());
+        state.status = Status::Running;
+        store.commit(&state, 43, "synthetic-running").unwrap();
+        drop(store);
+        assert!(export_legacy(&source, &account_file, &output).is_err());
+        let (mut store, _) = Store::open(&source.join(DATABASE), &cfg).unwrap();
+        state.status = Status::Stopped;
+        state.positions[0].units = 90;
+        store.commit(&state, 44, "synthetic-unpaired").unwrap();
+        drop(store);
+        assert!(export_legacy(&source, &account_file, &output).is_err());
+        let (mut store, _) = Store::open(&source.join(DATABASE), &cfg).unwrap();
+        state.positions[0].units = 0;
+        store.commit(&state, 45, "synthetic-balanced").unwrap();
+        drop(store);
+        export_legacy(&source, &account_file, &output).unwrap();
+        assert!(!output.join(VAULT).exists());
+        let db = rusqlite::Connection::open(output.join(DATABASE)).unwrap();
+        let body: String = db.query_row("SELECT body FROM state WHERE id=1", [], |r|r.get(0)).unwrap();
+        let restored: Snapshot = serde_json::from_str(&body).unwrap();
+        assert_eq!(restored.closed_groups, 4);
+        assert_eq!(restored.config, cfg);
+        let accounts: AppConfig = serde_json::from_slice(&fs::read(output.join(SETTINGS)).unwrap()).unwrap();
+        assert_eq!(accounts.accounts[0].secret_id, "original-reference");
+        assert_eq!(accounts.secrets.vault_path, VAULT);
+        assert!(!accounts.secrets.allow_env_fallback);
+        drop(db);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
