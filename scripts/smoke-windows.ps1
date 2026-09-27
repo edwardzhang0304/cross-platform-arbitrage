@@ -15,7 +15,7 @@ try {
   if (!$Health -or $Health.application -ne 'openai-paired-trader' -or !$Health.sleep_prevention) { throw 'Health / power guard failed' }
   $Status = (Invoke-RestMethod "$Base/api/openai-inventory").data
   if ($Status.vault_unlocked -or $Status.configured -or $Status.view) { throw 'Clean package contains account state' }
-  if ($Status.residual_recovery_version -ne 'v2') { throw 'Residual recovery version is incorrect' }
+  if ($Status.residual_recovery_version -ne 2) { throw 'Residual recovery version is incorrect' }
   $Monitor = (Invoke-WebRequest "$Base/openai-inventory").Content
   if ($Monitor -notmatch '/assets/openai-market-visuals.js') { throw 'Chart asset missing' }
   if ((Invoke-WebRequest "$Base/").Content -notmatch '/api/portable') { throw 'Control page missing' }
