@@ -1,0 +1,181 @@
+use anyhow::{Context, Result, ensure};
+use axum::{Router, Json, extract::{State, DefaultBodyLimit}, http::HeaderMap, response::Html, routing::{get, post}};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::{path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicBool, Ordering}}};
+use tokio::sync::Mutex;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use crate::{config::AppConfig, openai_inventory::{self as inventory, *}, portable::{self, Settings}, secrets};
+
+#[derive(Clone)]
+pub struct App { inner: Arc<Mutex<Session>>, token: Arc<String>, lease: Arc<AtomicBool>, root: Arc<PathBuf>, port: u16 }
+struct Session { settings: Option<Settings>, password: Option<Zeroizing<String>>, service: Option<InventoryService> }
+
+pub fn router(root: PathBuf, port: u16) -> Router {
+    let app = App { inner: Arc::new(Mutex::new(Session {settings: Settings::load().ok(), password: None, service: None})),
+        token: Arc::new(uuid::Uuid::new_v4().to_string()), lease: Arc::new(AtomicBool::new(false)), root: Arc::new(root), port };
+    Router::new()
+        .route("/", get(|| async { Html(include_str!("../frontend/portable.html")) }))
+        .route("/openai-inventory", get(|| async { Html(include_str!("../frontend/openai-live-monitor.html")) }))
+        .route("/assets/openai-market-visuals.js", get(|| async { ([("content-type","application/javascript; charset=utf-8")], include_str!("../frontend/openai-market-visuals.js")) }))
+        .route("/health", get(health))
+        .route("/api/openai-inventory", get(status))
+        .route("/api/portable", post(action))
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::middleware::map_response(|mut r: axum::response::Response| async {
+            r.headers_mut().insert("cache-control", "no-store".parse().unwrap());
+            r.headers_mut().insert("x-frame-options", "DENY".parse().unwrap());
+            r.headers_mut().insert("x-content-type-options", "nosniff".parse().unwrap());
+            r
+        }))
+        .with_state(app)
+}
+fn local(headers: &HeaderMap, port: u16) -> Result<()> {
+    let host = headers.get("host").and_then(|v|v.to_str().ok()).context("缺少本机地址")?;
+    ensure!(host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}"), "只允许本机访问");
+    if let Some(origin) = headers.get("origin") {
+        ensure!(origin.to_str()? == format!("http://{host}"), "拒绝跨站请求");
+    }
+    Ok(())
+}
+async fn health(State(app): State<App>, h: HeaderMap) -> Json<Value> {
+    if local(&h, app.port).is_err() { return Json(json!({"ok":false})); }
+    Json(json!({"application":"openai-paired-trader","version":env!("CARGO_PKG_VERSION"),"data_dir":app.root.to_string_lossy(),"sleep_prevention":cfg!(windows)}))
+}
+async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
+    if local(&h, app.port).is_err() { return Json(json!({"ok":false,"error":"只允许本机访问"})); }
+    let s = app.inner.lock().await;
+    Json(json!({"ok":true,"data":{
+        "view":s.service.as_ref().map(InventoryService::status),"csrf":app.token.as_str(),
+        "live_build":cfg!(feature="openai-inventory-live"),"process_dry_run":false,"kill_switch":false,
+        "vault_unlocked":s.password.is_some(),"configured":s.settings.is_some(),
+        "vault_exists":Path::new(portable::VAULT).exists(),
+        "residual_recovery_version":inventory::execution::RESIDUAL_RECOVERY_VERSION,
+        "strategy":s.settings.as_ref().map(|x|&x.strategy),"sleep_prevention":cfg!(windows),
+        "data_dir":app.root.to_string_lossy()
+    }}))
+}
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    #[serde(default)] command: String,
+    #[serde(default)] id: String,
+    #[serde(default)] confirmation: String,
+    #[serde(default)] password: String,
+    #[serde(default)] entropy_address: String,
+    #[serde(default)] entropy_key: String,
+    #[serde(default)] lighter_address: String,
+    #[serde(default)] lighter_account_index: String,
+    #[serde(default)] lighter_key_index: String,
+    #[serde(default)] lighter_key: String,
+}
+impl Default for Request {
+    fn default()->Self {Self {command:String::new(),id:String::new(),confirmation:String::new(),password:String::new(),entropy_address:String::new(),entropy_key:String::new(),lighter_address:String::new(),lighter_account_index:String::new(),lighter_key_index:String::new(),lighter_key:String::new()}}
+}
+async fn action(State(app): State<App>, h: HeaderMap, Json(request): Json<Request>) -> Json<Value> {
+    let result = handle(&app, &h, &request).await;
+    match result {
+        Ok(value) => Json(json!({"ok":true,"data":value})),
+        // Do not include chained HTTP errors, response bodies or user-entered secrets.
+        Err(error) => {
+            let text = error.to_string();
+            let safe = if [request.password.as_str(),request.entropy_key.as_str(),request.lighter_key.as_str()]
+                .iter().any(|secret| !secret.is_empty() && text.contains(secret)) { "操作失败，请检查填写内容".to_string() } else { text };
+            Json(json!({"ok":false,"error":safe}))
+        }
+    }
+}
+async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
+    local(h, app.port)?;
+    ensure!(h.get("x-inventory-token").and_then(|v|v.to_str().ok()) == Some(app.token.as_str()), "请刷新页面后重试");
+    ensure!(!r.id.is_empty() && r.id.len() <=128, "缺少操作编号");
+    let mut s = app.inner.lock().await;
+    match r.command.as_str() {
+        "save_credentials" => {
+            ensure!(s.service.is_none() && !Path::new(portable::DATABASE).exists(), "已有持仓账本或运行中的程序，请使用原配置迁移，不要重新开户配置");
+            ensure!(r.password.len() >= 12, "密钥库密码至少 12 位");
+            let index: i64 = r.lighter_account_index.parse().context("Lighter 账户 INDEX 必须是数字")?;
+            let key_index: u8 = r.lighter_key_index.parse().context("API KEY INDEX 必须是数字")?;
+            let address_ok = |v: &str| v.len()==42 && v.starts_with("0x") && v[2..].bytes().all(|b|b.is_ascii_hexdigit()) && v[2..].bytes().any(|b|b!=b'0');
+            ensure!(address_ok(&r.entropy_address) && address_ok(&r.lighter_address), "请填写完整公开钱包地址");
+            secrets::private_key_address(&r.entropy_key).context("Entropy API 私钥格式错误")?;
+            crate::lighter_runtime::LighterApiCredential::from_hex(index,key_index,&r.lighter_key).context("Lighter API 私钥格式错误")?;
+            let mut strategy: InventoryConfig = serde_json::from_str(include_str!("../config/strategy.example.json"))?;
+            strategy.entropy_address=r.entropy_address.clone(); strategy.lighter_account_index=Some(index);
+            let mut accounts=AppConfig::default(); accounts.secrets.vault_path=portable::VAULT.into();
+            accounts.accounts=vec![serde_json::from_value(json!({"account_id":strategy.entropy_account,"address":strategy.entropy_address,"secret_id":"entropy_trading"}))?];
+            let settings=Settings{accounts,strategy}; settings.strategy.validate()?; settings.strategy.validate_live_identity()?;
+            let path=Path::new(portable::VAULT);
+            secrets::upsert_secret(path,&r.password,secrets::SecretUpsert { secret_id:"entropy_trading".into(),account_id:settings.strategy.entropy_account.clone(),address:r.entropy_address.clone(),api_wallet_private_key:r.entropy_key.clone() }).context("Entropy 加密保存失败，请检查密码")?;
+            secrets::upsert_lighter_secret(path,&r.password,secrets::LighterSecretUpsert {secret_id:"lighter_trading".into(),account_id:settings.strategy.lighter_account.clone(),l1_address:r.lighter_address.clone(),account_index:index,api_key_index:key_index,api_private_key:r.lighter_key.clone()}).context("Lighter 加密保存失败，请检查密码")?;
+            settings.save()?;s.settings=Some(settings);s.password=Some(Zeroizing::new(r.password.clone()));
+        }
+        "unlock" => {
+            secrets::unlock_vault(Path::new(portable::VAULT),&r.password).context("解锁失败，请检查密钥库文件和密码")?;
+            s.settings=Some(Settings::load().context("缺少账户或策略配置，请检查 data/config 目录")?);
+            s.password=Some(Zeroizing::new(r.password.clone()));
+        }
+        "preflight" | "launch" => {
+            ensure!(s.service.is_none(), "账户已加载，请查看当前状态");
+            let cfg=s.settings.clone().context("请先配置账户或导入迁移数据")?;
+            let password=s.password.as_ref().context("请先解锁密钥库")?;
+            let summary=secrets::unlock_vault(Path::new(portable::VAULT),password).context("密钥库校验失败")?;
+            let (account,entry)=inventory::account_binding::resolve(&cfg.strategy,&cfg.accounts.accounts,&summary.entries)?;
+            let l=secrets::load_lighter_secret_by_id(Path::new(portable::VAULT),password,&entry.secret_id,Some(&cfg.strategy.lighter_account)).context("Lighter 凭据与配置不一致")?;
+            let e=secrets::load_account_secret(&cfg.accounts,account,Some(password)).context("Entropy 凭据与配置不一致")?;
+            if r.command=="preflight" {
+                let evidence=inventory::live::read_only_preflight(&cfg.strategy,l,e).await.context("账户检查未通过，请核对网络、API 授权、账户及逐仓 3 倍设置")?;
+                return Ok(json!({"accounts":evidence}));
+            }
+            ensure!(r.confirmation=="LOAD_EXCLUSIVE_ACCOUNTS", "请先确认原电脑的交易程序已关闭");
+            let workers=inventory::live::bootstrap(&cfg.strategy,l,e,false).await.context("账户加载失败，请先运行只读检查")?;
+            app.lease.store(true,Ordering::SeqCst);
+            let lease=app.lease.clone();let check: Arc<dyn Fn()->bool+Send+Sync>=Arc::new(move||lease.load(Ordering::SeqCst));
+            let workers=workers.map(|inner|Box::new(inventory::venue::GuardedBackend{inner,lease:check.clone()}) as Box<dyn inventory::venue::VenueBackend>);
+            let result=InventoryService::launch(cfg.strategy,Path::new(portable::DATABASE),false,Some(workers)).await;
+            match result {Ok(service)=>s.service=Some(service),Err(error)=>{app.lease.store(false,Ordering::SeqCst);return Err(error.context("账本加载失败，请检查迁移文件是否完整"));}}
+        }
+        "start" => {
+            ensure!(r.confirmation==inventory::config::LIVE_STRATEGY_CONFIRMATION,"请明确确认启动实盘策略");
+            s.service.as_ref().context("请先加载账户")?.control(r.id.clone(),Control::StartLiveStrategy).await?;
+        }
+        "pause" | "stop" | "close_all" => {
+            let command=match r.command.as_str() {"pause"=>Control::Pause,"stop"=>Control::Stop,_=>{ensure!(r.confirmation=="CLOSE_ALL_POSITIONS","请确认平掉全部持仓");Control::CloseAll}};
+            s.service.as_ref().context("账户尚未加载")?.control(r.id.clone(),command).await?;
+        }
+        "lock" | "quit" => {
+            if r.command=="quit" { ensure!(r.confirmation=="QUIT_PROGRAM","请确认退出后台程序"); }
+            if let Some(service)=&s.service {
+                let state=service.status().snapshot;
+                ensure!(state.pending.is_none()&&state.live_orphan.is_none()&&state.status==Status::Stopped,
+                    "请先停止交易并等待未完成的双腿处理结束，再锁定或退出");
+                service.control(r.id.clone(),Control::Shutdown).await?;
+            }
+            app.lease.store(false,Ordering::SeqCst);s.service=None;s.password=None;
+            if r.command=="quit" {
+                tokio::spawn(async {tokio::time::sleep(std::time::Duration::from_millis(300)).await;std::process::exit(0);});
+            }
+        }
+        _=>anyhow::bail!("未知操作"),
+    }
+    Ok(json!({"accepted":true}))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn localhost_and_origin_are_strict() {
+        let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
+        assert!(local(&h,18794).is_ok());
+        h.insert("origin","https://evil.example".parse().unwrap());assert!(local(&h,18794).is_err());
+        h.remove("origin");h.insert("host","127.0.0.1.evil.example:18794".parse().unwrap());assert!(local(&h,18794).is_err());
+    }
+    #[tokio::test]
+    async fn control_without_session_token_cannot_create_files_or_launch() {
+        let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None})),token:Arc::new("secret-test-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794};
+        let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
+        let mut r=Request::default();r.command="launch".into();r.id="test".into();
+        assert!(handle(&app,&h,&r).await.is_err());assert!(!app.lease.load(Ordering::SeqCst));
+        assert!(app.inner.lock().await.service.is_none());
+    }
+}

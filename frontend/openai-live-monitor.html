@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN" data-openai-mode="live">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OPENAI 实盘监控</title>
+<style>
+  :root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;color:#1d1d1f;background:#f5f5f7;font-variant-numeric:tabular-nums}
+  *{box-sizing:border-box}body{margin:0}main{max-width:1240px;margin:0 auto;padding:30px 24px 60px}h1{font-size:28px;letter-spacing:-.8px;margin:0}h2{font-size:16px;margin:0 0 16px}p{margin:0}small,.muted{color:#6e6e73}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:22px}.tag{background:#e8f5ed;color:#11633d;border-radius:100px;padding:6px 12px;font-size:12px;font-weight:650}.tag.warn{background:#fff0e8;color:#9a3412}.tag.bad{background:#ffeded;color:#aa3026}.grid{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:18px}.card{background:#fff;border:1px solid #e8e8ed;border-radius:20px;padding:22px;box-shadow:0 4px 24px #00000005}.span{grid-column:1/-1}.quotes{display:grid;gap:12px}.quote{min-height:130px;border:1px solid #e8e8ed;border-radius:15px;padding:17px}.quote strong{font-size:16px}.quote small{font-size:12px}.price{font-weight:650;font-size:20px;letter-spacing:-.5px;margin-top:12px;white-space:nowrap}.label{color:#6e6e73;font-size:12px}.metric-row{display:flex;gap:24px;flex-wrap:wrap;margin:10px 0 18px}.metric strong{display:block;font-size:22px;letter-spacing:-.5px;line-height:1.3}.metric small{display:block}.good{color:#18845b}.badtext{color:#b42318}.chart{width:100%;height:265px;display:block}#status-line{font-size:14px;margin-top:7px;color:#6e6e73}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px 9px;border-bottom:1px solid #ededf0;white-space:nowrap}th{font-size:12px;color:#6e6e73;font-weight:500}td{font-size:14px}.scroll{overflow:auto}.empty{text-align:center;color:#6e6e73;padding:24px}#updated{font-size:12px;color:#6e6e73}#status-metrics{display:flex;gap:34px;flex-wrap:wrap}.account-name{font-weight:650}#chart-note{font-size:12px;color:#6e6e73;margin-top:4px}svg text{font:12px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;fill:#86868b}.legend{font-size:12px;color:#6e6e73;display:flex;gap:16px;flex-wrap:wrap}.swatch{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}.blue{background:#007aff}.green{background:#16a56a}@media(max-width:850px){.grid{grid-template-columns:1fr}.quotes{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:580px){main{padding:18px 12px 40px}.quotes{grid-template-columns:1fr}.card{padding:18px;border-radius:16px}.price{font-size:18px}.top{align-items:start;flex-direction:column}}
+  /* Shared chart and quote-card presentation for the live market feed. */
+  #status-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+  #comparison .market-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:20px;align-items:stretch}
+  #comparison .market-layout #comparison-chart-panel{position:relative;min-width:0;height:222px;padding:4px 10px 30px;border:1px solid #e8e8ed;border-radius:18px;background:#fff;overflow:visible}
+  #comparison-chart-panel h2{display:none}#comparison-candles{height:186px;overflow-x:auto}#comparison-candles svg{width:100%;height:186px;display:block;min-width:580px;font-variant-numeric:tabular-nums}
+  #comparison #comparison-chart-hover,#comparison #comparison-chart-status{position:absolute;left:16px;right:16px;bottom:6px;margin:0;min-height:20px;line-height:20px;font-size:11px;color:#526277}#comparison #comparison-chart-status{bottom:26px}
+  #comparison .market-quotes{min-width:0;align-self:start}#comparison .market-quotes .scroll{overflow:visible}
+  #comparison .market-quotes .quote-table{display:block;min-width:0;margin:0;width:100%;position:relative}
+  #comparison .market-quotes .quote-table caption,#comparison .market-quotes .quote-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  #comparison-quotes{display:grid;gap:10px}
+  #comparison .market-quotes tr{display:grid;grid-template-columns:48px minmax(0,1fr) minmax(0,1fr);height:106px;box-sizing:border-box;column-gap:4px;row-gap:6px;padding:14px 16px;align-content:start;border:1px solid #e8e8ed;border-radius:14px;background:#fff}
+  #comparison .market-quotes td{display:block;padding:0;border:0;min-width:0}
+  #comparison .market-quotes td:first-child{grid-column:1/-1;font-size:15px;font-weight:600;line-height:22px}
+  #comparison .market-quotes td:first-child .subline{display:inline;margin-left:8px;font-size:12px;color:#6e6e73;font-weight:400}
+  #comparison .market-quotes td:nth-child(3){grid-column:2;grid-row:2}#comparison .market-quotes td:nth-child(2){grid-column:3;grid-row:2}
+  #comparison .market-quotes tr::before{content:"Bid/Ask";grid-column:1;grid-row:2;align-self:center;font-size:11px;color:#6e6e73}
+  #comparison .market-quotes td:nth-child(2)::before{content:"/ ";display:inline;color:inherit;font-size:inherit}
+  #comparison .market-quotes .quote-price{font-size:14px;font-weight:600;letter-spacing:-.3px;line-height:22px;white-space:nowrap;font-variant-numeric:tabular-nums}
+  #comparison .market-quotes td:last-child{grid-column:1/-1;min-height:18px;line-height:18px;font-size:12px;color:#9a3412}
+  #comparison #comparison-chart-note{position:absolute;top:12px;right:18px;z-index:1;margin:0;padding:3px 7px;border-radius:7px;background:#fff;color:#6e6e73;font-size:12px;font-variant-numeric:tabular-nums}
+  @media(max-width:850px){#comparison .market-layout{grid-template-columns:minmax(0,1fr)}#comparison-quotes{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:580px){#comparison-quotes{grid-template-columns:1fr}}
+</style>
+<main>
+  <div class="top"><div><h1>OPENAI 实盘监控</h1><p id="status-line">正在连接实盘策略…</p></div><div><span id="mode-tag" class="tag warn">检查中</span><p id="updated"></p></div></div>
+  <div class="grid">
+    <div id="comparison" class="span"><div class="market-layout">
+      <div id="comparison-chart-panel"><h2>价差</h2><p class="muted" id="comparison-chart-note"></p><div id="comparison-candles" aria-live="off"></div><p id="comparison-chart-hover" class="muted"></p><p id="comparison-chart-status" class="muted"></p></div>
+      <aside class="market-quotes" aria-label="两平台买卖价"><div class="scroll"><table class="quote-table"><caption>两平台买卖价</caption><thead><tr><th>平台 / 标的</th><th>可买入价</th><th>可卖出价</th><th>报价更新</th></tr></thead><tbody id="comparison-quotes"></tbody></table></div></aside>
+    </div></div>
+    <section class="card span"><div id="status-metrics"><div class="metric"><small>持仓/平仓组数</small><strong id="groups">—</strong></div><div class="metric"><small>净收益</small><strong id="pnl">—</strong></div></div></section>
+    <section class="card span"><h2>两平台真实账户</h2><div class="scroll"><table><thead><tr><th>平台</th><th>权益</th><th>可用资金</th><th>持仓数量</th><th>保证金模式</th><th>挂单</th></tr></thead><tbody id="accounts"><tr><td colspan="6" class="empty">读取中</td></tr></tbody></table></div></section>
+    <section class="card span"><h2>持有的配对仓位</h2><div class="scroll"><table><thead><tr><th>开仓时间</th><th>方向</th><th>每腿数量</th><th>开仓价差</th><th title="分摊给剩余持仓的已结算资金费：收入为正，支出为负">资金费净收支</th><th title="剩余持仓按当前盘口平仓，扣除开平仓成本并计入已结算资金费的估算">预计净利润</th></tr></thead><tbody id="lots"><tr><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
+    <section class="card span"><h2>最近成交</h2><div class="scroll"><table><thead><tr><th>时间</th><th>平台</th><th>买 / 卖</th><th>数量</th><th>成交价</th><th>手续费</th></tr></thead><tbody id="fills"><tr><td colspan="6" class="empty">暂无成交</td></tr></tbody></table></div></section>
+  </div>
+</main>
+<script src="/assets/openai-market-visuals.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const n=value=>Number(value);
+const money=value=>Number.isFinite(n(value))?n(value).toFixed(2):'—';
+const qty=value=>Number.isFinite(n(value))?(n(value)/10000).toFixed(4):'—';
+const time=value=>value?new Date(value).toLocaleString('zh-CN',{hour12:false}):'—';
+const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function profitCell(value){
+  const raw=value==null?NaN:Number(value),rounded=Number.isFinite(raw)?Number(raw.toFixed(2)):NaN;
+  if(!Number.isFinite(rounded))return '<td>—</td>';
+  const color=rounded>0?'good':rounded<0?'badtext':'';
+  return `<td class="${color}" title="${raw.toFixed(6)} U">${rounded.toFixed(2)} U</td>`;
+}
+function best(book,side){const row=book?.[side]?.[0];return row?Number(row.price):NaN}
+function marketPayload(view){
+  const books=(view.books||[]).map(b=>({bid:b.bids?.[0]?{price:b.bids[0].price}:null,ask:b.asks?.[0]?{price:b.asks[0].price}:null,connected:b.connected,received_ms:b.received_ms}));
+  return {available:true,status:{books,running:true,started_ms:view.snapshot.created_ms,observed_ms:Date.now()},rules:{book_max_age_ms:view.snapshot.config.book_max_age_ms},chart_points:view.chart_points||[]};
+}
+function render(payload){
+  if(!payload.ok||!payload.view){throw new Error(payload.ok?'策略尚未启动':payload.error||'连接失败')}
+  if(!payload.live_build||payload.process_dry_run||payload.view.snapshot?.config?.mode!=='live'){throw new Error('连接到的不是实盘策略')}
+  const v=payload.view,s=v.snapshot,a=v.accounts||[];
+  $('mode-tag').textContent='真实账户 · 只读';$('mode-tag').className='tag';$('updated').textContent=`更新于 ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;
+  $('status-line').textContent=`5 秒双次确认 · 逐组止盈 · 两边逐仓 3 倍`;
+  $('groups').textContent=`${(s.lots||[]).length} / ${s.closed_groups||0}`;
+  const pnl=v.net_pnl==null?NaN:Number(money(v.net_pnl));
+  $('pnl').textContent=Number.isFinite(pnl)?`${money(pnl)} U`:'—';
+  $('pnl').className=pnl>0?'good':pnl<0?'badtext':'';
+  $('pnl').title='累计已实现盈亏＋剩余仓位平仓估算－交易手续费＋已结算资金费净收支；包含滑点预留，未结算资金费不计入';
+  const market=marketPayload(v),visuals=window.OpenaiMarketVisuals;
+  visuals.renderCharts(market,$);
+  const direction=visuals.displayDirection(market);
+  const mean=v.directional_means?.[direction==='shortL'?1:0];
+  $('comparison-chart-note').textContent=`MA5m ${mean==null?'—':money(mean)+' U'}`;
+  visuals.renderQuoteCards(visuals.quoteRows(market,Date.now(),true),direction,$);
+  $('accounts').innerHTML=a.length?a.map(x=>`<tr><td class="account-name">${x.venue==='lighter'?'Lighter RH':'Entropy'}</td><td>${money(x.equity)} U</td><td>${money(x.free_margin)} U</td><td>${qty(x.position_units)}</td><td>${x.isolated?'逐仓':'非逐仓'} ${escapeHtml(x.leverage)}×</td><td>${escapeHtml(x.open_orders)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">账户数据暂不可用</td></tr>';
+  const lotProfits=new Map((v.profit_accounting?.lots||[]).map(x=>[x.lot_id,x]));
+  $('lots').innerHTML=(s.lots||[]).length?s.lots.map(x=>{const p=lotProfits.get(x.id);return `<tr><td>${time(x.opened_ms)}</td><td>${s.direction==='lighter_short'?'空 Lighter / 多 Entropy':'空 Entropy / 多 Lighter'}</td><td>${qty(x.units)}</td><td>${money(x.entry_spread)} U</td>${profitCell(p?.remaining_funding)}${profitCell(p?.estimated_exit_net)}</tr>`}).join(''):'<tr><td colspan="6" class="empty">暂无持仓</td></tr>';
+  const fills=Object.values(s.fills||{}).sort((x,y)=>n(y.time_ms)-n(x.time_ms)).slice(0,20);
+  $('fills').innerHTML=fills.length?fills.map(x=>`<tr><td>${time(x.time_ms)}</td><td>${x.venue==='lighter'?'Lighter RH':'Entropy'}</td><td>${x.side==='buy'?'买入':'卖出'}</td><td>${qty(x.units)}</td><td>${money(x.price)}</td><td>${money(x.fee)} U</td></tr>`).join(''):'<tr><td colspan="6" class="empty">暂无成交</td></tr>';
+}
+async function refresh(){try{const r=await fetch('/api/openai-inventory',{cache:'no-store'});const response=await r.json();render(response.ok?{ok:true,...response.data}:{ok:false,error:response.error})}catch{$('groups').textContent='—';$('pnl').textContent='—';$('pnl').className='';$('mode-tag').textContent='—';$('mode-tag').className='tag'}}
+refresh();setInterval(refresh,2000);
+</script>
+</html>

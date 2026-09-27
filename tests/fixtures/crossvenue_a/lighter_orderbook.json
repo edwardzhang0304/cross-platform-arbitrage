@@ -1,0 +1,48 @@
+[
+  {
+    "type": "subscribed/order_book",
+    "timestamp": 1724000000000,
+    "order_book": {
+      "asks": [
+        { "price": "101.00", "size": "2.0" },
+        { "price": "102.00", "size": "3.0" }
+      ],
+      "bids": [
+        { "price": "99.00", "size": "2.0" },
+        { "price": "98.00", "size": "3.0" }
+      ],
+      "nonce": 100,
+      "begin_nonce": 90,
+      "last_updated_at": 1724000000000000
+    }
+  },
+  {
+    "type": "update/order_book",
+    "timestamp": 1724000000050,
+    "order_book": {
+      "asks": [
+        { "price": "101.0", "size": "0" },
+        { "price": "100.50", "size": "1.25" }
+      ],
+      "bids": [
+        { "price": "99.00", "size": "4.0" }
+      ],
+      "nonce": 103,
+      "begin_nonce": 100,
+      "last_updated_at": 1724000000050000
+    }
+  },
+  {
+    "type": "update/order_book",
+    "timestamp": 1724000000100,
+    "order_book": {
+      "asks": [],
+      "bids": [
+        { "price": "99.50", "size": "0.75" }
+      ],
+      "nonce": 104,
+      "begin_nonce": 103,
+      "last_updated_at": 1724000000100000
+    }
+  }
+]

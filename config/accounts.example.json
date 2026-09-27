@@ -1,0 +1,4 @@
+{
+  "accounts": [{"account_id":"my_entropy","address":"请填写 Entropy 主账户公开地址","secret_id":"entropy_trading","enabled":true,"worker_enabled":true}],
+  "secrets": {"vault_path":"keys/trading.vault","allow_env_fallback":false}
+}

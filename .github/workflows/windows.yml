@@ -1,0 +1,55 @@
+name: Windows portable
+on:
+  push:
+    branches: [main, windows-portable]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set exact Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup default 1.98.1
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+      - name: Offline strategy and signer regressions
+        run: |
+          cargo test --locked --workspace --lib --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node --test tests/openai_market_visuals.test.cjs tests/openai_profit_display.test.cjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build standalone EXE
+        run: |
+          cargo build --locked --release --target x86_64-pc-windows-msvc --bin openai-paired-trader
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Package public files only
+        run: ./scripts/package-windows.ps1 -Exe target/x86_64-pc-windows-msvc/release/openai-paired-trader.exe
+      - name: Smoke test packaged EXE without credentials
+        run: ./scripts/smoke-windows.ps1 -Exe dist/OPENAI-Trader-Windows-x64/OPENAI-Trader.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-portable
+          path: |
+            dist/OPENAI-Trader-Windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

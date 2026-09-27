@@ -1,0 +1,534 @@
+[
+  {
+    "source": "src/strategies/openai_inventory/strategy.rs",
+    "destination": "src/strategies/openai_inventory/strategy.rs",
+    "source_sha256": "ba86ef45e615dd654a9bfe8536a5a6eefdcf4c688fe643849fd6fdec1146cd6a",
+    "packaged_sha256": "ba86ef45e615dd654a9bfe8536a5a6eefdcf4c688fe643849fd6fdec1146cd6a",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/feed.rs",
+    "destination": "src/strategies/openai_inventory/feed.rs",
+    "source_sha256": "4e6eb78bdab5f2b462e6e33eabd9f1e2e79f602551fc5dd8dcb8abbb58a10d1e",
+    "packaged_sha256": "4e6eb78bdab5f2b462e6e33eabd9f1e2e79f602551fc5dd8dcb8abbb58a10d1e",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/independent_entry_tests.rs",
+    "destination": "src/strategies/openai_inventory/independent_entry_tests.rs",
+    "source_sha256": "0e1fcd1555f23590dfeeab87cb5289cd2e4a79add033bbd6069446284feb23ec",
+    "packaged_sha256": "0e1fcd1555f23590dfeeab87cb5289cd2e4a79add033bbd6069446284feb23ec",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/repair_tests.rs",
+    "destination": "src/strategies/openai_inventory/repair_tests.rs",
+    "source_sha256": "20fe49724a0c3df8cc3a4c2947de90c67ba12ac07a0652da701d553b9b554589",
+    "packaged_sha256": "20fe49724a0c3df8cc3a4c2947de90c67ba12ac07a0652da701d553b9b554589",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/config.rs",
+    "destination": "src/strategies/openai_inventory/config.rs",
+    "source_sha256": "ee44472f10e976fda885175dc2405258ed4e48d284c2ec2e1f0e868b4a73d675",
+    "packaged_sha256": "c44081a7930aac70cf477922bb6dca28da2eaeeb6f0f44b3552d469c121182cb",
+    "unchanged": false
+  },
+  {
+    "source": "src/strategies/openai_inventory/accounting.rs",
+    "destination": "src/strategies/openai_inventory/accounting.rs",
+    "source_sha256": "b90daaca763e9409e20477627ae7d832d1e2c4618b596415dc617e87c7f199ad",
+    "packaged_sha256": "b90daaca763e9409e20477627ae7d832d1e2c4618b596415dc617e87c7f199ad",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/execution.rs",
+    "destination": "src/strategies/openai_inventory/execution.rs",
+    "source_sha256": "ac2d001fcf2c98d624f1a37ac221c33c6f5f08dd3403382b375f16dc781b8cd8",
+    "packaged_sha256": "ac2d001fcf2c98d624f1a37ac221c33c6f5f08dd3403382b375f16dc781b8cd8",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/charts.rs",
+    "destination": "src/strategies/openai_inventory/charts.rs",
+    "source_sha256": "33071eab7f66d13d8c4e87acf2ce6f86958083c19f6242cc2e1aefde5b248dd5",
+    "packaged_sha256": "33071eab7f66d13d8c4e87acf2ce6f86958083c19f6242cc2e1aefde5b248dd5",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/venue.rs",
+    "destination": "src/strategies/openai_inventory/venue.rs",
+    "source_sha256": "2489c8315677c7c723a26ddb78c5ba1b1fbc9dc47dec01d40b1b91dc8f70999d",
+    "packaged_sha256": "2489c8315677c7c723a26ddb78c5ba1b1fbc9dc47dec01d40b1b91dc8f70999d",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/store.rs",
+    "destination": "src/strategies/openai_inventory/store.rs",
+    "source_sha256": "7efed4491a7925c6288208a71f15c4496f7de0986a4ee03e32b2452bd9f8df01",
+    "packaged_sha256": "7efed4491a7925c6288208a71f15c4496f7de0986a4ee03e32b2452bd9f8df01",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/liquidation_tests.rs",
+    "destination": "src/strategies/openai_inventory/liquidation_tests.rs",
+    "source_sha256": "419eb8a4078dac8f160d49976085376c771877e089bf196d44e8c3f428c129ac",
+    "packaged_sha256": "419eb8a4078dac8f160d49976085376c771877e089bf196d44e8c3f428c129ac",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/test_support.rs",
+    "destination": "src/strategies/openai_inventory/test_support.rs",
+    "source_sha256": "23d81e71524838db5056e1d8d334049956493df991371305756cf5f26de3ee64",
+    "packaged_sha256": "23d81e71524838db5056e1d8d334049956493df991371305756cf5f26de3ee64",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/entry_mean_tests.rs",
+    "destination": "src/strategies/openai_inventory/entry_mean_tests.rs",
+    "source_sha256": "23c4c798220356cf9c812c922680354f86f047dd1d3756d9d56276616f3369a5",
+    "packaged_sha256": "23c4c798220356cf9c812c922680354f86f047dd1d3756d9d56276616f3369a5",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/service.rs",
+    "destination": "src/strategies/openai_inventory/service.rs",
+    "source_sha256": "f67a6d722e809be377a05a6b7b89c6c1a3604d6075eb6a4b2807363bc2aac4ae",
+    "packaged_sha256": "f67a6d722e809be377a05a6b7b89c6c1a3604d6075eb6a4b2807363bc2aac4ae",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/group_exit_tests.rs",
+    "destination": "src/strategies/openai_inventory/group_exit_tests.rs",
+    "source_sha256": "1821057b2dd9b90fd99dfeb16b0850862ca394aa2585b0f5b8255ffe42d7e310",
+    "packaged_sha256": "1821057b2dd9b90fd99dfeb16b0850862ca394aa2585b0f5b8255ffe42d7e310",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/decision_frequency_tests.rs",
+    "destination": "src/strategies/openai_inventory/decision_frequency_tests.rs",
+    "source_sha256": "e3746ded70597e71ac42264404053e591be9ef40f41f17539eba18fb888f2867",
+    "packaged_sha256": "e3746ded70597e71ac42264404053e591be9ef40f41f17539eba18fb888f2867",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/live_limits_tests.rs",
+    "destination": "src/strategies/openai_inventory/live_limits_tests.rs",
+    "source_sha256": "5aaac7cd2ec8f13eba954598f364c45379fa704d55a21c7707db11c1123f866d",
+    "packaged_sha256": "73d7b7637768eea3dcf186d04d6e499cde0c9e81df2d77356c78505748d3e8d7",
+    "unchanged": false
+  },
+  {
+    "source": "src/strategies/openai_inventory/mod.rs",
+    "destination": "src/strategies/openai_inventory/mod.rs",
+    "source_sha256": "7832c5de67055a333eb94612462869dbba6265dafedf1288a0ce2b834f4b0518",
+    "packaged_sha256": "7832c5de67055a333eb94612462869dbba6265dafedf1288a0ce2b834f4b0518",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/accounting_tests.rs",
+    "destination": "src/strategies/openai_inventory/accounting_tests.rs",
+    "source_sha256": "088a618b0255d2b926947e10423d5cdd655b7b4fea26038638a052fa96dd5847",
+    "packaged_sha256": "088a618b0255d2b926947e10423d5cdd655b7b4fea26038638a052fa96dd5847",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/live_orphan.rs",
+    "destination": "src/strategies/openai_inventory/live_orphan.rs",
+    "source_sha256": "c0ca3c9a3ed211fe835fd7bdf27af31fb9b14c0a92aab4747cf7d934d9ac0e7d",
+    "packaged_sha256": "c0ca3c9a3ed211fe835fd7bdf27af31fb9b14c0a92aab4747cf7d934d9ac0e7d",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/liquidation.rs",
+    "destination": "src/strategies/openai_inventory/liquidation.rs",
+    "source_sha256": "056505a792ca7a95b69c0545742dde7e7075110629bfce9d928e6e314179e3d0",
+    "packaged_sha256": "056505a792ca7a95b69c0545742dde7e7075110629bfce9d928e6e314179e3d0",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/tests.rs",
+    "destination": "src/strategies/openai_inventory/tests.rs",
+    "source_sha256": "bf233c2010fcf3abc7f02374b6859ea2ce32afc023c2303b6e52630544bfe1ab",
+    "packaged_sha256": "bf233c2010fcf3abc7f02374b6859ea2ce32afc023c2303b6e52630544bfe1ab",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/account_binding.rs",
+    "destination": "src/strategies/openai_inventory/account_binding.rs",
+    "source_sha256": "fb2e5541f6bf21821e1e1cc341c9648a3243bd201f6b623f55dfbfce75e7e15f",
+    "packaged_sha256": "fb2e5541f6bf21821e1e1cc341c9648a3243bd201f6b623f55dfbfce75e7e15f",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/batch_exit_tests.rs",
+    "destination": "src/strategies/openai_inventory/batch_exit_tests.rs",
+    "source_sha256": "e8d6fee956f333536cc2b1e0ad1870f7a057c187c57f908e6bf8a45406d19dc1",
+    "packaged_sha256": "e8d6fee956f333536cc2b1e0ad1870f7a057c187c57f908e6bf8a45406d19dc1",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/live.rs",
+    "destination": "src/strategies/openai_inventory/live.rs",
+    "source_sha256": "12124282962ff2cbaa5b06e83de62f1dfbfa3348606e98273307c28fc39d2fba",
+    "packaged_sha256": "12124282962ff2cbaa5b06e83de62f1dfbfa3348606e98273307c28fc39d2fba",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/entry_confirmation_tests.rs",
+    "destination": "src/strategies/openai_inventory/entry_confirmation_tests.rs",
+    "source_sha256": "21af030e83111970d1635795f0192a90a1193f514c16d9cd7591731180c6f932",
+    "packaged_sha256": "21af030e83111970d1635795f0192a90a1193f514c16d9cd7591731180c6f932",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/bidirectional_tests.rs",
+    "destination": "src/strategies/openai_inventory/bidirectional_tests.rs",
+    "source_sha256": "ef8d35ae82b961b02668e4eca6720f1173496bf13d4ee9a4fa0093cd30d1b5fa",
+    "packaged_sha256": "ef8d35ae82b961b02668e4eca6720f1173496bf13d4ee9a4fa0093cd30d1b5fa",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/model.rs",
+    "destination": "src/strategies/openai_inventory/model.rs",
+    "source_sha256": "2fffce61ddd8c36b255305f5de777e244374da6d84df154d24510c8eac41d3e7",
+    "packaged_sha256": "2fffce61ddd8c36b255305f5de777e244374da6d84df154d24510c8eac41d3e7",
+    "unchanged": true
+  },
+  {
+    "source": "src/strategies/openai_inventory/entry_mean.rs",
+    "destination": "src/strategies/openai_inventory/entry_mean.rs",
+    "source_sha256": "6f60fbce2d68bbcf59b1aeefcff806ed86f0794c203fdc448f204330722e8f4d",
+    "packaged_sha256": "6f60fbce2d68bbcf59b1aeefcff806ed86f0794c203fdc448f204330722e8f4d",
+    "unchanged": true
+  },
+  {
+    "source": "src/domain.rs",
+    "destination": "src/domain.rs",
+    "source_sha256": "7e610593512e78fd5fdb65a18b6d04351782243c9d91e83767e341422eee9d95",
+    "packaged_sha256": "7e610593512e78fd5fdb65a18b6d04351782243c9d91e83767e341422eee9d95",
+    "unchanged": true
+  },
+  {
+    "source": "src/hyperliquid.rs",
+    "destination": "src/hyperliquid.rs",
+    "source_sha256": "3a929c74d945b57e924f68f2da910300cb9a7f131f663140d257c16e08f44153",
+    "packaged_sha256": "3a929c74d945b57e924f68f2da910300cb9a7f131f663140d257c16e08f44153",
+    "unchanged": true
+  },
+  {
+    "source": "src/lighter.rs",
+    "destination": "src/lighter.rs",
+    "source_sha256": "ca4fbb8f0660a942dc7a380ef778090fdbf83e856b6f3e89beb33599590a2378",
+    "packaged_sha256": "ca4fbb8f0660a942dc7a380ef778090fdbf83e856b6f3e89beb33599590a2378",
+    "unchanged": true
+  },
+  {
+    "source": "src/lighter_runtime.rs",
+    "destination": "src/lighter_runtime.rs",
+    "source_sha256": "72a948614e303d51d75a973257d5b6b7e4e393a32341fc7a991bdb547694a87d",
+    "packaged_sha256": "72a948614e303d51d75a973257d5b6b7e4e393a32341fc7a991bdb547694a87d",
+    "unchanged": true
+  },
+  {
+    "source": "src/lighter_reconcile.rs",
+    "destination": "src/lighter_reconcile.rs",
+    "source_sha256": "4bde3383f40a43e6d072d3aa75a546f7108336b0adc51f489e3c922058f85340",
+    "packaged_sha256": "4bde3383f40a43e6d072d3aa75a546f7108336b0adc51f489e3c922058f85340",
+    "unchanged": true
+  },
+  {
+    "source": "src/ws_post.rs",
+    "destination": "src/ws_post.rs",
+    "source_sha256": "dc898da22ed01f5240f7fa951e75fe23ef920d4fb899b08cd00e064d11d9c8f0",
+    "packaged_sha256": "dc898da22ed01f5240f7fa951e75fe23ef920d4fb899b08cd00e064d11d9c8f0",
+    "unchanged": true
+  },
+  {
+    "source": "src/secrets.rs",
+    "destination": "src/secrets.rs",
+    "source_sha256": "74ff6e9e248bf0a1416e1b377cd3f23c3013308b0381b20e8cdea7514a0f818e",
+    "packaged_sha256": "06ef86a1efef8347a9bcb503b6656262adbf67a65e2c3fbbb00ec4ae15727743",
+    "unchanged": false
+  },
+  {
+    "source": "src/crossvenue_a/market.rs",
+    "destination": "src/crossvenue_a/market.rs",
+    "source_sha256": "7d62ba47854cb8ef975d034bc4d4043c5a5d7cfb3eded23e9090a4202fd0934b",
+    "packaged_sha256": "7d62ba47854cb8ef975d034bc4d4043c5a5d7cfb3eded23e9090a4202fd0934b",
+    "unchanged": true
+  },
+  {
+    "source": "src/crossvenue_a/adapters.rs",
+    "destination": "src/crossvenue_a/adapters.rs",
+    "source_sha256": "3363db7519a13a09e0f26f639f224eca6b7b58bef12a08a1bd1346a945b2db2f",
+    "packaged_sha256": "3363db7519a13a09e0f26f639f224eca6b7b58bef12a08a1bd1346a945b2db2f",
+    "unchanged": true
+  },
+  {
+    "source": "tests/fixtures/crossvenue_a/lighter_orderbook.json",
+    "destination": "tests/fixtures/crossvenue_a/lighter_orderbook.json",
+    "source_sha256": "72bc0ae2bf1cb3355cb600c3f8f30f44e6502830675d149901f9b73a23415599",
+    "packaged_sha256": "72bc0ae2bf1cb3355cb600c3f8f30f44e6502830675d149901f9b73a23415599",
+    "unchanged": true
+  },
+  {
+    "source": "tests/fixtures/crossvenue_a/trade_market.json",
+    "destination": "tests/fixtures/crossvenue_a/trade_market.json",
+    "source_sha256": "f4ef5fdb9b2142fed1c40c292aa481dba803fc222ccb56868098e14cbb2b2ab9",
+    "packaged_sha256": "f4ef5fdb9b2142fed1c40c292aa481dba803fc222ccb56868098e14cbb2b2ab9",
+    "unchanged": true
+  },
+  {
+    "source": "frontend/openai-live-monitor.html",
+    "destination": "frontend/openai-live-monitor.html",
+    "source_sha256": "d706db495c5f86be59c1655624fbaebc68e4061c25143aaa5efa5e9b7d61e16b",
+    "packaged_sha256": "d706db495c5f86be59c1655624fbaebc68e4061c25143aaa5efa5e9b7d61e16b",
+    "unchanged": true
+  },
+  {
+    "source": "frontend/openai-market-visuals.js",
+    "destination": "frontend/openai-market-visuals.js",
+    "source_sha256": "4431af53b8d5c200f4c411668e34702508aab84c3e37d587ed4dcffb8279aad6",
+    "packaged_sha256": "4431af53b8d5c200f4c411668e34702508aab84c3e37d587ed4dcffb8279aad6",
+    "unchanged": true
+  },
+  {
+    "source": "tests/openai_market_visuals.test.cjs",
+    "destination": "tests/openai_market_visuals.test.cjs",
+    "source_sha256": "cb423595dd25adde431adbcc5b210628983839401a931bf134959124c1062bf8",
+    "packaged_sha256": "cb423595dd25adde431adbcc5b210628983839401a931bf134959124c1062bf8",
+    "unchanged": true
+  },
+  {
+    "source": "tests/openai_profit_display.test.cjs",
+    "destination": "tests/openai_profit_display.test.cjs",
+    "source_sha256": "fd3320b78efefadf0aa337e83233a5ea2db22ef24ca64576dbc3ac09b58287e5",
+    "packaged_sha256": "fd3320b78efefadf0aa337e83233a5ea2db22ef24ca64576dbc3ac09b58287e5",
+    "unchanged": true
+  },
+  {
+    "source": "Cargo.lock",
+    "destination": "Cargo.lock",
+    "source_sha256": "8233e4ad7da8258d5feb7e263849097df33d81cad87566dd73eb9e716637c69d",
+    "packaged_sha256": "812dadae4921672b9bc9a994b02cc0c10050d4b95876ca1ab9154fb3c127090b",
+    "unchanged": false
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/Cargo.toml",
+    "destination": "vendor/hyperliquid_rust_sdk/Cargo.toml",
+    "source_sha256": "b89224248c40299b098c91a7bea77cd92b6299ee1123d4b18a3273f268e9ac33",
+    "packaged_sha256": "5e6ec350d98ee84c43c6b75782637ced00d3973dff1da8c5fe8a13c26ed1339e",
+    "unchanged": false
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/README.md",
+    "destination": "vendor/hyperliquid_rust_sdk/README.md",
+    "source_sha256": "5df5d37a7634a4cc740d8d1135167ae2074b8b194fa68e963bc9c5d5f84cb14f",
+    "packaged_sha256": "5df5d37a7634a4cc740d8d1135167ae2074b8b194fa68e963bc9c5d5f84cb14f",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/proxy_digest.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/proxy_digest.rs",
+    "source_sha256": "35455867a6a7ecec331715bab37ca4399ec2a8f819052af7e217ba6146490912",
+    "packaged_sha256": "35455867a6a7ecec331715bab37ca4399ec2a8f819052af7e217ba6146490912",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/consts.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/consts.rs",
+    "source_sha256": "e95c602cd1f418218a9e46a9b130251a955376b899b15d91631de904a62d8769",
+    "packaged_sha256": "e95c602cd1f418218a9e46a9b130251a955376b899b15d91631de904a62d8769",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/lib.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/lib.rs",
+    "source_sha256": "26f3ad703504fda2662599440f3a25557bbe149fdf8bb0de3b0a0c6e5177da0f",
+    "packaged_sha256": "26f3ad703504fda2662599440f3a25557bbe149fdf8bb0de3b0a0c6e5177da0f",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/helpers.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/helpers.rs",
+    "source_sha256": "1becefb1c5c52fc2fcd918600f7334a8b52a9f154dfd028ede004c4ea9b5a2a6",
+    "packaged_sha256": "1becefb1c5c52fc2fcd918600f7334a8b52a9f154dfd028ede004c4ea9b5a2a6",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/meta.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/meta.rs",
+    "source_sha256": "90f19b8afed2ab4883115133af473510ad3910a4e10354402fc75b334d2d8ac7",
+    "packaged_sha256": "90f19b8afed2ab4883115133af473510ad3910a4e10354402fc75b334d2d8ac7",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/req.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/req.rs",
+    "source_sha256": "6d6dd22dc13219ff51174ea65e08c50a9747a941cf5ec5c897faea6df255b6c5",
+    "packaged_sha256": "6d6dd22dc13219ff51174ea65e08c50a9747a941cf5ec5c897faea6df255b6c5",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/errors.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/errors.rs",
+    "source_sha256": "9754096737cff1459df64d3327ec5f6bc0515b5272436b38b97f350e2c76144b",
+    "packaged_sha256": "9754096737cff1459df64d3327ec5f6bc0515b5272436b38b97f350e2c76144b",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/prelude.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/prelude.rs",
+    "source_sha256": "9b1c484114d56c5be38ab2dfa89dc10359753d22b058315373534c77db611e74",
+    "packaged_sha256": "9b1c484114d56c5be38ab2dfa89dc10359753d22b058315373534c77db611e74",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/market_maker.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/market_maker.rs",
+    "source_sha256": "1b9603e89376720b4b47c7b7b50ea03852b61128cd2a1943c0cf1265c5f1350f",
+    "packaged_sha256": "1b9603e89376720b4b47c7b7b50ea03852b61128cd2a1943c0cf1265c5f1350f",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/actions.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/actions.rs",
+    "source_sha256": "3777270818478808b7fc7845ad733da84bb48244e8718329b7e6c630eed8308e",
+    "packaged_sha256": "3777270818478808b7fc7845ad733da84bb48244e8718329b7e6c630eed8308e",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/order.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/order.rs",
+    "source_sha256": "dc3451d7320b00ac55341a905f1637264bc6e29a1079d308b3ff9dcb7a5f6b76",
+    "packaged_sha256": "dc3451d7320b00ac55341a905f1637264bc6e29a1079d308b3ff9dcb7a5f6b76",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/cancel.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/cancel.rs",
+    "source_sha256": "67b4f8ae217de3525133cff47e5320c9adba905f0512eecc9831a6f7c81b4852",
+    "packaged_sha256": "67b4f8ae217de3525133cff47e5320c9adba905f0512eecc9831a6f7c81b4852",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/mod.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/mod.rs",
+    "source_sha256": "ba60dd040773bb445e0e8c9105ba05c448a24b8fda6c4aa31c8eb09d311e2ff2",
+    "packaged_sha256": "ba60dd040773bb445e0e8c9105ba05c448a24b8fda6c4aa31c8eb09d311e2ff2",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/exchange_client.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/exchange_client.rs",
+    "source_sha256": "0274cbf3c1eecb418b2f3d60232c4ff07137ba7c1508ccafb38ba8bc8b03a804",
+    "packaged_sha256": "0274cbf3c1eecb418b2f3d60232c4ff07137ba7c1508ccafb38ba8bc8b03a804",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/exchange_responses.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/exchange_responses.rs",
+    "source_sha256": "694ea59a4d43db5de1c22ae230d63311de9edd94de3fe0a9e9dcf52fc703c3e2",
+    "packaged_sha256": "694ea59a4d43db5de1c22ae230d63311de9edd94de3fe0a9e9dcf52fc703c3e2",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/modify.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/modify.rs",
+    "source_sha256": "9aff75d7e91cfb7ccdf41cfcd574841ed81cfc9e1c5b385a080e9c1ea744765d",
+    "packaged_sha256": "9aff75d7e91cfb7ccdf41cfcd574841ed81cfc9e1c5b385a080e9c1ea744765d",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/exchange/builder.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/exchange/builder.rs",
+    "source_sha256": "4ea060e51eb7b6089c147fb344155229ccac92ab21a163f8648a828a7479dc6b",
+    "packaged_sha256": "4ea060e51eb7b6089c147fb344155229ccac92ab21a163f8648a828a7479dc6b",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/signature/mod.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/signature/mod.rs",
+    "source_sha256": "0440c6c6eeaa4f8eda4474de2c0f32edfb5077b20d48b4d29a454fe5d39d4888",
+    "packaged_sha256": "0440c6c6eeaa4f8eda4474de2c0f32edfb5077b20d48b4d29a454fe5d39d4888",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/signature/create_signature.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/signature/create_signature.rs",
+    "source_sha256": "14dd3a189d2bc9699b200e6c95351bb5dce412ab668778219286a8d6c8a87185",
+    "packaged_sha256": "14dd3a189d2bc9699b200e6c95351bb5dce412ab668778219286a8d6c8a87185",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/signature/agent.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/signature/agent.rs",
+    "source_sha256": "576948ad0bffd776c69f0b91508e64d4fec6233e720eea3038966fe0adf77586",
+    "packaged_sha256": "576948ad0bffd776c69f0b91508e64d4fec6233e720eea3038966fe0adf77586",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/info/sub_structs.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/info/sub_structs.rs",
+    "source_sha256": "74dadc393e3b8f5815b6bf24ccfe0657ea8bda1d4b3c924f46c300631390b299",
+    "packaged_sha256": "74dadc393e3b8f5815b6bf24ccfe0657ea8bda1d4b3c924f46c300631390b299",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/info/info_client.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/info/info_client.rs",
+    "source_sha256": "d954c0a14dee7dfda345abe59fd736622974f4d626ff6d10545f40dd958b3a17",
+    "packaged_sha256": "d954c0a14dee7dfda345abe59fd736622974f4d626ff6d10545f40dd958b3a17",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/info/mod.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/info/mod.rs",
+    "source_sha256": "cc4befa12e61092f6ac9dbbacff11ee4db05a2f47be5e8793e76462c555e6261",
+    "packaged_sha256": "cc4befa12e61092f6ac9dbbacff11ee4db05a2f47be5e8793e76462c555e6261",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/info/response_structs.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/info/response_structs.rs",
+    "source_sha256": "d5324fcf295209a5d1b77a8cdfaef682299ed0d20a955b31182187430876be1d",
+    "packaged_sha256": "d5324fcf295209a5d1b77a8cdfaef682299ed0d20a955b31182187430876be1d",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/ws/ws_manager.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/ws/ws_manager.rs",
+    "source_sha256": "fe8d8fb705e062b4dffd3d1148a8f721db371d7fde0cd9416afc8e64918a1c23",
+    "packaged_sha256": "fe8d8fb705e062b4dffd3d1148a8f721db371d7fde0cd9416afc8e64918a1c23",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/ws/fast_book_tests.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/ws/fast_book_tests.rs",
+    "source_sha256": "f8c5ec76719beffc94b325e35929954045e34ec85cdc7c50b63d7853fd2f9895",
+    "packaged_sha256": "f8c5ec76719beffc94b325e35929954045e34ec85cdc7c50b63d7853fd2f9895",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/ws/sub_structs.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/ws/sub_structs.rs",
+    "source_sha256": "a8332d01ae6d6102da4f96bb3639dd97347a94519816bbe942f3da47260fb7a8",
+    "packaged_sha256": "a8332d01ae6d6102da4f96bb3639dd97347a94519816bbe942f3da47260fb7a8",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/ws/message_types.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/ws/message_types.rs",
+    "source_sha256": "d89e3963aa32c8b6e908d0b414c59b5df0ef9055f0da9737515463bf9747c759",
+    "packaged_sha256": "d89e3963aa32c8b6e908d0b414c59b5df0ef9055f0da9737515463bf9747c759",
+    "unchanged": true
+  },
+  {
+    "source": "vendor/hyperliquid_rust_sdk/src/ws/mod.rs",
+    "destination": "vendor/hyperliquid_rust_sdk/src/ws/mod.rs",
+    "source_sha256": "60116ad16638f676bdb5106f972285ab125453d06a8fd3adeecf7ba63508bc91",
+    "packaged_sha256": "60116ad16638f676bdb5106f972285ab125453d06a8fd3adeecf7ba63508bc91",
+    "unchanged": true
+  }
+]

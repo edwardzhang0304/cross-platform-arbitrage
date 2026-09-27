@@ -1,0 +1,3 @@
+Signing-only extraction of nautilus-lighter 0.60.0, LGPL-3.0-or-later. Source: https://github.com/nautechsystems/nautilus_trader. Cryptographic functions and reference test vectors retained. Removed unused nonce manager and credential convenience wrapper; retained transaction discriminants and auth TTL. See licenses/ for reference attributions.
+
+The unused Credential convenience wrapper and its wrapper-only unit test are omitted; auth token primitive, property, and oracle vector tests are retained. LGPL/GPL texts and reference licenses accompany the binary. Full source and build instructions are available in the same repository at the release commit.
