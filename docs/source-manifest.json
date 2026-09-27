@@ -304,14 +304,14 @@
     "source": "tests/openai_profit_display.test.cjs",
     "destination": "tests/openai_profit_display.test.cjs",
     "source_sha256": "fd3320b78efefadf0aa337e83233a5ea2db22ef24ca64576dbc3ac09b58287e5",
-    "packaged_sha256": "fd3320b78efefadf0aa337e83233a5ea2db22ef24ca64576dbc3ac09b58287e5",
-    "unchanged": true
+    "packaged_sha256": "323921007a04268f9491f688b0d209d67bd22c01efdef7f6d4d0b85653e3487c",
+    "unchanged": false
   },
   {
     "source": "Cargo.lock",
     "destination": "Cargo.lock",
     "source_sha256": "8233e4ad7da8258d5feb7e263849097df33d81cad87566dd73eb9e716637c69d",
-    "packaged_sha256": "a792729966505bda6d40009e4044dd6fc4bd15f3c4ec324303550a35dd876c7f",
+    "packaged_sha256": "374c30f892884191769be7b0ffd022a7bcd4266196a66c3c6ca02675becc46ad",
     "unchanged": false
   },
   {
