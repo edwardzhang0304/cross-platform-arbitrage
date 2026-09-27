@@ -1,0 +1,12 @@
+/target/
+/dist/
+/data/
+/runtime/
+/.codex-longrun/
+*.vault
+*.sqlite*
+*.db*
+*.log
+.env*
+*.local.*
+.DS_Store
