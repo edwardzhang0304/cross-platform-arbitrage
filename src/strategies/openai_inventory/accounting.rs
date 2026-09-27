@@ -45,6 +45,9 @@ pub struct LotNetProfit {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NetProfitAccounting {
+    /// Completed paired-close portions, using actual fills/fees and their settled funding.
+    /// None when the ledger cannot establish the full attribution; excludes open exposure.
+    pub closed_net_profit: Option<Decimal>,
     pub settled_funding: Decimal,
     pub funding_complete: bool,
     /// Failed operations/unassignable history; stays in total PnL, never charged to later lots.
@@ -57,6 +60,10 @@ struct Bucket {
     units: i64,
     total: Decimal,
     remaining: Decimal,
+    opening_units: i64,
+    closing_units: i64,
+    opening_cash: Decimal,
+    closing_cash: Decimal,
 }
 impl Bucket {
     fn fill(&mut self, signed: i64) {
@@ -150,14 +157,19 @@ fn attribute(s: &Snapshot) -> Attribution {
 fn apply_fill(f: &Fill, s: &Snapshot, ids: &BTreeSet<String>, result: &mut Attribution,
     other: &mut [Bucket; 2], used: &mut BTreeMap<(String, usize), i64>) {
     let i = f.venue.index();
+    let cash = -quantity(f.units) * f.price * Decimal::from(f.side.sign()) - f.fee;
     if let Some(id) = ids.iter().find(|id| owns(&f.order_id, id)) {
-        result.groups.get_mut(id).unwrap()[i].fill(f.units * f.side.sign());
+        let b = &mut result.groups.get_mut(id).unwrap()[i];
+        b.opening_units += f.units * f.side.sign();
+        b.opening_cash += cash;
+        b.fill(f.units * f.side.sign());
         return;
     }
     if let Some((op, allocations)) = s.closed_lot_allocations.iter().find(|(op, _)| owns(&f.order_id, op)) {
         let offset = used.entry((op.clone(), i)).or_default();
         let mut skip = *offset;
         let mut left = f.units;
+        let mut cash_left = cash;
         for a in allocations {
             let available = a.units - skip.min(a.units);
             skip = (skip - a.units).max(0);
@@ -167,6 +179,12 @@ fn apply_fill(f: &Fill, s: &Snapshot, ids: &BTreeSet<String>, result: &mut Attri
                 if b.units == 0 || b.units.signum() == f.side.sign() || take > b.units.abs() {
                     result.complete = false;
                 }
+                // The final allocation absorbs decimal division residue, preserving cash.
+                let part = if take == left { cash_left }
+                    else { cash * Decimal::from(take) / Decimal::from(f.units) };
+                b.closing_units += take * f.side.sign();
+                b.closing_cash += part;
+                cash_left -= part;
                 b.fill(take * f.side.sign());
                 left -= take;
             }
@@ -176,6 +194,40 @@ fn apply_fill(f: &Fill, s: &Snapshot, ids: &BTreeSet<String>, result: &mut Attri
     } else {
         other[i].fill(f.units * f.side.sign());
     }
+}
+
+fn closed_net_profit(s: &Snapshot, a: &Attribution) -> Option<Decimal> {
+    if !a.complete { return None; }
+    let mut closed: BTreeMap<&str, i64> = BTreeMap::new();
+    for allocation in s.closed_lot_allocations.values().flatten() {
+        if allocation.units <= 0 { return None; }
+        let total = closed.entry(&allocation.lot_id).or_default();
+        *total = total.checked_add(allocation.units)?;
+    }
+    // Old ledgers may count closed groups without retaining their allocation records.
+    let complete_groups = closed.keys().filter(|id| !s.lots.iter().any(|l| l.id == **id)).count();
+    if (complete_groups as u64) < s.closed_groups { return None; }
+    let mut net = Decimal::ZERO;
+    for (id, closed_units) in closed {
+        let remaining = s.lots.iter().find(|l| l.id == id).map_or(0, |l| l.units);
+        let original = remaining.checked_add(closed_units)?;
+        let buckets = a.groups.get(id)?;
+        if original <= 0 || buckets[0].opening_units != -buckets[1].opening_units {
+            return None;
+        }
+        let mut opening_cash = Decimal::ZERO;
+        for b in buckets {
+            if b.opening_units.abs() != original
+                || b.closing_units != -b.opening_units.signum() * closed_units {
+                return None;
+            }
+            opening_cash += b.opening_cash;
+            net += b.closing_cash + b.total - b.remaining;
+        }
+        // Allocate entry fees/repair costs by the actual quantity closed, not account average.
+        net += opening_cash * Decimal::from(closed_units) / Decimal::from(original);
+    }
+    Some(net)
 }
 
 #[derive(PartialEq)]
@@ -209,6 +261,7 @@ impl AccountingCache {
         }
         let a = &self.attribution;
         NetProfitAccounting {
+            closed_net_profit: closed_net_profit(s, a),
             settled_funding: s.positions.iter().map(|p| p.funding).sum(),
             funding_complete: a.complete,
             unallocated_funding: a.unallocated,

@@ -26,9 +26,25 @@ test('old/incomplete accounting shows unknown group profit, not zero or a guesse
   assert.equal((f.element('lots').innerHTML.match(/<td>—<\/td>/g)||[]).length,4);
   assert.equal(f.element('pnl').textContent,'-0.28 U');
   assert.match(f.element('pnl').title,/已结算资金费/);
+  assert.equal(f.element('closed-pnl').textContent,'—');
   f.payload.view.profit_accounting={lots:[{lot_id:'a',remaining_funding:null,estimated_exit_net:null}]};
   f.render();
   assert.equal((f.element('lots').innerHTML.match(/<td>—<\/td>/g)||[]).length,4);
+});
+
+test('closed net profit displays independently with signed colors, zero and missing data',()=>{
+  const f=fixture();
+  for(const [value,text,color] of [
+    ['0.47610838','0.48 U','good'],['-0.1234','-0.12 U','badtext'],
+    ['0','0.00 U',''],['-0.001','0.00 U',''],[null,'—',''],[undefined,'—',''],['invalid','—','']
+  ]){
+    f.payload.view.profit_accounting={closed_net_profit:value,lots:[]};
+    f.render();
+    assert.equal(f.element('closed-pnl').textContent,text);
+    assert.equal(f.element('closed-pnl').className,color);
+    assert.match(f.element('closed-pnl').title,/不含未平仓浮动盈亏/);
+    assert.equal(f.element('pnl').textContent,'-0.28 U');
+  }
 });
 
 test('group rows bind by ID, use signed funding and never subtract it again from total',()=>{

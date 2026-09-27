@@ -38,8 +38,8 @@
     "source": "src/strategies/openai_inventory/accounting.rs",
     "destination": "src/strategies/openai_inventory/accounting.rs",
     "source_sha256": "b90daaca763e9409e20477627ae7d832d1e2c4618b596415dc617e87c7f199ad",
-    "packaged_sha256": "b90daaca763e9409e20477627ae7d832d1e2c4618b596415dc617e87c7f199ad",
-    "unchanged": true
+    "packaged_sha256": "10448f545ac4dbcaa6dc0888673d66c99b23806be38615457a2fd64bd962226e",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/execution.rs",
@@ -129,8 +129,8 @@
     "source": "src/strategies/openai_inventory/accounting_tests.rs",
     "destination": "src/strategies/openai_inventory/accounting_tests.rs",
     "source_sha256": "088a618b0255d2b926947e10423d5cdd655b7b4fea26038638a052fa96dd5847",
-    "packaged_sha256": "088a618b0255d2b926947e10423d5cdd655b7b4fea26038638a052fa96dd5847",
-    "unchanged": true
+    "packaged_sha256": "0392d19b83e063c712bca571d75734f50b07a2b7f56bd11f6f95609ecd73505f",
+    "unchanged": false
   },
   {
     "source": "src/strategies/openai_inventory/live_orphan.rs",
@@ -283,8 +283,8 @@
     "source": "frontend/openai-live-monitor.html",
     "destination": "frontend/openai-live-monitor.html",
     "source_sha256": "d706db495c5f86be59c1655624fbaebc68e4061c25143aaa5efa5e9b7d61e16b",
-    "packaged_sha256": "d706db495c5f86be59c1655624fbaebc68e4061c25143aaa5efa5e9b7d61e16b",
-    "unchanged": true
+    "packaged_sha256": "fd282dfa136daf0d7708aea406c5f8c2883444c7b350f7c90865ec4edd1121b3",
+    "unchanged": false
   },
   {
     "source": "frontend/openai-market-visuals.js",

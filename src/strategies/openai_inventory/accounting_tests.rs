@@ -74,6 +74,7 @@ fn late_payment_respects_partial_close_and_does_not_charge_closed_units_again() 
     assert_eq!(r.lots[0].settled_funding, Some(d("-0.11")));
     assert_eq!(r.lots[0].remaining_funding, Some(d("-0.08")));
     assert_eq!(r.lots[0].estimated_exit_net, Some(d("0.06")));
+    assert_eq!(r.closed_net_profit, Some(d("0.04")));
 }
 
 #[test]
@@ -88,6 +89,7 @@ fn late_funding_of_a_closed_lot_is_not_assigned_to_its_replacement() {
     assert_eq!(r.lots[0].lot_id, "new");
     assert_eq!(r.lots[0].remaining_funding, Some(Decimal::ZERO));
     assert_eq!(r.settled_funding, d("-0.03"));
+    assert_eq!(r.closed_net_profit, Some(d("0.04")));
 }
 
 #[test]
@@ -125,6 +127,9 @@ fn funding_rounding_conserves_cash_and_batch_close_consumes_allocations_in_order
     assert_eq!(r.lots[0].lot_id, "b");
     assert_eq!(r.lots[0].remaining_funding.unwrap(), r.lots[0].settled_funding.unwrap() / d("2"));
     assert_eq!(r.lots[1].remaining_funding, r.lots[1].settled_funding);
+    let held: Decimal = r.lots.iter().map(|l| l.estimated_exit_net.unwrap()).sum();
+    assert!((r.closed_net_profit.unwrap() + held - s.total_pnl(&books(10000)).unwrap()).abs()
+        < d("0.000000000000000000000001"));
 }
 
 #[test]
@@ -147,10 +152,81 @@ fn ambiguous_settlement_boundary_and_stale_quotes_never_display_false_profit() {
     record_funding(&mut s, funding("boundary", Venue::Entropy, 1001, "-0.03")).unwrap();
     assert!(!report(&s).funding_complete);
     assert_eq!(report(&s).lots[0].estimated_exit_net, None);
+    assert_eq!(report(&s).closed_net_profit, None);
     let mut clean = snapshot(); open(&mut clean, "a", 100, 1000);
     let r = AccountingCache::default().report(&clean, &books(1000), 10000);
     assert!(r.funding_complete);
     assert_eq!(r.lots[0].estimated_exit_net, None);
+}
+
+#[test]
+fn closed_profit_uses_selected_group_actual_cash_and_fees_not_global_position_average() {
+    let mut s = snapshot();
+    open(&mut s, "closed", 100, 1000);
+    // A later group has a different opening price and large entry fees; none belongs to the close.
+    for (venue, side, price) in [(Venue::Lighter, Side::Sell, "140"),
+        (Venue::Entropy, Side::Buy, "100")] {
+        let f = Fill { id: format!("held-{venue:?}"), order_id: "held".into(),
+            venue, side, units: 200, price: d(price), fee: d("0.04"), time_ms: 2000 };
+        s.record_fill(&f, None).unwrap();
+    }
+    s.lots.push(Lot { id: "held".into(), level: 1, units: 200, opened_ms: 2001,
+        entry_spread: d("40"), entry_net_spread: Some(d("36")) });
+    close(&mut s, "close-old", &[("closed", 100)], 3000);
+    // Include fees on all four actual fills of the closed group (including a rebate).
+    for f in s.fills.values_mut().filter(|f| !f.order_id.starts_with("held")) {
+        f.fee = if f.venue == Venue::Lighter { d("-0.001") } else { d("0.003") };
+    }
+    for venue in [Venue::Lighter, Venue::Entropy] {
+        s.positions[venue.index()].fees = s.fills.values().filter(|f| f.venue == venue)
+            .map(|f| f.fee).sum();
+    }
+    record_funding(&mut s, funding("income", Venue::Lighter, 1500, "0.01")).unwrap();
+    record_funding(&mut s, funding("expense", Venue::Entropy, 1500, "-0.02")).unwrap();
+    record_funding(&mut s, funding("held-only", Venue::Entropy, 3500, "-0.3")).unwrap();
+    let mut cache = AccountingCache::default();
+    let r = cache.report(&s, &books(10000), 10000);
+    // 0.01 * (12 - 5) - 0.004 actual fees + 0.01 - 0.02 funding = 0.056.
+    assert_eq!(r.closed_net_profit, Some(d("0.056")));
+    assert_ne!(s.positions.iter().map(|p| p.realized).sum::<Decimal>(), d("0.07"));
+    // Closed cash is independent of quotes, including stale/missing books.
+    assert_eq!(cache.report(&s, &[Book::default(), Book::default()], 999999).closed_net_profit,
+        r.closed_net_profit);
+    let restored: Snapshot = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    assert_eq!(report(&restored).closed_net_profit, r.closed_net_profit);
+}
+
+#[test]
+fn closed_profit_is_zero_before_closing_and_unknown_without_legacy_close_evidence() {
+    let mut s = snapshot();
+    assert_eq!(report(&s).closed_net_profit, Some(Decimal::ZERO));
+    open(&mut s, "a", 100, 1000);
+    record_funding(&mut s, funding("held", Venue::Entropy, 1500, "-0.03")).unwrap();
+    assert_eq!(report(&s).closed_net_profit, Some(Decimal::ZERO));
+    s.closed_groups = 1;
+    assert_eq!(report(&s).closed_net_profit, None);
+}
+
+#[test]
+fn closed_profit_supports_reverse_direction_losses_and_late_funding() {
+    let mut s = snapshot();
+    s.direction = Direction::LighterLong;
+    fill(&mut s, "a", Venue::Lighter, Side::Buy, 100, 1000, "100");
+    fill(&mut s, "a", Venue::Entropy, Side::Sell, 100, 1001, "112");
+    s.lots.push(Lot { id: "a".into(), level: 0, units: 100, opened_ms: 1002,
+        entry_spread: d("12"), entry_net_spread: Some(d("12")) });
+    fill(&mut s, "exit", Venue::Lighter, Side::Sell, 100, 2000, "99");
+    fill(&mut s, "exit", Venue::Entropy, Side::Buy, 100, 2001, "115");
+    s.closed_lot_allocations.insert("exit".into(), vec![CloseAllocation { lot_id: "a".into(), units: 100 }]);
+    s.lots.clear();
+    s.closed_groups = 1;
+    let mut cache = AccountingCache::default();
+    assert_eq!(cache.report(&s, &books(10000), 10000).closed_net_profit, Some(d("-0.04")));
+    let charge = funding("late", Venue::Entropy, 1500, "-0.03");
+    record_funding(&mut s, charge.clone()).unwrap();
+    assert_eq!(cache.report(&s, &books(10000), 10000).closed_net_profit, Some(d("-0.07")));
+    record_funding(&mut s, charge).unwrap();
+    assert_eq!(cache.report(&s, &books(10000), 10000).closed_net_profit, Some(d("-0.07")));
 }
 
 #[test]
