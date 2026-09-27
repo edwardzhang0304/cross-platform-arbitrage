@@ -24,16 +24,18 @@ jobs:
         run: |
           rustup toolchain install 1.98.1 --profile minimal
           rustup default 1.98.1
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+          key: windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: windows-rust-1.98.1-static-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
       - name: Offline strategy and signer regressions
         run: |
-          cargo test --locked --workspace --lib --target x86_64-pc-windows-msvc
+          cargo test --locked --release --workspace --lib --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node --test tests/openai_market_visuals.test.cjs tests/openai_profit_display.test.cjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -53,3 +55,11 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        if: always() && !cancelled() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}

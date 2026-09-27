@@ -448,7 +448,20 @@ async fn offline_memory_replay_matches_durable_paper_execution() {
     let c=rusqlite::Connection::open(export).unwrap();
     let body:String=c.query_row("SELECT body FROM state WHERE id=1",[],|r|r.get(0)).unwrap();
     let restored:Snapshot=serde_json::from_str(&body).unwrap();assert_eq!(restored.fills.len(),memory.state.fills.len());
-    drop(c);drop(memory);drop(disk);std::fs::remove_dir_all(folder).unwrap();
+    drop(c);drop(memory);drop(disk);
+    // Dropping the senders schedules worker shutdown; Windows cannot unlink
+    // their SQLite files until those asynchronous workers release the handles.
+    for attempt in 0..100 {
+        match std::fs::remove_dir_all(&folder) {
+            Ok(()) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied
+                || error.raw_os_error() == Some(32) => {
+                assert!(attempt < 99, "paper worker cleanup did not finish: {error}");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("paper fixture cleanup failed: {error}"),
+        }
+    }
 }
 
 #[tokio::test]
