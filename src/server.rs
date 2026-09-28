@@ -34,6 +34,7 @@ pub fn router(root: PathBuf, port: u16) -> Result<Router> {
         router=router.merge(app_router.with_state(app));
     }
     Ok(router.route("/assets/openai-market-visuals.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/openai-market-visuals.js"))}))
+        .route("/assets/inventory-components.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/inventory-components.js"))}))
         .layer(DefaultBodyLimit::max(64*1024))
         .layer(axum::middleware::map_response(|mut r:axum::response::Response|async{
             for (k,v) in [("cache-control","no-store"),("x-frame-options","DENY"),("x-content-type-options","nosniff")] {r.headers_mut().insert(k,v.parse().unwrap());} r

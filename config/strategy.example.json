@@ -3,7 +3,7 @@
   "entropy_account":"my_entropy", "entropy_address":"",
   "sample_ms":15000, "decision_ms":1000, "entry_confirmation_ms":5000,
   "mean_window_ms":300000, "entry_offset":"0", "grid":"5",
-  "accumulation":{"contraction_ratio":"0.5","entry_floor":"5","interval_ms":3600000,"max_time_adds":5,"quota_scope":"grid_stage"},
+  "accumulation":{"contraction_ratio":"0.5","entry_floor":"5","interval_ms":1800000,"max_time_adds":5,"quota_scope":"grid_stage"},
   "direction_policy":"both", "exit_policy":"per_group", "group_take_profit":"2", "shared_exit_conditions":true,
   "group_notional":"15", "max_groups":20, "leverage":3, "max_notional_per_venue":"300",
   "max_loss_usdc":"30", "min_free_margin":"10", "paper_capital_per_venue":"100",

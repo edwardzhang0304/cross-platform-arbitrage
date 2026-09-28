@@ -12,10 +12,10 @@ fn paper_and_live_share_the_same_decision_trace() {
                 paper.config.grid = d(5); paper.config.entry_offset = Decimal::ZERO;
                 paper.config.entry_confirmation_ms = Some(5000);
                 let rules = paper.config.accumulation.as_mut().unwrap();
-                rules.interval_ms = 3_600_000; rules.max_time_adds = 5;
+                rules.interval_ms = 1_800_000; rules.max_time_adds = 5;
                 rules.quota_scope = TimeAddQuotaScope::GridStage;
                 paper.instance_id = format!("parity-{}-{reverse}-{case}", market.id());
-                paper.last_open_completed = Some((now - 3_600_000, d(10)));
+                paper.last_open_completed = Some((now - 1_800_000, d(10)));
                 paper.funding_synced_ms = match case {
                     "missing_funding" | "emergency" => 0,
                     "stale_funding" => now - 90_001,

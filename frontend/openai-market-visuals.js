@@ -149,8 +149,9 @@
     const root=get('comparison-quotes');
     root.replaceChildren();
     const cell=(text,tag='td')=>{const x=document.createElement(tag);x.textContent=text;return x;};
-    const orderedQuotes=selected==='shortL'?quotes:[...quotes].reverse();
-    for(const q of orderedQuotes) {
+    // Platform positions stay fixed across markets and direction changes.
+    // The chart names the trading direction independently of these quote cards.
+    for(const q of quotes) {
       const tr=document.createElement('tr'),platform=cell(q.platform),symbol=cell(q.symbol,'small');
       symbol.className='subline';platform.append(symbol);
       const buy=cell(q.buy),sell=cell(q.sell);buy.className=sell.className='quote-price';

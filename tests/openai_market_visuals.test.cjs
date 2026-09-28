@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {chartModel,renderCharts}=require('../frontend/openai-market-visuals.js');
+const {chartModel,renderCharts,renderQuoteCards}=require('../frontend/openai-market-visuals.js');
 
 // Offline SVG harness: model the browser's xMidYMid/meet transform, including
 // letterboxing and CSS/page scaling. No live API, credentials or trading state.
@@ -36,6 +36,19 @@ function fixture({width=1300,height=186,zoom=1,left=40,top=20}={}) {
   return {root,hover,payload,render,cursor,move,viewport};
 }
 const near=(actual,expected)=>assert.ok(Math.abs(Number(actual)-expected)<1e-8,`${actual} != ${expected}`);
+
+test('quote cards keep Lighter then Entropy when the trading direction changes',()=>{
+  const element=()=>({children:[],textContent:'',append(...children){this.children.push(...children)},replaceChildren(){this.children=[]}});
+  const root=element();
+  global.document={createElement:element};
+  const quotes=[{platform:'Lighter RH',symbol:'ANTHROPIC',buy:'2110.00',sell:'2109.90'},
+    {platform:'Entropy',symbol:'io:ANTH',buy:'2073.40',sell:'2073.20'}];
+  for(const direction of ['shortL','shortE','shortL']){
+    renderQuoteCards(quotes,direction,()=>root);
+    assert.deepEqual(root.children.map(row=>row.children[0].textContent),['Lighter RH','Entropy']);
+    assert.deepEqual(root.children.map(row=>row.children[2].textContent),['2109.90','2073.20']);
+  }
+});
 
 test('cursor uses actual SVG coordinates in wide/tall/scaled viewports',()=>{
   for(const box of [{width:1300},{width:580,height:500},{width:930,zoom:1.75,left:-120,top:80}]){

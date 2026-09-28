@@ -2,6 +2,10 @@ fn legacy_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Snaps
     let mut cfg: InventoryConfig = serde_json::from_str(include_str!("../../../tests/fixtures/inventory/live-strategy.json")).unwrap();
     cfg.market = market; cfg.mode = mode;
     cfg.lighter_address = Some(format!("0x{}", "3".repeat(40)));
+    if market == MarketPair::Anth && mode == Mode::Live {
+        cfg.lighter_account = "anth:live:lighter".into();
+        cfg.entropy_account = "anth:live:entropy".into();
+    }
     let mut s = Snapshot::new(cfg).unwrap();
     if reverse { s.direction = Direction::LighterShort; }
     s.status = Status::Stopped; s.paused = true; s.stop_requested = true;
@@ -20,6 +24,55 @@ fn legacy_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Snaps
     s
 }
 
+fn hourly_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Snapshot {
+    let mut s = legacy_rules_snapshot(market, reverse, mode);
+    s.config = rules_upgrade::current_config(&s.config).unwrap();
+    s.config.accumulation.as_mut().unwrap().interval_ms = 3_600_000;
+    // A slot may already have re-armed while its older lot still exists.
+    s.armed[0] = true;
+    s
+}
+
+#[test]
+fn hourly_upgrade_changes_only_interval_preserving_slots_quota_and_completion_clock() {
+    for market in [MarketPair::Openai, MarketPair::Anth] {
+        for reverse in [false, true] { for mode in [Mode::Paper, Mode::Live] {
+            for used in [0, 4, 5] {
+                let mut s = hourly_rules_snapshot(market, reverse, mode);
+                s.time_adds_used = used;
+                let before = serde_json::to_value(&s).unwrap();
+                let desired = rules_upgrade::current_config(&s.config).unwrap();
+                let mut expected_config = s.config.clone();
+                expected_config.accumulation.as_mut().unwrap().interval_ms = 1_800_000;
+                assert_eq!(desired, expected_config);
+                assert!(rules_upgrade::migrate_snapshot(&mut s, &desired).unwrap());
+                let mut actual = serde_json::to_value(&s).unwrap();
+                for key in ["config", "entry_attempts_remaining", "resume_after_recovery", "reason"] {
+                    actual[key] = before[key].clone();
+                }
+                assert_eq!(actual, before, "lots, armed slots, quota and last fill clock must remain exact");
+                let after = serde_json::to_value(&s).unwrap();
+                assert!(!rules_upgrade::migrate_snapshot(&mut s, &desired).unwrap());
+                assert_eq!(serde_json::to_value(&s).unwrap(), after);
+            }
+        }}
+    }
+}
+
+#[test]
+fn hourly_upgrade_preserves_smaller_quota_and_rejects_unknown_interval_or_running_state() {
+    let mut s = hourly_rules_snapshot(MarketPair::Openai, false, Mode::Live);
+    s.config.accumulation.as_mut().unwrap().max_time_adds = 3;
+    let desired = rules_upgrade::current_config(&s.config).unwrap();
+    assert_eq!(desired.accumulation.as_ref().unwrap().max_time_adds, 3);
+    s.status = Status::Running;
+    let before = serde_json::to_value(&s).unwrap();
+    assert!(rules_upgrade::migrate_snapshot(&mut s, &desired).is_err());
+    assert_eq!(serde_json::to_value(&s).unwrap(), before);
+    s.config.accumulation.as_mut().unwrap().interval_ms = 2_700_000;
+    assert!(rules_upgrade::current_config(&s.config).is_err());
+}
+
 #[test]
 fn rule_upgrade_preserves_money_inventory_and_used_quota_for_both_markets_and_modes() {
     for market in [MarketPair::Openai,MarketPair::Anth] {
@@ -29,7 +82,7 @@ fn rule_upgrade_preserves_money_inventory_and_used_quota_for_both_markets_and_mo
             let desired=rules_upgrade::current_config(&s.config).unwrap();
             assert_eq!(desired.grid,d(5));
             let r=desired.accumulation.as_ref().unwrap();
-            assert_eq!((r.interval_ms,r.max_time_adds,r.quota_scope),(3_600_000,5,TimeAddQuotaScope::GridStage));
+            assert_eq!((r.interval_ms,r.max_time_adds,r.quota_scope),(1_800_000,5,TimeAddQuotaScope::GridStage));
             assert!(rules_upgrade::migrate_snapshot(&mut s,&desired).unwrap());
             assert_eq!(s.lots.iter().map(|l|l.level).collect::<Vec<_>>(),vec![0,0,0,1,24]);
             assert_eq!(s.time_adds_used,4);
@@ -70,7 +123,7 @@ fn rule_upgrade_rejects_running_unpaired_pending_and_changed_identity_without_mu
 }
 
 #[test]
-fn migrated_inventory_uses_new_grid_and_hourly_gate_before_granting_next_stage_quota() {
+fn migrated_inventory_uses_new_grid_and_half_hourly_gate_before_granting_next_stage_quota() {
     let now=4_000_000;
     let (mut s,mut a)=accumulation_fixture(now,false);
     s.status=Status::Stopped;s.stop_requested=true;s.paused=true;s.time_adds_used=4;
@@ -99,29 +152,45 @@ fn migrated_inventory_uses_new_grid_and_hourly_gate_before_granting_next_stage_q
 #[test]
 fn rule_upgrade_transaction_is_locked_idempotent_and_recovers_between_ledger_and_config_writes() {
     use crate::portable::{ProfilePaths,Settings};
-    let root=std::env::temp_dir().join(format!("rule-upgrade-{}",uuid::Uuid::new_v4()));
-    let paths=ProfilePaths::new(&root,MarketPair::Openai);
-    let s=legacy_rules_snapshot(MarketPair::Openai,false,Mode::Live);
-    let cfg=s.config.clone();let desired=rules_upgrade::current_config(&cfg).unwrap();
-    let (mut db,_)=store::Store::open(&paths.database,&cfg).unwrap();
-    db.commit(&s,1,"synthetic-stopped").unwrap();
-    let mut settings=Settings{accounts:crate::config::AppConfig::default(),strategy:cfg.clone()};
-    paths.save(&settings).unwrap();
-    assert!(rules_upgrade::migrate_ledger(&paths.database,&desired).is_err(),"active DB lock");
-    drop(db);
-    assert!(rules_upgrade::migrate_ledger(&paths.database,&desired).unwrap());
-    // Simulate a crash before the separate strategy file replacement.
-    assert_eq!(paths.load().unwrap().unwrap().strategy,cfg);
-    paths.upgrade_rules(&mut settings).unwrap();
-    assert_eq!(settings.strategy,desired);
-    assert_eq!(paths.load().unwrap().unwrap().strategy,desired);
-    paths.upgrade_rules(&mut settings).unwrap();
-    let raw=rusqlite::Connection::open(&paths.database).unwrap();
-    let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_grid_stage_v1'",[],|r|r.get(0)).unwrap();
-    assert_eq!(count,1);
-    let body:String=raw.query_row("SELECT body FROM state WHERE id=1",[],|r|r.get(0)).unwrap();
-    let restored:Snapshot=serde_json::from_str(&body).unwrap();
-    assert_eq!(restored.config,desired);assert_eq!(restored.time_adds_used,4);assert_eq!(restored.closed_groups,7);
-    assert!(!paths.vault.exists());
-    drop(raw);std::fs::remove_dir_all(root).unwrap();
+    for market in [MarketPair::Openai, MarketPair::Anth] {
+        let root=std::env::temp_dir().join(format!("rule-upgrade-{}",uuid::Uuid::new_v4()));
+        let paths=ProfilePaths::new(&root,market);
+        let s=hourly_rules_snapshot(market,false,Mode::Live);
+        let cfg=s.config.clone();let desired=rules_upgrade::current_config(&cfg).unwrap();
+        let (mut db,_)=store::Store::open(&paths.database,&cfg).unwrap();
+        db.commit(&s,1,"synthetic-stopped").unwrap();
+        let mut settings=Settings{accounts:crate::config::AppConfig::default(),strategy:cfg.clone()};
+        paths.save(&settings).unwrap();
+        std::fs::create_dir_all(paths.vault.parent().unwrap()).unwrap();
+        let feishu = paths.vault.with_file_name("feishu.vault");
+        // Opaque synthetic bytes: migration must never read or rewrite either vault.
+        std::fs::write(&paths.vault, b"synthetic-trading-vault").unwrap();
+        std::fs::write(&feishu, b"synthetic-feishu-vault").unwrap();
+        let accounts_before = serde_json::to_value(&settings.accounts).unwrap();
+        assert!(rules_upgrade::migrate_ledger(&paths.database,&desired).is_err(),"active DB lock");
+        drop(db);
+        assert!(rules_upgrade::migrate_ledger(&paths.database,&desired).unwrap());
+        // Simulate a crash before the separate strategy file replacement.
+        assert_eq!(paths.load().unwrap().unwrap().strategy,cfg);
+        paths.upgrade_rules(&mut settings).unwrap();
+        assert_eq!(settings.strategy,desired);
+        assert_eq!(serde_json::to_value(&settings.accounts).unwrap(), accounts_before);
+        assert_eq!(paths.load().unwrap().unwrap().strategy,desired);
+        paths.upgrade_rules(&mut settings).unwrap();
+        let raw=rusqlite::Connection::open(&paths.database).unwrap();
+        let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_interval_30m_v1'",[],|r|r.get(0)).unwrap();
+        assert_eq!(count,1);
+        let event:String=raw.query_row("SELECT body FROM events WHERE kind='rules_interval_30m_v1'",[],|r|r.get(0)).unwrap();
+        let event:serde_json::Value=serde_json::from_str(&event).unwrap();
+        assert_eq!(event["from_interval_ms"],3_600_000);
+        assert_eq!(event["to_interval_ms"],1_800_000);
+        let body:String=raw.query_row("SELECT body FROM state WHERE id=1",[],|r|r.get(0)).unwrap();
+        let restored:Snapshot=serde_json::from_str(&body).unwrap();
+        assert_eq!(restored.config,desired);assert_eq!(restored.time_adds_used,4);assert_eq!(restored.closed_groups,7);
+        assert_eq!(restored.armed,s.armed);
+        assert_eq!(restored.last_open_completed,s.last_open_completed);
+        assert_eq!(std::fs::read(&paths.vault).unwrap(),b"synthetic-trading-vault");
+        assert_eq!(std::fs::read(&feishu).unwrap(),b"synthetic-feishu-vault");
+        drop(raw);std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -31,6 +31,8 @@ try {
   if ((Invoke-WebRequest "$Base/anth-inventory").Content -notmatch 'quantityDecimals":5') { throw 'ANTH quantity scale missing' }
   $Monitor = (Invoke-WebRequest "$Base/openai-inventory").Content
   if ($Monitor -notmatch '/assets/openai-market-visuals.js') { throw 'Chart asset missing' }
+  if ($Monitor -notmatch '/assets/inventory-components.js') { throw 'Inventory components missing' }
+  if ((Invoke-WebRequest "$Base/assets/inventory-components.js").Content -notmatch 'window.InventoryComponents') { throw 'Inventory component asset unavailable' }
   $ControlPage = (Invoke-WebRequest "$Base/").Content
   if ($ControlPage -notmatch '/api/portable') { throw 'Control page missing' }
   if ($ControlPage -notmatch 'Cross-Platform Arbitrage' -or $ControlPage -notmatch 'OPENAI 实盘配置') { throw 'OPENAI product/market title is incorrect' }

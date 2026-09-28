@@ -14,6 +14,7 @@ pub fn router(app: PaperApp) -> Router {
         .route("/anth-inventory",get(||async{Html(monitor::page(MarketPair::Anth,Mode::Paper))}))
         .route("/openai-inventory",get(||async{Html(monitor::page(MarketPair::Openai,Mode::Paper))}))
         .route("/assets/openai-market-visuals.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/openai-market-visuals.js"))}))
+        .route("/assets/inventory-components.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/inventory-components.js"))}))
         .route("/api/anth-inventory",get(|s:State<PaperApp>,h:HeaderMap|status(s,h,MarketPair::Anth)))
         .route("/api/openai-inventory",get(|s:State<PaperApp>,h:HeaderMap|status(s,h,MarketPair::Openai)))
         .route("/api/anth-paper",post(|s:State<PaperApp>,h:HeaderMap,r:Json<PaperCommand>|control(s,h,r,MarketPair::Anth)))

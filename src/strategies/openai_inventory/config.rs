@@ -7,6 +7,7 @@ pub const PAPER_ENTROPY_ADDRESS: &str = "0x0000000000000000000000000000000000000
 pub const LIVE_CONFIRMATION: &str = "START_OPENAI_INVENTORY_LIVE";
 pub const LIVE_STRATEGY_CONFIRMATION: &str = "START_OPENAI_LIVE_STRATEGY";
 pub const LIVE_LIMIT_UPGRADE_CONFIRMATION: &str = "UPGRADE_OPENAI_LIVE_LIMITS";
+pub const CURRENT_TIME_ADD_INTERVAL_MS: u64 = 1_800_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -190,7 +191,7 @@ impl InventoryConfig {
             ensure!(self.shared_exit_conditions
                 && self.entry_confirmation_ms.is_some() && self.entry_threshold_cap.is_none()
                 && r.entry_floor>Decimal::ZERO
-                && r.interval_ms >= if r.quota_scope == TimeAddQuotaScope::GridStage { 3_600_000 } else { 900_000 }
+                && r.interval_ms >= if r.quota_scope == TimeAddQuotaScope::GridStage { CURRENT_TIME_ADD_INTERVAL_MS } else { 900_000 }
                 && r.max_time_adds<=5
                 && r.contraction_ratio>Decimal::ZERO && r.contraction_ratio<=Decimal::ONE,
                 "invalid accumulation rules");

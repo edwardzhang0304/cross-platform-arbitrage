@@ -118,10 +118,10 @@ mod tests {
             let mut config = paper_config(market).unwrap();
             assert_eq!(config.grid.to_string(), "5");
             let rules = config.accumulation.as_ref().unwrap();
-            assert_eq!(rules.interval_ms, 3_600_000);
+            assert_eq!(rules.interval_ms, 1_800_000);
             assert_eq!(rules.max_time_adds, 5);
             assert_eq!(rules.quota_scope, TimeAddQuotaScope::GridStage);
-            config.accumulation.as_mut().unwrap().interval_ms = 3_599_999;
+            config.accumulation.as_mut().unwrap().interval_ms = 1_799_999;
             assert!(config.validate().is_err());
         }
         let old: InventoryConfig = serde_json::from_str(include_str!("../tests/fixtures/inventory/live-strategy.json")).unwrap();

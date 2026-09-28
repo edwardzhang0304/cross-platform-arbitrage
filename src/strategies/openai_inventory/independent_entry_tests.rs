@@ -97,20 +97,20 @@ fn fifth_time_add_is_allowed_sixth_is_blocked_and_total_group_cap_remains() {
 }
 
 #[test]
-fn one_hour_time_add_gate_and_five_unit_grid_are_independent() {
+fn half_hour_time_add_gate_and_five_unit_grid_are_independent() {
     for reverse in [false, true] {
-        // Five-second confirmation must not borrow time from before the one-hour gate.
+        // Five-second confirmation must not borrow time from before the half-hour gate.
         for (elapsed, spread, expected) in [
-            (900_000, 11, None), (3_594_000, 11, None),
-            (3_599_000, 11, None), (3_600_000, 11, Some(20)),
-            (3_600_000, 9, None), (1000, 14, None), (1000, 15, Some(1)),
+            (900_000, 11, None), (1_794_000, 11, None),
+            (1_799_000, 11, None), (1_800_000, 11, Some(20)),
+            (1_800_000, 9, None), (1000, 14, None), (1000, 15, Some(1)),
         ] {
             let now = 4_000_000;
             let (mut s, mut a) = accumulation_fixture(now, reverse);
             s.config.grid = d(5);
             s.config.entry_confirmation_ms = Some(5000);
             let r = s.config.accumulation.as_mut().unwrap();
-            r.interval_ms = 3_600_000; r.max_time_adds = 5;
+            r.interval_ms = 1_800_000; r.max_time_adds = 5;
             r.quota_scope = TimeAddQuotaScope::GridStage;
             s.last_open_completed = Some((now - elapsed, d(10)));
             assert!(strategy::evaluate(&mut s, &bidir_books(now, spread, reverse), &a, now).unwrap().is_none());
@@ -118,6 +118,31 @@ fn one_hour_time_add_gate_and_five_unit_grid_are_independent() {
             let op = strategy::evaluate(&mut s, &bidir_books(now + 5000, spread, reverse), &a, now + 5000).unwrap();
             assert_eq!(op.map(|o| o.level), expected, "elapsed={elapsed}, spread={spread}");
         }
+    }
+}
+
+#[test]
+fn half_hour_boundary_still_requires_five_seconds_of_confirmation_in_both_runtimes() {
+    for market in [MarketPair::Openai, MarketPair::Anth] {
+        for mode in [Mode::Paper, Mode::Live] { for reverse in [false, true] {
+            let now = 4_000_000;
+            let (mut s, mut accounts) = accumulation_fixture(now, reverse);
+            s.config.market = market; s.config.mode = mode;
+            s.config.grid = d(5); s.config.entry_confirmation_ms = Some(5000);
+            let r = s.config.accumulation.as_mut().unwrap();
+            r.interval_ms = 1_800_000; r.max_time_adds = 5;
+            r.quota_scope = TimeAddQuotaScope::GridStage;
+            s.last_open_completed = Some((now - 1_799_999, d(10)));
+            // Decisions run once per second. The first eligible tick is +1000,
+            // so its full five-second confirmation completes at +6000.
+            for offset in [0, 1000, 2000, 3000, 4000, 5000, 6000] {
+                let t = now + offset;
+                for a in &mut accounts { a.observed_ms = t; }
+                let op = strategy::evaluate(&mut s, &bidir_books(t, 11, reverse), &accounts, t).unwrap();
+                assert_eq!(op.map(|o| o.level), if offset == 6000 { Some(20) } else { None },
+                    "{market:?}/{mode:?}/{reverse}/{offset}");
+            }
+        }}
     }
 }
 
@@ -130,7 +155,7 @@ fn grid_stage_quota_resets_only_after_a_paired_fill_and_survives_restart() {
                 let (mut s, mut a) = accumulation_fixture(now, reverse);
                 s.config.grid = d(5);
                 let r = s.config.accumulation.as_mut().unwrap();
-                r.interval_ms = 3_600_000; r.max_time_adds = 5; r.quota_scope = scope;
+                r.interval_ms = 1_800_000; r.max_time_adds = 5; r.quota_scope = scope;
                 s.time_adds_used = 5;
                 let previous_open = s.last_open_completed;
                 assert!(strategy::evaluate(&mut s, &bidir_books(now, 15, reverse), &a, now).unwrap().is_none());
@@ -182,10 +207,10 @@ fn each_grid_stage_allows_five_time_adds_without_exceeding_total_capacity() {
                 s.config.grid = d(5);
                 s.config.max_loss_usdc = d(1000);
                 let r = s.config.accumulation.as_mut().unwrap();
-                r.interval_ms = 3_600_000; r.max_time_adds = 5; r.quota_scope = TimeAddQuotaScope::GridStage;
+                r.interval_ms = 1_800_000; r.max_time_adds = 5; r.quota_scope = TimeAddQuotaScope::GridStage;
                 let spread = 10 + 5 * stage as i64;
                 s.time_adds_used = used;
-                s.last_open_completed = Some((now - 3_600_000, d(spread)));
+                s.last_open_completed = Some((now - 1_800_000, d(spread)));
                 s.armed[..=stage].fill(false);
                 s.lots[0].level = stage;
                 // Earlier-stage time-add lots can share a numeric level; their IDs
