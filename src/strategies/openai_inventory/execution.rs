@@ -344,6 +344,21 @@ fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult
     Ok(())
 }
 
+/// Only a reservation with no attempt marker and no fills is safe to discard.
+/// Pause/stop must retain submitted or unknown orders so they can be reconciled.
+pub fn cancel_unsent_entry(s: &mut Snapshot) -> bool {
+    let safe = s.pending.as_ref().is_some_and(|p| p.action == Action::Open
+        && [&p.first, &p.hedge, &p.repair, &p.align_close, &p.unwind_hedge].iter().all(|r| r.is_none())
+        && [p.first_filled,p.hedge_filled,p.repair_filled,p.align_close_filled,p.unwind_hedge_filled].iter().all(|n| *n == 0));
+    if !safe { return false; }
+    s.pending = None;
+    strategy::clear_entry_confirmation(s);
+    s.reason = "unsent entry cancelled by risk control".into();
+    s.status = if s.close_requested && s.paired_units() > 0 { Status::Closing }
+        else if s.stop_requested { Status::Stopped } else { Status::PausedEntries };
+    true
+}
+
 /// At most one request/query per tick. On uncertain submission: query the SAME id, never resubmit.
 pub async fn advance(
     s: &mut Snapshot,
@@ -352,6 +367,11 @@ pub async fn advance(
     books: &[Book; 2],
     now: u64,
 ) -> Result<()> {
+    if (s.paused || s.stop_requested || s.close_requested || s.loss_stop.is_some())
+        && cancel_unsent_entry(s) {
+        store.commit(s, now, "unsent_entry_cancelled")?;
+        return Ok(());
+    }
     let unsent_entry = s
         .pending
         .as_ref()

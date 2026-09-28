@@ -72,6 +72,7 @@ struct Command {
 pub struct InventoryService {
     view: Arc<RwLock<InventoryView>>,
     commands: mpsc::Sender<Command>,
+    pub notifications: crate::notifications::NotificationHandle,
 }
 impl InventoryService {
     pub async fn launch(
@@ -229,6 +230,9 @@ impl InventoryService {
         let view=Arc::new(RwLock::new(InventoryView{entry_first_venue:Venue::Entropy,close_first_venue:Venue::Lighter,snapshot:state.clone(),books:books.read().unwrap().clone(),chart_points:state.entry_mean.points.clone(),marks:marks.read().unwrap().clone(),accounts:None,mean:None,directional_means:[None,None],net_pnl:None,estimated_exit_net:None,profit_accounting,cumulative_fees:state.cumulative_fees(),cumulative_execution_cost:state.execution_cost,execution_cost_started_ms:state.execution_cost_started_ms,execution_cost_tracked_fills:state.execution_cost_tracked_fills,execution_cost_untracked_fills:state.untracked_execution_fills(),
             submission_enabled:false,transient_warning:String::new(),order_lookup_note:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:if config.mode==Mode::Paper {"虚拟成交；手续费按配置扣除；资金费为模拟估算，并非真实账户结算".into()} else {"Settled funding synchronized from venue history; pending payments are not yet realized".into()}}));
         let (commands, mut rx) = mpsc::channel::<Command>(16);
+        let notifications=crate::notifications::NotificationHandle::default();
+        let delivery_task=notifications.spawn(path.to_path_buf());
+        let risk_notifications=notifications.clone();
         let output = view.clone();
         tokio::spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_millis(250));
@@ -244,6 +248,7 @@ impl InventoryService {
             let mut last_repair_check = 0;
             loop {
                 tokio::select! {
+                    biased;
                     Some(command)=rx.recv()=>{
                         let name=serde_json::to_string(&command.control).unwrap();
                         let repair_evidence = if matches!(command.control, Control::Reconcile) {
@@ -265,20 +270,23 @@ impl InventoryService {
                                 Control::Start=>{start_continuous(&mut next)?;},
                                 Control::StartOneEntry=>{start_one_entry(&mut next, accounts.as_ref(), &books.read().unwrap().clone(), crate::domain::now_ms())?;},
                                 Control::StartLiveStrategy=>{start_live_strategy(&mut next, accounts.as_ref(), &books.read().unwrap().clone(), crate::domain::now_ms())?;},
-                                Control::Pause=>{next.paused=true;if next.pending.is_none(){next.status=Status::PausedEntries;}},
-                                Control::Stop=>{next.stop_requested=true;next.paused=true;next.resume_after_recovery=false;if next.pending.is_none(){next.status=Status::Stopped;}else if next.status!=Status::NeedsAttention {next.reason="finishing active paired operation before stopping".into();}},
-                                Control::CloseAll=>{next.paused=true;next.close_requested=true;next.stop_after_close=true;if next.pending.is_none(){next.status=if next.paired_units()==0 {next.close_requested=false;Status::Stopped}else{Status::Closing};}},
+                                Control::Pause=>{next.paused=true;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::PausedEntries;}},
+                                Control::Stop=>{next.stop_requested=true;next.paused=true;next.resume_after_recovery=false;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::Stopped;}else if next.status!=Status::NeedsAttention {next.reason="finishing active paired operation before stopping".into();}},
+                                Control::CloseAll=>{next.paused=true;next.close_requested=true;next.stop_after_close=true;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=if next.paired_units()==0 {next.close_requested=false;Status::Stopped}else{Status::Closing};}},
                                 Control::Reconcile=>{execution::resume_terminal_repair(&mut next,accounts.as_ref(),crate::domain::now_ms())?;next.status=Status::Recovering;},
                                 Control::SetDirectionPolicy { direction_policy }=>{set_direction_policy(&mut next, direction_policy, accounts.as_ref(), crate::domain::now_ms())?;},
                                 Control::SetEntryOffset { entry_offset }=>{set_entry_offset(&mut next, entry_offset, accounts.as_ref(), crate::domain::now_ms())?;},
                                 Control::SetMaxLoss { max_loss_usdc }=>{set_max_loss(&mut next, max_loss_usdc, accounts.as_ref(), crate::domain::now_ms())?;},
                                 Control::SetMaxTimeAdds { max_time_adds }=>{set_max_time_adds(&mut next, max_time_adds, accounts.as_ref(), crate::domain::now_ms())?;},
-                                Control::Shutdown=>{next.paused=true;next.stop_requested=true;next.status=if next.pending.is_some(){Status::NeedsAttention}else{Status::Stopped};next.reason="worker shut down; reconcile before restarting".into();},
+                                Control::Shutdown=>{ensure!(next.status==Status::Stopped && next.pending.is_none() && next.live_orphan.is_none(),"stop and resolve all paired orders before shutdown");next.paused=true;next.stop_requested=true;next.reason="worker shut down; reconcile before restarting".into();},
                             }
                             store.command(&next,&command.id,&name,crate::domain::now_ms())?;state=next;Ok(())
                         })();
-                        if outcome.as_ref().err().is_some_and(|e|e.to_string().contains("persistence failure")) {state.status=Status::NeedsAttention;state.reason="inventory persistence failure; dispatch disabled".into();}
+                        if outcome.as_ref().err().is_some_and(|e|e.to_string().contains("persistence failure")) {state.status=Status::NeedsAttention;state.reason="inventory persistence failure; dispatch disabled".into();risk_notifications.report_persistence_failure(config.market,config.mode);}
                         let shutdown=matches!(command.control,Control::Shutdown) && outcome.is_ok();
+                        // Acknowledgement must describe the actor's committed state,
+                        // including when a control arrives between market-data ticks.
+                        {let mut v=output.write().unwrap();v.snapshot=state.clone();v.submission_enabled=false;}
                         let _=command.reply.send(outcome);
                         if shutdown {let mut v=output.write().unwrap();v.snapshot=state.clone();v.submission_enabled=false;break;}
 
@@ -394,6 +402,7 @@ impl InventoryService {
                         if let Err(error)=result {
                             strategy::clear_entry_confirmation(&mut state);
                             let message=format!("{error:#}");
+                            if message.contains("persistence failure") {risk_notifications.report_persistence_failure(config.market,config.mode);}
                             let hard=state.pending.is_some() || message.contains("position") || message.contains("unpaired") || message.contains("unowned") || message.contains("worker stopped") || message.contains("worker unavailable") || message.contains("persistence failure");
                             if hard {
                                 // Preserve the first actionable hard-stop reason. Once the
@@ -425,8 +434,9 @@ impl InventoryService {
             for task in feed_tasks {
                 task.abort();
             }
+            delivery_task.abort();
         });
-        Ok(Self { view, commands })
+        Ok(Self { view, commands, notifications })
     }
     pub fn status(&self) -> InventoryView {
         self.view.read().unwrap().clone()

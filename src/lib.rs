@@ -10,6 +10,7 @@ pub mod lighter_runtime;
 pub mod lighter_reconcile;
 pub mod ws_post;
 pub mod secrets;
+pub mod notifications;
 pub mod crossvenue_a;
 #[path="strategies/openai_inventory/mod.rs"]
 pub mod openai_inventory;

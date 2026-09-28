@@ -245,6 +245,13 @@ pub struct LighterNonceOwner {
 }
 
 impl LighterNonceOwner {
+    /// The worker may cancel an async submission at any await point. The guard
+    /// releases a definitely unsent nonce, or requires a venue refresh once
+    /// dispatch could have occurred. Order identity reconciliation is separate.
+    pub fn reservation(&mut self) -> Result<LighterNonceReservation<'_>> {
+        let nonce = self.reserve()?;
+        Ok(LighterNonceReservation { owner: self, nonce, dispatched: false })
+    }
     pub fn from_venue(account_index: i64, api_key_index: u8, next_nonce: i64) -> Result<Self> {
         ensure!(account_index >= 0, "account_index must be non-negative");
         ensure!(
@@ -323,6 +330,28 @@ impl LighterNonceOwner {
             "nonce {nonce} is not the current in-flight nonce"
         );
         Ok(())
+    }
+}
+
+pub struct LighterNonceReservation<'a> {
+    owner: &'a mut LighterNonceOwner,
+    nonce: i64,
+    dispatched: bool,
+}
+impl LighterNonceReservation<'_> {
+    pub fn nonce(&self) -> i64 { self.nonce }
+    pub fn dispatching(&mut self) { self.dispatched = true; }
+    pub fn accepted(mut self) -> Result<()> {
+        self.dispatched = true;
+        self.owner.acknowledge_accepted(self.nonce)
+    }
+}
+impl Drop for LighterNonceReservation<'_> {
+    fn drop(&mut self) {
+        if self.owner.in_flight == Some(self.nonce) {
+            self.owner.in_flight = None;
+            self.owner.refresh_required = self.dispatched;
+        }
     }
 }
 
@@ -984,6 +1013,45 @@ mod tests {
         let nonce = owner.reserve().unwrap();
         owner.acknowledge_pre_submit_failure(nonce).unwrap();
         assert_eq!(owner.reserve().unwrap(), nonce);
+    }
+
+    #[tokio::test]
+    async fn cancelled_submission_requires_refresh_instead_of_stranding_nonce() {
+        // Model both terminal outcomes: the venue never accepted the order,
+        // or it accepted the order and consumed its nonce before disconnecting.
+        for venue_next in [10, 11] {
+            let mut owner = LighterNonceOwner::from_venue(7, 3, 10).unwrap();
+            let future = async {
+                let mut reservation = owner.reservation().unwrap();
+                reservation.dispatching();
+                std::future::pending::<()>().await;
+                reservation.accepted().unwrap();
+            };
+            assert!(tokio::time::timeout(std::time::Duration::from_millis(5), future).await.is_err());
+            assert!(owner.refresh_required());
+            assert!(owner.reserve().is_err());
+            // The execution journal queries the original order. Only after its
+            // terminal result may a new hedge/repair reach this nonce owner.
+            owner.refresh(venue_next).unwrap();
+            let mut next = owner.reservation().unwrap();
+            assert_eq!(next.nonce(), venue_next);
+            next.dispatching();
+            next.accepted().unwrap();
+            assert_eq!(owner.next_nonce(), venue_next + 1);
+            assert!(!owner.refresh_required());
+        }
+    }
+
+    #[test]
+    fn scoped_nonce_releases_signing_failure_and_poisoned_overflow() {
+        let mut owner=LighterNonceOwner::from_venue(7,3,10).unwrap();
+        {let _unsent=owner.reservation().unwrap();}
+        let reservation=owner.reservation().unwrap();
+        assert_eq!(reservation.nonce(),10);drop(reservation);
+        owner.refresh(i64::MAX).unwrap();
+        assert!(owner.reservation().unwrap().accepted().is_err());
+        assert!(owner.refresh_required());
+        assert!(owner.refresh(12).is_ok());
     }
 
     #[test]

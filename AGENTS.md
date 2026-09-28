@@ -14,7 +14,9 @@ the existing venue workers and guarded execution path.
 
 Never commit data/, runtime/, real configuration, vaults, credentials, session
 tokens or logs. Test with synthetic fixtures only. Never launch a live account
-for CI or a packaging test. All remote repositories and artifacts are private.
+for CI or a packaging test. The owner explicitly keeps this repository public;
+do not change its visibility unless asked. Only source and credential-free build
+artifacts may be published; real account data and secrets must never be published.
 
 Run strategy unit tests, signer reference vectors, frontend tests, and a
 credential-free Windows packaged-binary smoke test before creating a release.

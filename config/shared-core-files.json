@@ -11,7 +11,8 @@
     "src/strategies/openai_inventory/entry_mean.rs",
     "src/strategies/openai_inventory/charts.rs",
     "src/strategies/openai_inventory/store.rs",
-    "src/strategies/openai_inventory/rules_upgrade.rs"
+    "src/strategies/openai_inventory/rules_upgrade.rs",
+    "src/strategies/openai_inventory/alerts.rs"
   ],
   "mode_agnostic": [
     "src/strategies/openai_inventory/strategy.rs",

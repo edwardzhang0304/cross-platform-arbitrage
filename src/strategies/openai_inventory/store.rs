@@ -20,6 +20,7 @@ impl Store {
         db.execute_batch("CREATE TABLE state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
             CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,at_ms INTEGER NOT NULL,kind TEXT NOT NULL,body TEXT NOT NULL);
             CREATE TABLE commands(id TEXT PRIMARY KEY,command TEXT NOT NULL,result TEXT NOT NULL);")?;
+        db.execute_batch(alerts::SCHEMA)?;
         let mut store = Self { db, _lock: None };
         store.commit(&state, 0, "offline_replay_created")?;
         Ok((store, state))
@@ -54,6 +55,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,at_ms INTEGER NOT NULL,kind TEXT NOT NULL,body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY,command TEXT NOT NULL,result TEXT NOT NULL);")?;
+        db.execute_batch(alerts::SCHEMA)?;
         let body: Option<String> = db
             .query_row("SELECT body FROM state WHERE id=1", [], |r| r.get(0))
             .optional()?;
@@ -131,6 +133,7 @@ impl Store {
                 params![at, kind, event.to_string()],
             )?;
         }
+        alerts::observe(&tx,s,at)?;
         tx.commit()?;
         Ok(())
     }
@@ -169,6 +172,7 @@ impl Store {
                 serde_json::json!({"id":id,"command":command}).to_string()
             ],
         )?;
+        alerts::observe(&tx,s,at)?;
         tx.commit()?;
         Ok(())
     }

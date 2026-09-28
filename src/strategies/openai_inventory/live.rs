@@ -687,26 +687,25 @@ impl VenueBackend for LighterLive {
                         .await?,
                 )?;
             }
-            let nonce = self.nonce.reserve()?;
+            let mut reservation = self.nonce.reservation()?;
             if crate::domain::now_ms() > r.expires_ms {
                 return Ok(rejected("request expired before signing"));
             }
             let signed = self.credential.sign_order(
                 &plan,
                 self.client.endpoints().chain_id,
-                nonce,
+                reservation.nonce(),
                 r.signed_expiry() as i64,
             )?;
             tracing::info!(request_id=%r.id,tx_hash=?signed.tx_hash,"RH signed request prepared");
             use crate::lighter_manual::{LighterSubmitDisposition, classify_submit_result};
+            reservation.dispatching();
             match classify_submit_result(self.client.submit_signed_transaction(&signed).await) {
-                LighterSubmitDisposition::Accepted(_) => self.nonce.acknowledge_accepted(nonce)?,
+                LighterSubmitDisposition::Accepted(_) => reservation.accepted()?,
                 LighterSubmitDisposition::Rejected(e) => {
-                    self.nonce.require_refresh(nonce)?;
                     return Ok(rejected(e));
                 }
                 LighterSubmitDisposition::Ambiguous(e) => {
-                    self.nonce.require_refresh(nonce)?;
                     return Err(e.context("RH submission uncertain; reconcile client id"));
                 }
             }

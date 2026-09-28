@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0-rc.6",
+  "tested_base_commit": "1479471e222a9db9205dbe16a50707e1f5fd1294",
+  "working_tree_changes": true,
+  "platform": "aarch64-apple-darwin",
+  "live": {
+    "passed": 292,
+    "ignored_public_network_probe": 1
+  },
+  "paper": {
+    "passed": 273,
+    "ignored_public_network_probe": 1
+  },
+  "signer_passed": 248,
+  "frontend_passed": 17,
+  "same_host_live_paper_parity": {
+    "observations": 96,
+    "core_sha256": "493dbd6bbd5b04024787fc6aa4d8e430cc4620dc3c8cd976d8dc354419bed6ec",
+    "trace_sha256": "ae7c192c13e134f8db64046e2709b241a87782883d0f65312062942d5433fd5c",
+    "equal": true
+  },
+  "windows_validated": false,
+  "real_feishu_delivery_tested": false,
+  "live_accounts_used": false,
+  "remote_push_performed": false
+}

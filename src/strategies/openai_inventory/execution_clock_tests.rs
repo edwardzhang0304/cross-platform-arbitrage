@@ -137,3 +137,40 @@ fn exchange_time_anchor_does_not_allow_foreign_old_future_or_overfilled_evidence
         assert!(apply(&mut s.clone(),0,&req,bad).is_err(),"case {case}");
     }
 }
+
+#[tokio::test]
+async fn defensive_controls_discard_only_unsent_openings_before_any_dispatch() {
+    for market in [MarketPair::Openai,MarketPair::Anth] {
+        for control in 0..3 {
+            let now=crate::domain::now_ms();
+            let (mut s,_,result)=incident(MarketPair::Anth,now);
+            s.config.market=market;s.config.mode=Mode::Paper;
+            s.status=Status::Running;s.paused=control==0;s.stop_requested=control==1;s.close_requested=control==2;
+            let p=s.pending.as_mut().unwrap();p.first=None;p.created_ms=now;
+            let sent=Arc::new(Mutex::new(Vec::new()));
+            let workers=[Venue::Lighter,Venue::Entropy].map(|v|venue::AccountWorker::spawn(v,Mode::Paper,true,
+                Box::new(RecoveryBackend{first:result.clone(),sent:sent.clone()})).unwrap());
+            let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+            advance(&mut s,&mut db,&workers,&[Book::default(),Book::default()],now).await.unwrap();
+            assert!(s.pending.is_none());assert!(sent.lock().unwrap().is_empty());
+            assert_eq!(s.reason,"unsent entry cancelled by risk control");
+            assert_eq!(s.positions[0].units,0);assert_eq!(s.positions[1].units,0);
+        }
+    }
+}
+
+#[test]
+fn stop_never_erases_unknown_attempts_or_unexpected_fills() {
+    let (seed,request,_)=incident(MarketPair::Anth,crate::domain::now_ms());
+    for case in 0..11 {
+        let mut s=seed.clone();let p=s.pending.as_mut().unwrap();p.first=None;
+        match case {0=>p.first=Some(request.clone()),1=>p.hedge=Some(request.clone()),
+            2=>p.repair=Some(request.clone()),3=>p.align_close=Some(request.clone()),
+            4=>p.unwind_hedge=Some(request.clone()),5=>p.first_filled=1,
+            6=>p.hedge_filled=1,7=>p.repair_filled=1,8=>p.align_close_filled=1,
+            9=>p.unwind_hedge_filled=1,_=>p.action=Action::Close}
+        let before=serde_json::to_value(&s).unwrap();
+        assert!(!cancel_unsent_entry(&mut s));
+        assert_eq!(serde_json::to_value(&s).unwrap(),before);
+    }
+}

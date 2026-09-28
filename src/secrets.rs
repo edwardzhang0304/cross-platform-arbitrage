@@ -894,6 +894,20 @@ fn write_encrypted_vault(
     plain: &PlainVault,
     kdf: VaultKdf,
 ) -> Result<()> {
+    write_encrypted_settings(path,password,plain,kdf,VAULT_AAD)
+}
+
+const NOTIFICATION_AAD:&[u8]=b"cross-platform-arbitrage.feishu.v1";
+pub fn save_notification_settings(path:&Path,password:&str,value:&crate::notifications::FeishuSettings)->Result<()> {
+    validate_password(password)?;value.validate()?;
+    write_encrypted_settings(path,password,value,VaultKdf::default_interactive(),NOTIFICATION_AAD)
+}
+pub fn load_notification_settings(path:&Path,password:&str)->Result<crate::notifications::FeishuSettings> {
+    let plain=decrypt_settings(path,password,NOTIFICATION_AAD)?;
+    let value:crate::notifications::FeishuSettings=serde_json::from_slice(&plain)?;
+    value.validate()?;Ok(value)
+}
+fn write_encrypted_settings(path:&Path,password:&str,plain:&impl Serialize,kdf:VaultKdf,aad:&[u8])->Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("vault path {} has no parent directory", path.display()))?;
@@ -905,15 +919,15 @@ fn write_encrypted_vault(
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
 
-    let mut key = derive_key(password, &salt, &kdf)?;
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+    let mut key = zeroize::Zeroizing::new(derive_key(password, &salt, &kdf)?);
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
     let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(plain).context("failed to serialize vault plaintext")?);
     let ciphertext = cipher
         .encrypt(
             XNonce::from_slice(&nonce),
             chacha20poly1305::aead::Payload {
                 msg: &plaintext,
-                aad: VAULT_AAD,
+                aad,
             },
         )
         .map_err(|_| anyhow!("failed to encrypt vault"))?;
@@ -934,6 +948,10 @@ fn write_encrypted_vault(
 }
 
 fn decrypt_vault_file(path: &Path, password: &str) -> Result<PlainVault> {
+    let plaintext=decrypt_settings(path,password,VAULT_AAD)?;
+    serde_json::from_slice::<PlainVault>(&plaintext).context("failed to parse vault plaintext")
+}
+fn decrypt_settings(path:&Path,password:&str,aad:&[u8])->Result<zeroize::Zeroizing<Vec<u8>>> {
     validate_password(password)?;
     let raw = fs::read(path).with_context(|| format!("failed to read vault {}", path.display()))?;
     let vault_file =
@@ -950,24 +968,22 @@ fn decrypt_vault_file(path: &Path, password: &str) -> Result<PlainVault> {
     let ciphertext = STANDARD_NO_PAD
         .decode(vault_file.ciphertext_b64)
         .context("failed to decode vault ciphertext")?;
-    let mut key = derive_key(password, &salt, &vault_file.kdf)?;
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
-    let plaintext = cipher
+    let mut key = zeroize::Zeroizing::new(derive_key(password, &salt, &vault_file.kdf)?);
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
+    let plaintext = zeroize::Zeroizing::new(cipher
         .decrypt(
             XNonce::from_slice(&nonce),
             chacha20poly1305::aead::Payload {
                 msg: &ciphertext,
-                aad: VAULT_AAD,
+                aad,
             },
         )
         .map_err(|_| {
             anyhow!("failed to decrypt vault; password may be wrong or file may be damaged")
-        })?;
+        })?);
     key.zeroize();
 
-    let plain = serde_json::from_slice::<PlainVault>(&plaintext)
-        .context("failed to parse vault plaintext")?;
-    Ok(plain)
+    Ok(plaintext)
 }
 
 fn derive_key(password: &str, salt: &[u8], kdf: &VaultKdf) -> Result<[u8; KEY_LEN]> {

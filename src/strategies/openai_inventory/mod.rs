@@ -10,6 +10,7 @@ mod comparison;
 pub mod charts;
 pub mod entry_mean;
 pub mod accounting;
+pub mod alerts;
 pub mod liquidation;
 pub mod execution;
 #[cfg(feature="openai-inventory-live")]
