@@ -65,7 +65,10 @@ impl Variant {
                 &path.with_file_name(format!("{}-{:?}-remote.sqlite", state.instance_id,v)))?
                 .with_logical_clock(clock.clone());
             let backend=if let Some((spec,marks))=&protection {backend.with_isolation(spec.clone(),marks.clone())?}else{backend};
-            AccountWorker::spawn(v,Mode::Paper,true,Box::new(backend))
+            // Both the durable backend and dispatch gate must use the frame's
+            // logical time. Wall time makes historical replay expire orders
+            // according to CI disk speed instead of the recorded scenario.
+            AccountWorker::spawn_replay(v,backend,clock.clone())
         });
         let [l,e]=workers;
         Ok(Self{state,store,workers:[l?,e?],warning:String::new(),accounts:None,last_lookup:0,protection})

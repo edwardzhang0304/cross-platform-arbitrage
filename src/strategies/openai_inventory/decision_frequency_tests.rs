@@ -137,7 +137,9 @@ fn cadence_is_paper_only_backward_compatible_and_restart_requires_new_confirmati
 async fn one_second_comparison_executes_paired_entry_and_profit_exit_with_original_costs() {
     use std::sync::{Arc,RwLock,atomic::{AtomicU64,Ordering}};
     for reverse in [false,true] {for policy in [ExitPolicy::Round,ExitPolicy::PerGroup] {
-        let now=crate::domain::now_ms();let mut seed=warmed(now);
+        // Historical time exposes any accidental wall-clock expiry check in
+        // the offline fixture, independently of machine speed or test load.
+        let now=4_005_000;let mut seed=warmed(now);
         seed.config.decision_ms=Some(1000);seed.config.direction_policy=DirectionPolicy::Both;
         seed.config.exit_policy=policy;seed.config.shared_exit_conditions=true;
         if reverse {for (_,m) in &mut seed.samples{*m = -*m;}}
@@ -150,6 +152,7 @@ async fn one_second_comparison_executes_paired_entry_and_profit_exit_with_origin
             let t=now+offset;let b=bidir_books(t,if offset<5000{16}else{8},reverse);
             *shared.write().unwrap()=b.clone();clock.store(t,Ordering::SeqCst);
             variant.tick(&b,t).await.unwrap();
+            assert!(variant.warning.is_empty(),"frame {offset}: {}",variant.warning);
             if offset==4000 {
                 assert_eq!(variant.state.opened_groups,1);assert_eq!(variant.state.lots.len(),1);
                 assert!(variant.state.pending.is_none());
