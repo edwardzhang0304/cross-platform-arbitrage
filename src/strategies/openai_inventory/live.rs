@@ -913,7 +913,7 @@ fn entropy_result(config: &InventoryConfig, r: &OrderRequest,
         fills, reason: if terminal && !enough { "Entropy fill history incomplete".into() } else { order.status.clone() } })
 }
 impl EntropyLive {
-    async fn inspect(&self, r: &OrderRequest) -> Result<OrderResult> {
+    async fn inspect(&self, r: &OrderRequest, evidence: Option<&venue::LookupEvidence>) -> Result<OrderResult> {
         let cloid = format!("0x{}", id(r).simple());
         let status = hyperliquid::fetch_order_status_by_cloid(
             "mainnet",
@@ -925,9 +925,8 @@ impl EntropyLive {
             if status.status == "unknownOid"
                 && crate::domain::now_ms() > r.expires_ms.saturating_add(30_000)
             {
-                // Every Entropy action is signed with expiresAfter. Absence
-                // alone is insufficient: require post-expiry chain time,
-                // no market fills and no market open orders as well.
+                // Unknown cloid alone is never a rejection. Bind fresh chain
+                // position and complete fill history to the durable ledger.
                 let (chain, orders, fills) = tokio::try_join!(
                     hyperliquid::fetch_clearinghouse_state(
                         "mainnet",
@@ -935,27 +934,18 @@ impl EntropyLive {
                         &self.config.entropy_address
                     ),
                     hyperliquid::fetch_open_orders("mainnet", "io", &self.config.entropy_address),
-                    hyperliquid::fetch_user_fills_by_time(
+                    hyperliquid::fetch_user_fills_by_time_unfiltered(
                         "mainnet",
-                        "io",
                         &self.config.entropy_address,
                         r.created_ms.saturating_sub(300_000),
-                        None
                     )
                 )?;
-                if expired_entropy_absence(
-                    r,
-                    chain.time,
-                    orders.iter().any(|o| o.coin == self.config.market.entropy_symbol()),
-                    fills.iter().any(|f| f.coin == self.config.market.entropy_symbol()),
-                ) {
-                    return Ok(OrderResult {
-                        exchange_created_ms: None,
-                        terminal: true,
-                        fills: vec![],
-                        reason: "signed request expired; chain confirms no order or fills".into(),
-                    });
-                }
+                return Ok(match entropy_absence_result(&self.config, r, evidence, &chain,
+                    &orders, &fills, crate::domain::now_ms()) {
+                    Ok(result) => result,
+                    Err(error) => OrderResult { exchange_created_ms: None, terminal: false,
+                        fills: vec![], reason: format!("Entropy absence not verified: {error}") },
+                });
             }
             return Ok(OrderResult {
                 exchange_created_ms: None,
@@ -1047,7 +1037,10 @@ impl VenueBackend for EntropyLive {
                 return Ok(rejected("below Entropy minimum"));
             }
             // Perp prices: at most 6-sizeDecimals decimal places and five significant figures.
-            let a = match self.reconcile_account().await {
+            // Reserve time for signing/dispatch. A read-only preflight timeout
+            // is a proven non-submission, not an unknown exchange order.
+            let remaining = r.expires_ms.saturating_sub(crate::domain::now_ms());
+            let a = match entropy_preflight(self.reconcile_account(), remaining).await {
                 Ok(a) => a,
                 Err(e) => return Ok(rejected(e)),
             };
@@ -1090,11 +1083,14 @@ impl VenueBackend for EntropyLive {
             if let Some(error) = response.pointer("/response/data/statuses/0/error") {
                 return Ok(rejected(error));
             }
-            self.inspect(&r).await
+            self.inspect(&r, None).await
         })
     }
     fn lookup(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult> {
-        Box::pin(async move { self.inspect(&r).await })
+        Box::pin(async move { self.inspect(&r, None).await })
+    }
+    fn lookup_reconciled(&mut self, r: OrderRequest, evidence: venue::LookupEvidence) -> BoxFuture<'_, OrderResult> {
+        Box::pin(async move { self.inspect(&r, Some(&evidence)).await })
     }
     fn account(&mut self) -> BoxFuture<'_, AccountEvidence> {
         Box::pin(async move {
@@ -1280,6 +1276,62 @@ fn entropy_warm_response(v: &Value) -> bool {
             .is_some_and(Value::is_array)
 }
 
+async fn entropy_preflight<T>(check: impl std::future::Future<Output = Result<T>>, remaining_ms: u64) -> Result<T> {
+    ensure!(remaining_ms > 500, "Entropy request expired before preflight; not submitted");
+    tokio::time::timeout(std::time::Duration::from_millis((remaining_ms - 500).min(4000)), check)
+        .await.context("Entropy account preflight timed out; request not submitted")?
+}
+
+/// Only exact, previously authenticated fills for OTHER requests can be
+/// excluded. Position equality alone, a side difference, or an empty/truncated
+/// API page can never prove this request did not fill.
+pub(super) fn entropy_absence_result(
+    config: &InventoryConfig, r: &OrderRequest, evidence: Option<&venue::LookupEvidence>,
+    chain: &hyperliquid::ClearinghouseState, orders: &[hyperliquid::OpenOrder],
+    fills: &[hyperliquid::UserFill], now: u64,
+) -> Result<OrderResult> {
+    let market = config.market.entropy_symbol();
+    ensure!(r.created_ms > 0 && r.expires_ms >= r.created_ms,
+        "invalid persisted request lifetime");
+    ensure!(expired_entropy_absence(r, chain.time,
+        orders.iter().any(|o| o.coin == market), false),
+        "signed expiry or open-order evidence incomplete");
+    let chain_time = chain.time.context("missing chain time")?;
+    ensure!(chain_time.abs_diff(now) <= 15_000, "chain time is stale or local clock differs");
+    ensure!(fills.len() < 2000, "fill history page is full; completeness is unknown");
+    let evidence = evidence.context("missing durable lookup evidence")?;
+    ensure!(evidence.request_id == r.id && evidence.market == config.market,
+        "lookup evidence belongs to another request or market");
+    let positions: Vec<_> = chain.asset_positions.iter().filter(|p| p.position.coin == market).collect();
+    ensure!(positions.len() <= 1, "duplicate market position evidence");
+    let actual = positions.first().map(|p| Decimal::from_str(&p.position.szi)
+        .map_err(anyhow::Error::from).and_then(|q| config.units(q))).transpose()?.unwrap_or(0);
+    ensure!(actual == evidence.position_units, "chain position differs from durable ledger");
+    let from = r.created_ms.saturating_sub(300_000);
+    ensure!(evidence.known_fills.iter().all(|f| f.venue == Venue::Entropy
+        && !f.order_id.is_empty() && f.order_id != r.id
+        && f.time_ms >= from && f.time_ms <= chain_time),
+        "request already has fills or durable history is inconsistent");
+    let known: std::collections::BTreeMap<_, _> = evidence.known_fills.iter().map(|f| (f.id.as_str(), f)).collect();
+    ensure!(known.len() == evidence.known_fills.len(), "duplicate durable fill identity");
+    let mut seen = std::collections::BTreeSet::new();
+    for f in fills.iter().filter(|f| f.coin == market) {
+        let identity = hyperliquid::user_fill_identity(f);
+        let old = known.get(identity.as_str()).context("unattributed market fill in query window")?;
+        ensure!(seen.insert(identity.clone()), "duplicate exchange fill identity");
+        let side = match f.side.as_str() { "B" => Side::Buy, "A" => Side::Sell,
+            _ => anyhow::bail!("invalid exchange fill side") };
+        ensure!(f.oid > 0 && f.time == old.time_ms && side == old.side
+            && config.units(Decimal::from_str(&f.sz)?)? == old.units
+            && Decimal::from_str(&f.px)? == old.price
+            && Decimal::from_str(&f.fee)? == old.fee,
+            "exchange fill differs from authenticated durable fill");
+    }
+    ensure!(seen.len() == known.len(), "exchange history omits known fills; completeness is unknown");
+    Ok(OrderResult { exchange_created_ms: None, terminal: true, fills: vec![],
+        reason: "signed request expired; chain position and complete known-fill history confirm no fill for this request".into() })
+}
+
 fn expired_entropy_absence(
     r: &OrderRequest,
     chain_time: Option<u64>,
@@ -1287,7 +1339,7 @@ fn expired_entropy_absence(
     has_fills: bool,
 ) -> bool {
     r.venue == Venue::Entropy
-        && chain_time.is_some_and(|t| t > r.expires_ms.saturating_add(30_000))
+        && chain_time.is_some_and(|t| t > r.signed_expiry().saturating_add(30_000))
         && !has_orders
         && !has_fills
 }
@@ -1569,3 +1621,7 @@ mod tests {
 #[cfg(test)]
 #[path = "live_clock_tests.rs"]
 mod clock_tests;
+
+#[cfg(test)]
+#[path = "entropy_absence_tests.rs"]
+mod entropy_absence_tests;

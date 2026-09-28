@@ -11,6 +11,25 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+/// Durable, already reconciled facts. These are not an instruction to submit or
+/// infer a fill from a position delta; adapters may only use them to prove absence.
+#[derive(Clone, Debug)]
+pub struct LookupEvidence {
+    pub request_id: String,
+    pub market: MarketPair,
+    pub position_units: i64,
+    pub known_fills: Vec<Fill>,
+}
+impl LookupEvidence {
+    pub fn from_snapshot(s: &Snapshot, r: &OrderRequest) -> Self {
+        Self {
+            request_id: r.id.clone(), market: s.config.market,
+            position_units: s.positions[r.venue.index()].units,
+            known_fills: s.fills.values().filter(|f| f.venue == r.venue
+                && f.time_ms >= r.created_ms.saturating_sub(300_000)).cloned().collect(),
+        }
+    }
+}
 pub trait VenueBackend: Send + 'static {
     fn security_ready(&self) -> bool {
         true
@@ -30,6 +49,9 @@ pub trait VenueBackend: Send + 'static {
     }
     fn submit(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult>;
     fn lookup(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult>;
+    fn lookup_reconciled(&mut self, r: OrderRequest, _evidence: LookupEvidence) -> BoxFuture<'_, OrderResult> {
+        self.lookup(r)
+    }
     fn funding(&mut self, _start: u64, _end: u64) -> BoxFuture<'_, Vec<Funding>> {
         Box::pin(async { Ok(vec![]) })
     }
@@ -38,7 +60,7 @@ pub trait VenueBackend: Send + 'static {
 enum Message {
     Liquidations(oneshot::Sender<Result<Vec<Fill>>>),
     Submit(OrderRequest, oneshot::Sender<Result<OrderResult>>),
-    Lookup(OrderRequest, oneshot::Sender<Result<OrderResult>>),
+    Lookup(OrderRequest, Option<LookupEvidence>, oneshot::Sender<Result<OrderResult>>),
     Funding(u64, u64, oneshot::Sender<Result<Vec<Funding>>>),
     Account(bool, oneshot::Sender<Result<AccountEvidence>>),
 }
@@ -107,7 +129,7 @@ impl AccountWorker {
                         };
                         let _ = reply.send(result);
                     }
-                    Message::Lookup(r, reply) => {
+                    Message::Lookup(r, evidence, reply) => {
                         // Entropy absence reconciliation performs orderStatus followed by
                         // chain, open-order and fill queries. This is read-only;
                         // submission expiry and its deadline above stay unchanged.
@@ -116,8 +138,10 @@ impl AccountWorker {
                         } else {
                             3000
                         };
-                        let _ =
-                            reply.send(bounded(backend.lookup(r), deadline, lease.clone()).await);
+                        let lookup = if let Some(evidence) = evidence {
+                            backend.lookup_reconciled(r, evidence)
+                        } else { backend.lookup(r) };
+                        let _ = reply.send(bounded(lookup, deadline, lease.clone()).await);
                     }
                     Message::Funding(start, end, reply) => {
                         let _ = reply
@@ -160,9 +184,15 @@ impl AccountWorker {
         rx.await.context("account worker stopped")?
     }
     pub(crate) async fn lookup(&self, r: OrderRequest) -> Result<OrderResult> {
+        self.lookup_with_evidence(r, None).await
+    }
+    pub(crate) async fn lookup_reconciled(&self, r: OrderRequest, evidence: LookupEvidence) -> Result<OrderResult> {
+        self.lookup_with_evidence(r, Some(evidence)).await
+    }
+    async fn lookup_with_evidence(&self, r: OrderRequest, evidence: Option<LookupEvidence>) -> Result<OrderResult> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .try_send(Message::Lookup(r, tx))
+            .try_send(Message::Lookup(r, evidence, tx))
             .context("account worker unavailable or full")?;
         rx.await.context("account worker stopped")?
     }
@@ -523,6 +553,9 @@ impl VenueBackend for GuardedBackend {
     }
     fn lookup(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult> {
         self.inner.lookup(r)
+    }
+    fn lookup_reconciled(&mut self, r: OrderRequest, evidence: LookupEvidence) -> BoxFuture<'_, OrderResult> {
+        self.inner.lookup_reconciled(r, evidence)
     }
     fn account(&mut self) -> BoxFuture<'_, AccountEvidence> {
         self.inner.account()

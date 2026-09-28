@@ -679,7 +679,8 @@ pub async fn advance(
     let result = if is_new {
         workers[req.venue.index()].submit(req.clone()).await
     } else {
-        workers[req.venue.index()].lookup(req.clone()).await
+        workers[req.venue.index()].lookup_reconciled(req.clone(),
+            venue::LookupEvidence::from_snapshot(s, &req)).await
     };
     match result {
         Ok(result) => {
@@ -743,7 +744,8 @@ pub async fn recheck_timed_out(
         (2, p.repair.as_ref())
     };
     let r = r.context("no persisted request to query")?.clone();
-    let result = workers[r.venue.index()].lookup(r.clone()).await?;
+    let result = workers[r.venue.index()].lookup_reconciled(r.clone(),
+        venue::LookupEvidence::from_snapshot(s, &r)).await?;
     let mut lookup_note = result.reason.clone();
     let mut next = s.clone();
     match apply(&mut next, which, &r, result) {

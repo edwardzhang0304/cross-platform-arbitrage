@@ -1189,6 +1189,17 @@ pub async fn fetch_user_fills_by_time(
         .collect())
 }
 
+/// Absence proofs must see the raw page size before filtering by market/DEX.
+/// A full 2000-row response is not evidence of complete history.
+pub async fn fetch_user_fills_by_time_unfiltered(
+    environment: &str, user_address: &str, start_time_ms: u64,
+) -> Result<Vec<UserFill>> {
+    post_info(&info_client()?, effective_info_url(environment)?, json!({
+        "type":"userFillsByTime", "user":user_address,
+        "startTime":start_time_ms, "aggregateByTime":false
+    })).await
+}
+
 pub async fn fetch_user_rate_limit(environment: &str, user_address: &str) -> Result<UserRateLimit> {
     let key = user_rate_limit_cache_key(environment, user_address);
     if let Ok(cache) = USER_RATE_LIMIT_CACHE.lock()
