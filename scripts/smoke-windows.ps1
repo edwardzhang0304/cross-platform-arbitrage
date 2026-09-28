@@ -26,11 +26,14 @@ try {
   $CrossProfile = Invoke-RestMethod "$Base/api/anth-portable" -Method Post -ContentType 'application/json' -Headers @{'X-Inventory-Token'=$Status.csrf} -Body '{"command":"start","id":"cross-profile","confirmation":"START_ANTH_LIVE_STRATEGY"}'
   if ($CrossProfile.ok) { throw 'OPENAI token controlled ANTH' }
   $AnthPage=(Invoke-WebRequest "$Base/anth").Content
+  if ($AnthPage -notmatch 'Cross-Platform Arbitrage' -or $AnthPage -notmatch 'ANTH 实盘配置') { throw 'ANTH product/market title is incorrect' }
   if ($AnthPage -notmatch '/api/anth-portable' -or $AnthPage -notmatch 'START_ANTH_LIVE_STRATEGY') { throw 'ANTH control routing is incorrect' }
   if ((Invoke-WebRequest "$Base/anth-inventory").Content -notmatch 'quantityDecimals":5') { throw 'ANTH quantity scale missing' }
   $Monitor = (Invoke-WebRequest "$Base/openai-inventory").Content
   if ($Monitor -notmatch '/assets/openai-market-visuals.js') { throw 'Chart asset missing' }
-  if ((Invoke-WebRequest "$Base/").Content -notmatch '/api/portable') { throw 'Control page missing' }
+  $ControlPage = (Invoke-WebRequest "$Base/").Content
+  if ($ControlPage -notmatch '/api/portable') { throw 'Control page missing' }
+  if ($ControlPage -notmatch 'Cross-Platform Arbitrage' -or $ControlPage -notmatch 'OPENAI 实盘配置') { throw 'OPENAI product/market title is incorrect' }
   $Rejected = Invoke-RestMethod "$Base/api/portable" -Method Post -ContentType 'application/json' -Body '{"command":"launch","id":"csrf-probe"}'
   if ($Rejected.ok) { throw 'Missing token was accepted' }
   $CrossSite = Invoke-RestMethod "$Base/api/openai-inventory" -Headers @{Origin='https://untrusted.example'}

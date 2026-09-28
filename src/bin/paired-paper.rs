@@ -4,7 +4,7 @@ use openai_paired_trader::{openai_inventory::{InventoryService, Mode, Control}, 
 use std::{path::PathBuf, collections::BTreeMap, sync::Arc};
 
 #[derive(Parser)]
-#[command(about="公开行情、虚拟资金；不加载密钥，也不能发送实盘订单")]
+#[command(about="Cross-Platform Arbitrage 模拟版：公开行情、虚拟资金；不加载密钥，也不能发送实盘订单")]
 struct Args {
     /// Must be a new empty directory or this simulator's own data directory.
     #[arg(long, required_unless_present="build_info")] data_dir:Option<PathBuf>,
@@ -40,7 +40,7 @@ async fn main()->Result<()> {
     }
     let tokens=PAPER_MARKETS.into_iter().map(|m|(m,uuid::Uuid::new_v4().to_string())).collect();
     let app=PaperApp {services:Arc::new(services),port:args.port,tokens:Arc::new(tokens)};
-    tracing::info!("OPENAI + ANTH 双标的模拟控制台：http://127.0.0.1:{}；同一进程、独立虚拟账户，无实盘下单能力",args.port);
+    tracing::info!("Cross-Platform Arbitrage 模拟控制台：http://127.0.0.1:{}；OPENAI + ANTH、独立虚拟账户，无实盘下单能力",args.port);
     axum::serve(listener,paper_server::router(app)).with_graceful_shutdown(async{let _=tokio::signal::ctrl_c().await;}).await?;
     Ok(())
 }

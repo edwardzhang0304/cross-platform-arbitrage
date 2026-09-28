@@ -61,7 +61,7 @@
 - 浏览器：ANTH 模拟标识、五位数量、行情卡片和收益卡片正常，页面无脚本异常，桌面无横向溢出。
 - 以上持仓、成交和收益全部是 Mac 的虚拟数据，与 Windows 实盘无关。
 
-- Windows 候选构建已成功：[私有 CI 记录](https://github.com/edwardzhang0304/openai-paired-trader/actions/runs/36299996916)。构建提交 `05940c442ac08258751a2d159ff77cb6885c480b`，版本 `0.2.0-rc.1`。策略/签名/前端/仅模拟构建测试、EXE 打包、系统 DLL 依赖检查、无密钥双页面与控制隔离冒烟测试均通过。
+- Windows 候选构建已成功：[私有 CI 记录](https://github.com/edwardzhang0304/cross-platform-arbitrage/actions/runs/36299996916)。构建提交 `05940c442ac08258751a2d159ff77cb6885c480b`，版本 `0.2.0-rc.1`。策略/签名/前端/仅模拟构建测试、EXE 打包、系统 DLL 依赖检查、无密钥双页面与控制隔离冒烟测试均通过。
 - 候选包保存在本项目 `dist/anth-candidate-0.2.0-rc.1/`，没有发布为稳定版，也没有替换 Windows 上正在运行的程序。
 
 ## 双标的同时运行补充验收

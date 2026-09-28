@@ -1,12 +1,14 @@
-# OPENAI 双平台交易 · Windows 免安装版
+# Cross-Platform Arbitrage · 多平台套利
 
-仅交付当前使用的 Lighter RH `OPENAI` 与 Entropy `io:OAI` 配对实盘策略、风险控制、双腿恢复、费用统计、监控页面与加密密钥管理。没有旧模拟盘、其他币种策略、跟单、研究数据或个人账户文件。
+同一套 Rust 策略核心支持 Lighter RH 与 Entropy 的 OPENAI、ANTH 配对交易，Windows 用于实盘，Mac 用于模拟。两个标的分别使用独立账户、配置和账本；安装包只包含程序和公开模板，不含个人账户文件。
+
+源码仓库：[edwardzhang0304/cross-platform-arbitrage](https://github.com/edwardzhang0304/cross-platform-arbitrage)。原仓库名为 `openai-paired-trader`。
 
 ## 怎么用
 
-1. 从本仓库 Releases 下载 `OPENAI-Trader-Windows-x64.zip`。
-2. **解压整个文件夹**到本机，例如 `D:\OPENAI-Trader`。不要在压缩包内直接运行。
-3. 双击 `OPENAI-Trader.exe`，会打开 `http://127.0.0.1:18794`。
+1. 从本仓库成功的 GitHub Actions 运行中下载 `verified-mac-windows`，使用其中的 `Cross-Platform-Arbitrage-Windows-x64.zip`。仅通过双系统验证的产物用于交付。
+2. **解压整个文件夹**到本机，例如 `D:\Cross-Platform-Arbitrage`。不要在压缩包内直接运行。
+3. 双击 `Cross-Platform-Arbitrage.exe`，会打开 `http://127.0.0.1:18794`。
 4. 首次使用填两个平台的公开账户信息和**交易 API 私钥**，设定密钥库密码。已有 Mac 持仓请先按下面的迁移说明转移完整账本。
 5. 解锁 → 只读检查 → 确认旧电脑程序已关闭 → 加载账户和账本 → 查看实盘监控 → 本人点击启动实盘策略。
 
@@ -23,7 +25,7 @@
 ## 文件分开存放
 
 ```text
-OPENAI-Trader.exe                  程序，升级时替换此文件
+Cross-Platform-Arbitrage.exe       程序，升级时替换此文件
 config-templates/                 不含个人信息的模板
 data/                             私人数据：不提交 Git，不放到公共网盘
   config/accounts.json            公开账户绑定；不存密码、API 私钥
@@ -38,6 +40,14 @@ data/                             私人数据：不提交 Git，不放到公共
 
 **升级程序不要覆盖或删除 `data`。持仓账本不是缓存，不能按“四小时数据”清理。** 图表行情使用原来的四小时滚动窗口。
 
+### 从旧名称升级
+
+0.2.0-rc.5 将产品、Windows EXE 和安装包名称统一为 **Cross-Platform Arbitrage**。策略、账户绑定、密钥库与账本格式没有因改名而改变；仅改 GitHub 仓库名不会更新已经运行的 Windows 程序。
+
+安排升级时，先分别停止两个策略，确认无待处理订单、挂单或未配平仓位，再退出后台并备份完整 `data`。把新 `Cross-Platform-Arbitrage.exe` 和对应 `build-info.json` 放入原安装目录，移走旧 `OPENAI-Trader.exe`，继续使用原目录里的 `data`。原安装目录可以仍叫 `OPENAI-Trader-Windows-x64`，无需改名。升级后由本人解锁、核对账户和账本，再启动策略。
+
+服务识别字段和内部 Rust 库名保留旧值，确保重复启动检查、旧诊断工具和共享核心入口兼容；它们不作为产品显示名称。
+
 监控汇总中的“净收益”包含剩余持仓的平仓估算；“平仓净收益”只计算已完成双腿平仓的部分，按对应组的实际开平仓成交扣除手续费，并计入对应已结算资金费。部分平仓按已平数量分摊开仓成本，剩余仓位浮动盈亏不计入此项。历史依据不完整时显示“—”，不会用零代替；延迟到账的资金费核对后会更新。
 
 ## 从已有 Mac 实盘迁移
@@ -49,7 +59,7 @@ data/                             私人数据：不提交 Git，不放到公共
 3. 使用本项目的 `export-legacy` 功能导出一致性账本和实际配置。导出器要求旧账本文件锁已释放且策略已停止，不会读取或复制 Vault。
 
    ```sh
-   cargo run --locked --bin openai-paired-trader -- export-legacy \
+   cargo run --locked --bin cross-platform-arbitrage -- export-legacy \
      --source "/path/to/trade_xyz_local" \
      --account-config "/path/to/active-config.toml" \
      --output "/path/to/new-private-transfer/data"
@@ -82,7 +92,7 @@ GitHub Actions 在 Windows 上编译、运行离线策略与签名测试、启�
 ```sh
 cargo test --locked --workspace --lib
 node --test tests/*.test.cjs
-cargo build --locked --release --bin openai-paired-trader
+cargo build --locked --release --bin cross-platform-arbitrage
 ```
 
 签名组件从实际使用的 `nautilus-lighter 0.60.0` 中仅提取 Rust 签名模块，保留其密码学实现和公开测试向量，避免引入整个无关交易框架。来源、许可证和提取说明见 `vendor/lighter-signing`。补丁版 Hyperliquid SDK 保留在 `vendor/hyperliquid_rust_sdk`。
@@ -90,7 +100,7 @@ cargo build --locked --release --bin openai-paired-trader
 Windows 自动验收不等于用户账户上的真实交易验收；真实凭据和现有仓位仍由本人迁移并核对。程序未做商业代码签名，Windows 可能显示发行者未知；请核对下载来源及 SHA256。
 
 
-## OPENAI＋ANTH 双标的（开发候选版）
+## OPENAI＋ANTH 双标的
 
 Windows 同一 `18794` 程序下，OPENAI 和 ANTH 分别有独立监控页 `/openai-inventory`、`/anth-inventory`，配置入口分别为 `/`、`/anth`。原 OPENAI 数据保持原位置；ANTH 配置、加密密钥库及账本位于 `data/profiles/anth-live/`。两个策略独立启动、暂停和停止；退出整个程序前须分别停止两个策略。只有所有真实账户校验通过后才能加载实盘。
 

@@ -1,7 +1,11 @@
 [package]
-name = "openai-paired-trader"
-version = "0.2.0-rc.4"
+name = "cross-platform-arbitrage"
+version = "0.2.0-rc.5"
 edition = "2024"
+
+[lib]
+# Keep the shared Rust library identity stable for both runtime entry points.
+name = "openai_paired_trader"
 
 [features]
 default = ["openai-inventory-live"]
@@ -9,7 +13,7 @@ openai-inventory-live = []
 paper-runtime = []
 
 [[bin]]
-name = "openai-paired-trader"
+name = "cross-platform-arbitrage"
 path = "src/main.rs"
 required-features = ["openai-inventory-live"]
 

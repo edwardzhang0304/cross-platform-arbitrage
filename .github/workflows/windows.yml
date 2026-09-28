@@ -59,13 +59,13 @@ jobs:
         run: cargo test --locked --release --no-default-features --features paper-runtime --lib --target ${{ matrix.target }}
       - name: Build Windows live binary
         if: matrix.platform == 'windows'
-        run: cargo build --locked --release --target ${{ matrix.target }} --bin openai-paired-trader
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin cross-platform-arbitrage
       - name: Package and smoke test Windows binary without credentials
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          ./scripts/package-windows.ps1 -Exe target/x86_64-pc-windows-msvc/release/openai-paired-trader.exe
-          ./scripts/smoke-windows.ps1 -Exe dist/OPENAI-Trader-Windows-x64/OPENAI-Trader.exe
+          ./scripts/package-windows.ps1 -Exe target/x86_64-pc-windows-msvc/release/cross-platform-arbitrage.exe
+          ./scripts/smoke-windows.ps1 -Exe dist/Cross-Platform-Arbitrage-Windows-x64/Cross-Platform-Arbitrage.exe
       - name: Build and package Mac paper binary without starting it
         if: matrix.platform == 'macos'
         run: |

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use openai_paired_trader::{portable, server};
 
 #[derive(Parser)]
-#[command(version, about="OPENAI 双平台实盘：双击启动，浏览器配置，后台运行")]
+#[command(version, about="Cross-Platform Arbitrage：双击启动，浏览器配置，后台运行")]
 struct Cli {
     /// Print public build identity and exit without reading any data or accounts.
     #[arg(long)] build_info: bool,
@@ -26,7 +26,7 @@ async fn main() {
         #[cfg(windows)] unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::*;
             let text: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
-            let title: Vec<u16> = "OPENAI 双平台交易\0".encode_utf16().collect();
+            let title: Vec<u16> = "Cross-Platform Arbitrage\0".encode_utf16().collect();
             MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
         }
         #[cfg(not(windows))] eprintln!("{message}");
