@@ -22,14 +22,13 @@
     // One column definition supplies the heading, width, alignment and value.
     // Empty and populated tables therefore use exactly the same geometry.
     const tables = [
-      {id:'accounts', title:paper ? '两平台虚拟账户' : '两平台真实账户', empty:'账户数据暂不可用', minWidth:840,
+      {id:'accounts', title:paper ? '两平台虚拟账户' : '两平台真实账户', empty:'账户数据暂不可用', minWidth:720,
         columns:[
-          {key:'venue', label:'平台', width:20, value:r => venueName(r.venue), className:'account-name'},
-          {key:'equity', label:'权益', width:16, numeric:true, value:r => amount(r.equity)},
-          {key:'free_margin', label:'可用资金', width:16, numeric:true, value:r => amount(r.free_margin)},
-          {key:'position_units', label:'持仓数量', width:16, numeric:true, value:r => quantity(r.position_units)},
-          {key:'margin', label:'保证金模式', width:20, value:r => `${r.isolated ? '逐仓' : '非逐仓'} ${r.leverage}×`},
-          {key:'open_orders', label:'挂单', width:12, numeric:true, value:r => r.open_orders}
+          {key:'venue', label:'平台', width:24, value:r => venueName(r.venue), className:'account-name'},
+          {key:'equity', label:'权益', width:19, numeric:true, value:r => amount(r.equity)},
+          {key:'free_margin', label:'可用资金', width:19, numeric:true, value:r => amount(r.free_margin)},
+          {key:'position_units', label:'持仓数量', width:19, numeric:true, value:r => quantity(r.position_units)},
+          {key:'margin', label:'保证金模式', width:19, align:'center', value:r => `${r.isolated ? '逐仓' : '非逐仓'} ${r.leverage}×`}
         ]},
       {id:'lots', title:'持有的配对仓位', empty:'暂无持仓', minWidth:1000,
         columns:[
@@ -60,14 +59,14 @@
       get('inventory-tables').innerHTML = tables.map(t => `<section class="card" data-module="${t.id}" aria-labelledby="${t.id}-heading">
         <h2 id="${t.id}-heading">${t.title}</h2><div class="scroll"><table class="inventory-table" style="--table-min-width:${t.minWidth}px" aria-labelledby="${t.id}-heading">
         <colgroup>${t.columns.map(c => `<col style="width:${c.width}%">`).join('')}</colgroup>
-        <thead><tr>${t.columns.map(c => `<th scope="col" data-field="${c.key}"${c.numeric ? ' class="numeric"' : ''}${c.title ? ` title="${escapeHtml(c.title)}"` : ''}>${c.label}</th>`).join('')}</tr></thead>
+        <thead><tr>${t.columns.map(c => `<th scope="col" data-field="${c.key}" class="${c.numeric ? 'numeric' : c.align || ''}"${c.title ? ` title="${escapeHtml(c.title)}"` : ''}>${c.label}</th>`).join('')}</tr></thead>
         <tbody id="${t.id}">${emptyRow(t)}</tbody></table></div></section>`).join('');
     }
     function renderTable(table, rows) {
       get(table.id).innerHTML = rows.length ? rows.map(row => `<tr>${table.columns.map(column => {
         const raw = column.value(row), cell = raw != null && typeof raw === 'object' ? raw : {text:raw ?? '—'};
-        const classes = [column.numeric ? 'numeric' : '', column.className, cell.className].filter(Boolean).join(' ');
-        return `<td data-field="${column.key}"${classes ? ` class="${classes}"` : ''} title="${escapeHtml(cell.title || cell.text)}">${escapeHtml(cell.text)}</td>`;
+        const classes = [column.numeric ? 'numeric' : column.align, column.className, cell.className].filter(Boolean).join(' ');
+        return `<td data-field="${column.key}" data-label="${escapeHtml(column.label)}"${classes ? ` class="${classes}"` : ''} title="${escapeHtml(cell.title || cell.text)}">${escapeHtml(cell.text)}</td>`;
       }).join('')}</tr>`).join('') : emptyRow(table);
     }
     function render(view) {

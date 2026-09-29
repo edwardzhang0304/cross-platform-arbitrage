@@ -95,3 +95,35 @@ async fn stalled_notification_cannot_hold_the_trading_database_lock() {
     work.await.unwrap();assert!(handle.status().error.is_some());
     server.abort();std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn recovery_while_token_is_loading_cancels_the_message_before_post() {
+    let entered=Arc::new(tokio::sync::Notify::new());
+    let release=Arc::new(tokio::sync::Notify::new());
+    let sent=Arc::new(AtomicUsize::new(0));
+    let router=Router::new().route("/auth/v3/tenant_access_token/internal",post({
+        let entered=entered.clone();let release=release.clone();move||{let entered=entered.clone();let release=release.clone();async move {
+            entered.notify_one();release.notified().await;
+            Json(json!({"code":0,"tenant_access_token":"synthetic-token","expire":7200}))
+        }}
+    })).route("/im/v1/messages",post({let sent=sent.clone();move||{let sent=sent.clone();async move {
+        sent.fetch_add(1,Ordering::SeqCst);Json(json!({"code":0}))
+    }}}));
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+    let server=tokio::spawn(async move{axum::serve(listener,router).await.unwrap()});
+    let dir=directory();std::fs::create_dir_all(&dir).unwrap();let path=dir.join("ledger.sqlite");
+    let mut db=rusqlite::Connection::open(&path).unwrap();db.execute_batch(alerts::SCHEMA).unwrap();
+    {let tx=db.transaction().unwrap();alerts::enqueue(&tx,1,"sustained incident").unwrap();tx.commit().unwrap();}drop(db);
+    let handle=NotificationHandle::default();handle.configure(Some(config()));
+    let work=tokio::spawn({let path=path.clone();let handle=handle.clone();async move {
+        let mut sender=FeishuSender::new().unwrap();sender.base=format!("http://{address}");
+        handle.deliver_once(&path,&mut sender).await.unwrap();
+    }});
+    tokio::time::timeout(Duration::from_secs(2),entered.notified()).await.unwrap();
+    // Same durable cancellation used when observe() sees completed paired recovery.
+    alerts::open_delivery(&path).unwrap().execute("DELETE FROM notification_outbox",[]).unwrap();
+    release.notify_one();work.await.unwrap();
+    assert_eq!(sent.load(Ordering::SeqCst),0);
+    assert_eq!(handle.status().pending,0);assert!(handle.status().last_sent_ms.is_none());
+    server.abort();std::fs::remove_dir_all(dir).unwrap();
+}

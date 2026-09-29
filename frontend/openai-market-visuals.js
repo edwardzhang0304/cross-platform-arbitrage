@@ -61,9 +61,10 @@
     if(!model)return;
     const node=(tag,attrs={},text)=>{const n=document.createElementNS('http://www.w3.org/2000/svg',tag);
       for(const [k,v] of Object.entries(attrs))n.setAttribute(k,String(v));if(text!=null)n.textContent=text;return n;};
-    const svg=node('svg',{viewBox:'0 0 1000 255',role:'img','aria-label':'当前方向的 Bid−Ask 与 Ask−Bid 价差',style:'user-select:none;-webkit-user-select:none'});
+    const compact=root.clientWidth>0&&root.clientWidth<580;
+    const svg=node('svg',{viewBox:`0 0 ${compact?480:1000} 255`,role:'img','aria-label':'当前方向的 Bid−Ask 与 Ask−Bid 价差',style:'user-select:none;-webkit-user-select:none'});
     svg.append(node('title',{},'绿线 Bid−Ask；红线 Ask−Bid'));
-    const left=74,width=890,height=154,x=t=>left+(t-model.start)/(model.end-model.start)*width;
+    const left=compact?62:74,width=compact?390:890,height=154,x=t=>left+(t-model.start)/(model.end-model.start)*width;
     const selected=displayDirection(payload);
     const closing=selected==='shortL'?'closeL':'closeE';
     const visibleValues=model.rows.flatMap(p=>[p[selected],p[closing]]).filter(v=>v!=null);
@@ -81,7 +82,7 @@
     for(const panel of panels){
       const {top,range}=panel,y=v=>top+height-(v-range.min)/(range.max-range.min)*height;
       
-      panel.series.forEach(([key,label,color],i)=>svg.append(node('text',{x:left+i*440,y:top-15,fill:color,style:`fill:${color}`,'font-size':13},`${label}  ${value(latest[key])}`)));
+      panel.series.forEach(([key,label,color],i)=>svg.append(node('text',{x:left+i*(compact?200:440),y:top-15,fill:color,style:`fill:${color}`,'font-size':13},`${label}  ${value(latest[key])}`)));
       for(let i=0;i<=3;i++){
         const p=range.min+(range.max-range.min)*i/3,yy=y(p);
         svg.append(node('line',{x1:left,x2:left+width,y1:yy,y2:yy,stroke:'#e2e8f0'}),

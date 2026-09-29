@@ -60,6 +60,10 @@ jobs:
       - name: Build Windows live binary
         if: matrix.platform == 'windows'
         run: cargo build --locked --release --target ${{ matrix.target }} --bin cross-platform-arbitrage
+      - name: Read-only diagnostics regression on Windows PowerShell 5.1
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./scripts/test-diagnostics.ps1
       - name: Package and smoke test Windows binary without credentials
         if: matrix.platform == 'windows'
         shell: pwsh

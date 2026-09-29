@@ -88,6 +88,9 @@ test('shared account and fill components preserve each market precision and esca
     f.payload.view.snapshot.fills={a:{venue:'entropy',side:'buy',units:637,time_ms:1000,price:'2100',fee:'0.01'}};
     f.render();
     const accounts=f.element('accounts').innerHTML,fills=f.element('fills').innerHTML;
+    assert(!accounts.includes('data-field="open_orders"'));
+    assert(!f.element('inventory-tables').innerHTML.includes('挂单'));
+    for(const label of ['权益','可用资金','持仓数量','保证金模式'])assert(accounts.includes(`data-label="${label}"`));
     const quantity=(637/(10**decimals)).toFixed(decimals);
     assert.match(accounts,new RegExp(`>${quantity.replace('.','\\.')}<`));
     assert.match(fills,new RegExp(`>${quantity.replace('.','\\.')}<`));

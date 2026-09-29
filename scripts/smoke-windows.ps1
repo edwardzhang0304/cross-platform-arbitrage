@@ -20,6 +20,19 @@ try {
   $Status = (Invoke-RestMethod "$Base/api/openai-inventory").data
   if ($Status.vault_unlocked -or $Status.configured -or $Status.view) { throw 'Clean package contains account state' }
   if ($Status.residual_recovery_version -ne 2) { throw 'Residual recovery version is incorrect' }
+  # Exercise the shipped collector with Windows PowerShell 5.1, not only pwsh.
+  $Collector=Join-Path (Split-Path $Exe) 'Read-Diagnostics.ps1'
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Collector -Port $Port -DataDirectory $Root -OutputDirectory $Root -Samples 1 -IntervalSeconds 0 -SkipNetwork
+  if ($LASTEXITCODE) { throw 'Packaged diagnostics failed on Windows PowerShell' }
+  $Bundle=Get-ChildItem $Root -Filter 'CPA-Diagnostics-*.zip' | Select-Object -First 1
+  Expand-Archive $Bundle.FullName (Join-Path $Root 'diagnostics-check')
+  $ReportText=Get-Content (Join-Path $Root 'diagnostics-check/report.json') -Raw -Encoding utf8
+  $Report=$ReportText | ConvertFrom-Json
+  if ($ReportText.Contains($Status.csrf) -or !$Report.read_only -or $Report.observations.Count -ne 2) { throw 'Diagnostic redaction or schema failed' }
+  foreach ($Observation in $Report.observations) {
+    if (!$Observation.available -or $Observation.loaded -or $null -ne $Observation.snapshot) { throw 'Unloaded account misreported as a position' }
+  }
+  if ($Report.health.build.source_commit -ne $Build.source_commit) { throw 'Diagnostic build identity failed' }
   $Anth = (Invoke-RestMethod "$Base/api/anth-inventory").data
   if ($Anth.profile.market -ne 'anth' -or $Anth.profile.mode -ne 'live' -or $Anth.view -or $Anth.configured -or $Anth.vault_unlocked) { throw 'ANTH profile is not empty/isolated' }
   if ($Anth.csrf -eq $Status.csrf) { throw 'Profiles share a control token' }

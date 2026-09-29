@@ -10,6 +10,8 @@ $Package='dist/Cross-Platform-Arbitrage-Windows-x64'
 New-Item -ItemType Directory -Force $Package | Out-Null
 Copy-Item $Exe "$Package/Cross-Platform-Arbitrage.exe"
 Copy-Item README.md "$Package/使用说明.md"
+foreach ($File in @('Read-Diagnostics.ps1','DiagnosticsSqlite.cs','Run-Diagnostics.cmd')) { Copy-Item "scripts/$File" "$Package/$File" }
+Copy-Item 'docs/故障排查与处理流程.md' "$Package/故障排查与处理流程.md"
 Copy-Item config "$Package/config-templates" -Recurse
 Copy-Item vendor/lighter-signing/licenses "$Package/licenses" -Recurse
 Copy-Item vendor/lighter-signing/LICENSE* "$Package/licenses/" -ErrorAction Stop

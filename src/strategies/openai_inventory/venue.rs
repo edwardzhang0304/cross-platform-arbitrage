@@ -110,7 +110,7 @@ impl AccountWorker {
                 let lease = backend.lease();
                 match msg {
                     Message::Liquidations(reply) => {
-                        let _=reply.send(bounded(backend.liquidations(),3000,lease.clone()).await);
+                        let _=reply.send(label_request(venue,"liquidation lookup",bounded(backend.liquidations(),3000,lease.clone()).await));
                     }
                     Message::Submit(r, reply) => {
                         let now = replay_clock.as_ref().map_or_else(crate::domain::now_ms,
@@ -127,7 +127,7 @@ impl AccountWorker {
                             let deadline = r.expires_ms.saturating_sub(now).min(10_000).max(1);
                             bounded(backend.submit(r), deadline, lease.clone()).await
                         };
-                        let _ = reply.send(result);
+                        let _ = reply.send(label_request(venue,"submit",result));
                     }
                     Message::Lookup(r, evidence, reply) => {
                         // Entropy absence reconciliation performs orderStatus followed by
@@ -141,11 +141,11 @@ impl AccountWorker {
                         let lookup = if let Some(evidence) = evidence {
                             backend.lookup_reconciled(r, evidence)
                         } else { backend.lookup(r) };
-                        let _ = reply.send(bounded(lookup, deadline, lease.clone()).await);
+                        let _ = reply.send(label_request(venue,"order lookup",bounded(lookup, deadline, lease.clone()).await));
                     }
                     Message::Funding(start, end, reply) => {
                         let _ = reply
-                            .send(bounded(backend.funding(start, end), 5000, lease.clone()).await);
+                            .send(label_request(venue,"funding lookup",bounded(backend.funding(start, end), 5000, lease.clone()).await));
                     }
                     Message::Account(force, reply) => {
                         let result = async {
@@ -169,7 +169,7 @@ impl AccountWorker {
                             }
                         }
                         .await;
-                        let _ = reply.send(result);
+                        let _ = reply.send(label_request(venue,if force {"account reconciliation"} else {"account lookup"},result));
                     }
                 }
             }
@@ -566,6 +566,10 @@ impl VenueBackend for GuardedBackend {
     fn funding(&mut self, start: u64, end: u64) -> BoxFuture<'_, Vec<Funding>> {
         self.inner.funding(start, end)
     }
+}
+
+fn label_request<T>(venue:Venue,operation:&str,result:Result<T>)->Result<T> {
+    result.map_err(|error|anyhow::anyhow!("{venue:?} {operation}: {error:#}"))
 }
 
 async fn bounded<T>(

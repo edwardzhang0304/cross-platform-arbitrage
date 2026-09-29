@@ -89,7 +89,10 @@ impl NotificationHandle {
         let now=crate::domain::now_ms();
         // No transaction or database lock survives a network await.
         let (entry,count,dropped)={
-            let db=alerts::open_delivery(path)?;
+            let mut db=alerts::open_delivery(path)?;
+            let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            alerts::tick(&tx,now)?;
+            tx.commit()?;
             let count:u64=db.query_row("SELECT COUNT(*) FROM notification_outbox",[],|r|r.get(0))?;
             let dropped:u64=db.query_row("SELECT dropped FROM notification_counters WHERE id=1",[],|r|r.get(0))?;
             let entry:Option<(String,String,u32)>=db.query_row("SELECT id,body,attempts FROM notification_outbox WHERE id=(SELECT id FROM notification_outbox ORDER BY at_ms,rowid LIMIT 1) AND next_ms<=?1",[now],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -99,17 +102,23 @@ impl NotificationHandle {
         let Some(settings)=self.settings.read().unwrap().clone() else {sender.forget();return Ok(())};
         let Some((id,body,attempts))=entry else{return Ok(())};
         let body=if dropped>0 {format!("{body}\n通知队列曾超限，已丢弃最旧 {dropped} 条通知；详情请检查本机账本。")}else{body};
-        let result=sender.send(&settings,&id,&body).await;
-        let db=alerts::open_delivery(path)?;
+        // Token acquisition may be slow. Recheck cancellation immediately before
+        // the message POST, with no SQL lock held over the network request.
+        let result=sender.send_checked(&settings,&id,&body,||alerts::queued(path,&id)).await;
+        let mut db=alerts::open_delivery(path)?;
         match result {
-            Ok(())=>{
-                db.execute("DELETE FROM notification_outbox WHERE id=?1",[id])?;
+            Ok(true)=>{
+                let tx=db.transaction()?;
+                tx.execute("DELETE FROM notification_outbox WHERE id=?1",[&id])?;
+                alerts::delivered(&tx,&id,crate::domain::now_ms())?;
+                tx.commit()?;
                 let mut status=self.status.write().unwrap();status.last_sent_ms=Some(crate::domain::now_ms());status.error=None;status.pending=count.saturating_sub(1);
             }
+            Ok(false)=>{let mut status=self.status.write().unwrap();status.error=None;status.pending=count.saturating_sub(1);}
             Err(_)=>{
                 let next=crate::domain::now_ms().saturating_add(retry_delay_ms(attempts));
-                db.execute("UPDATE notification_outbox SET attempts=attempts+1,next_ms=?1 WHERE id=?2",params![next,id])?;
-                self.status.write().unwrap().error=Some("飞书发送失败，将自动重试；检查网络、机器人权限和接收 ID".into());
+                let changed=db.execute("UPDATE notification_outbox SET attempts=attempts+1,next_ms=?1 WHERE id=?2",params![next,id])?;
+                self.status.write().unwrap().error=if changed>0 {Some("飞书发送失败，将自动重试；检查网络、机器人权限和接收 ID".into())}else{None};
             }
         }
         Ok(())
@@ -146,6 +155,9 @@ impl FeishuSender {
     }
     fn forget(&mut self){self.token=None;self.identity=None;}
     async fn send(&mut self,cfg:&FeishuSettings,id:&str,body:&str)->Result<()> {
+        self.send_checked(cfg,id,body,||Ok(true)).await.map(|_|())
+    }
+    async fn send_checked(&mut self,cfg:&FeishuSettings,id:&str,body:&str,still_needed:impl FnOnce()->Result<bool>)->Result<bool> {
         cfg.validate()?;
         // Do not accidentally reuse a previous application's token after edits.
         if self.identity.as_ref().is_none_or(|x|x.app_id!=cfg.app_id||x.app_secret!=cfg.app_secret) {
@@ -163,6 +175,7 @@ impl FeishuSender {
             let ttl=data.expire.saturating_sub(60).min(7200);
             self.token=Some((Zeroizing::new(std::mem::take(&mut data.tenant_access_token)),Instant::now()+Duration::from_secs(ttl)));
         }
+        if !still_needed()? {return Ok(false);}
         let token=&self.token.as_ref().unwrap().0;
         let response=self.client.post(format!("{}/im/v1/messages",self.base))
             .query(&[("receive_id_type",&cfg.receive_id_type)])
@@ -173,7 +186,7 @@ impl FeishuSender {
         if !response.status().is_success(){self.token=None;anyhow::bail!("飞书消息请求失败");}
         let data:MessageResponse=serde_json::from_slice(&response_body(response).await?).context("飞书消息响应无效")?;
         if data.code!=0{self.token=None;anyhow::bail!("飞书消息未被接受");}
-        Ok(())
+        Ok(true)
     }
 }
 pub async fn test_message(settings:&FeishuSettings,market:crate::openai_inventory::MarketPair)->Result<()> {

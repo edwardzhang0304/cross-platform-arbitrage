@@ -30,14 +30,36 @@
   /* Shared chart and quote-card presentation for the live market feed. */
   html{scrollbar-gutter:stable}
   .grid>.span{min-width:0}
-  #status-metrics{display:grid;grid-template-columns:minmax(0,2fr) repeat(2,minmax(0,1fr));gap:24px}
+  #status-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
+  #status-metrics .metric{padding:2px 24px;border-left:1px solid #ededf0}
+  #status-metrics .metric:first-child{padding-left:0;border-left:0}
+  #status-metrics small{font-size:12px;margin-bottom:8px}
   #inventory-tables{display:grid;gap:18px;min-width:0}
   #inventory-tables .card{min-width:0}
   .inventory-table{table-layout:fixed;min-width:var(--table-min-width)}
-  .inventory-table th,.inventory-table td{line-height:20px;overflow:hidden;text-overflow:ellipsis}
+  .inventory-table th,.inventory-table td{line-height:22px;padding:16px 20px;overflow:hidden;text-overflow:ellipsis}
+  .inventory-table th{padding-top:10px;padding-bottom:12px;background:#fafafb;font-weight:550}
+  .inventory-table td{font-size:13px}
+  .inventory-table th:first-child,.inventory-table td:first-child{padding-left:16px}
+  .inventory-table tbody tr:last-child td{border-bottom:0}
+  .inventory-table tbody tr:hover{background:#fafafb}
   .inventory-table .numeric{text-align:right}
+  .inventory-table .center{text-align:center}
   .inventory-table .empty{text-align:center}
-  @media(max-width:580px){#status-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}
+  @media(max-width:720px){
+    #status-metrics{gap:12px}#status-metrics .metric{padding:0 0 0 12px}
+    #status-metrics strong{font-size:19px}#status-metrics small{font-size:11px}
+    .inventory-table{display:block;min-width:0}
+    .inventory-table colgroup,.inventory-table thead{display:none}
+    .inventory-table tbody{display:grid;gap:12px}
+    .inventory-table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:8px;border:1px solid #ededf0;border-radius:12px}
+    .inventory-table td,.inventory-table td:first-child{display:flex;flex-direction:column;gap:5px;min-width:0;padding:10px 8px;border:0;white-space:normal;overflow-wrap:anywhere;text-align:left!important}
+    .inventory-table td::before{content:attr(data-label);font-size:11px;color:#6e6e73;font-weight:400}
+    .inventory-table .empty{grid-column:1/-1;align-items:center;padding:18px}
+    .inventory-table .empty::before{display:none}
+    [data-module="accounts"] td[data-field="venue"]{grid-column:1/-1;font-size:14px;border-bottom:1px solid #ededf0;margin-bottom:4px}
+    [data-module="accounts"] td[data-field="venue"]::before{display:none}
+  }
   #comparison .market-layout{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:20px;align-items:stretch}
   #comparison .market-layout #comparison-chart-panel{position:relative;min-width:0;height:222px;padding:4px 10px 30px;border:1px solid #e8e8ed;border-radius:18px;background:#fff;overflow:visible}
   #comparison-chart-panel h2{display:none}#comparison-candles{height:186px;overflow-x:auto}#comparison-candles svg{width:100%;height:186px;display:block;min-width:580px;font-variant-numeric:tabular-nums}
@@ -57,7 +79,7 @@
   #comparison .market-quotes td:last-child{grid-column:1/-1;min-height:18px;line-height:18px;font-size:12px;color:#9a3412}
   #comparison #comparison-chart-note{position:absolute;top:12px;right:18px;z-index:1;margin:0;padding:3px 7px;border-radius:7px;background:#fff;color:#6e6e73;font-size:12px;font-variant-numeric:tabular-nums}
   @media(max-width:850px){#comparison .market-layout{grid-template-columns:minmax(0,1fr)}#comparison-quotes{grid-template-columns:repeat(2,minmax(0,1fr))}}
-  @media(max-width:580px){#comparison-quotes{grid-template-columns:1fr}}
+  @media(max-width:580px){#comparison-quotes{grid-template-columns:1fr}#comparison-candles svg{min-width:0}}
 </style>
 <main>
 <nav><a href="/">控制台</a><a href="/openai-inventory">OPENAI</a><a href="/anth-inventory">ANTH</a></nav>
