@@ -8,6 +8,7 @@ use crate::{
     lighter::{
         LighterClient, LighterEnvironment, LighterExactBaseOrderRequest, LighterMarket,
         LighterOrderKind, LighterSide, build_exact_base_order_plan_with_reference,
+        build_exact_base_close_plan_with_reference,
     },
     lighter_reconcile::{LighterAccountObservation, LighterOrderObservation, LighterRemoteOrderState, parse_rest_orders},
     lighter_runtime::{
@@ -663,11 +664,13 @@ impl VenueBackend for LighterLive {
             } else {
                 (r.limit * scale).ceil() / scale
             };
-            let plan = match build_exact_base_order_plan_with_reference(
-                &self.market,
-                &req,
-                protected.to_f64().context("price overflow")?,
-            ) {
+            let reference = protected.to_f64().context("price overflow")?;
+            let planned = if r.reduce_only && a.position_units.checked_abs() == Some(r.units) {
+                build_exact_base_close_plan_with_reference(&self.market, &req, reference, a.position_units)
+            } else {
+                build_exact_base_order_plan_with_reference(&self.market, &req, reference)
+            };
+            let plan = match planned {
                 Ok(x) => x,
                 Err(e) => return Ok(rejected(e)),
             };

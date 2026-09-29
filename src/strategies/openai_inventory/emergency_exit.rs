@@ -130,6 +130,9 @@ fn finish(s:&mut Snapshot,now:u64)->Result<()> {
     for f in closes {
         let mut left=f.units;let mut allocation=vec![];
         for (j,l) in lots.iter().enumerate() {
+            // A prior rollback may have reopened the hedged leg. Its opening cash
+            // belongs to recovery, never to a lot's closing allocation.
+            if f.side==s.direction.open_side(f.venue) {continue;}
             let take=left.min(remaining[f.venue.index()][j]);
             if take>0 {allocation.push(CloseAllocation{lot_id:l.id.clone(),units:take});remaining[f.venue.index()][j]-=take;left-=take;}
         }

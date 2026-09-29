@@ -184,3 +184,20 @@ async fn earlier_partial_repair_receipts_are_retained_in_emergency_close_account
  assert_eq!(f.s.closed_groups,1);
  assert!(accounting::AccountingCache::default().report(&f.s,&f.books.read().unwrap(),crate::domain::now_ms()).closed_net_profit.is_some());
 }
+
+#[tokio::test]
+async fn prior_close_rollback_opening_is_not_misattributed_as_a_lot_close() {
+ let mut f=Fixture::new(MarketPair::Anth,Some(Action::Close),true).await;
+ let now=crate::domain::now_ms();
+ // A completed historical sell/buy recovery cycle has zero effect on current
+ // venue quantity, but both authentic fills remain in the durable journal.
+ for (id,side,time) in [("hedge-previous",Side::Sell,now-3),("unwind-previous",Side::Buy,now-2)] {
+   f.s.record_fill(&Fill{id:id.into(),order_id:format!("blocked-v2-{id}"),venue:Venue::Entropy,
+       side,units:200,price:2100.into(),fee:0.into(),time_ms:time},Some(2100.into())).unwrap();
+ }
+ f.step().await;f.step().await;
+ assert!(!emergency_exit::active(&f.s),"{:?}",f.s.emergency_exit);
+ assert!(f.s.emergency_fill_allocations["Entropy:unwind-previous"].is_empty());
+ let report=accounting::AccountingCache::default().report(&f.s,&f.books.read().unwrap(),crate::domain::now_ms());
+ assert!(report.closed_net_profit.is_some());
+}

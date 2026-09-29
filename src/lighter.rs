@@ -1298,6 +1298,30 @@ pub fn build_exact_base_order_plan_with_reference(
     request: &LighterExactBaseOrderRequest,
     reference_price: f64,
 ) -> Result<LighterOrderPlan> {
+    exact_base_plan(market, request, reference_price, false)
+}
+
+/// A verified full-position reduce-only exit may submit a dust remainder without
+/// increasing its size to the entry minimum. The venue still validates the order.
+pub fn build_exact_base_close_plan_with_reference(
+    market: &LighterMarket,
+    request: &LighterExactBaseOrderRequest,
+    reference_price: f64,
+    signed_position_base: i64,
+) -> Result<LighterOrderPlan> {
+    let closing_sign = if request.side == LighterSide::Buy { -1 } else { 1 };
+    ensure!(request.reduce_only && signed_position_base.signum() == closing_sign
+        && signed_position_base.checked_abs() == Some(request.base_amount),
+        "full close requires the exact opposite reduce-only position");
+    exact_base_plan(market, request, reference_price, true)
+}
+
+fn exact_base_plan(
+    market: &LighterMarket,
+    request: &LighterExactBaseOrderRequest,
+    reference_price: f64,
+    full_close: bool,
+) -> Result<LighterOrderPlan> {
     ensure!(
         market.is_active_perp(),
         "market {} is not an active perp",
@@ -1333,7 +1357,7 @@ pub fn build_exact_base_order_plan_with_reference(
     let base_size = scaled_i64_to_decimal(request.base_amount, size_decimals);
     let min_base = parse_positive_decimal(&market.min_base_amount, "min_base_amount")?;
     ensure!(
-        base_size + 1e-12 >= min_base,
+        full_close || base_size + 1e-12 >= min_base,
         "requested base size {:.12} is below Lighter minimum {:.12}",
         base_size,
         min_base
@@ -1345,7 +1369,7 @@ pub fn build_exact_base_order_plan_with_reference(
     );
     let min_quote = market.min_quote_amount_f64()?;
     ensure!(
-        planned_notional_usd + 1e-9 >= min_quote,
+        full_close || planned_notional_usd + 1e-9 >= min_quote,
         "planned order value {:.6} is below Lighter minimum {:.6}",
         planned_notional_usd,
         min_quote
@@ -2057,6 +2081,40 @@ mod tests {
             maker_position_size_before: Some("0.2".to_string()),
             taker_position_sign_changed: None,
             maker_position_sign_changed: None,
+        }
+    }
+
+    #[test]
+    fn full_reduce_only_close_preserves_dust_without_relaxing_entry_or_precision() {
+        for (symbol, decimals) in [("OPENAI", 4), ("ANTHROPIC", 5)] {
+            for side in [LighterSide::Buy, LighterSide::Sell] {
+                let mut m = market();
+                m.symbol = symbol.into();
+                m.size_decimals = decimals; m.supported_size_decimals = decimals;
+                m.min_base_amount = "0.001".into();
+                let r = LighterExactBaseOrderRequest {
+                    symbol: symbol.into(), side, base_amount: 1, size_decimals: decimals,
+                    kind: LighterOrderKind::Market, limit_price: None, reduce_only: true,
+                    max_slippage_bps: 0., client_order_index: 123,
+                };
+                let position = if side == LighterSide::Buy { -1 } else { 1 };
+                assert!(build_exact_base_order_plan_with_reference(&m, &r, 2100.).is_err());
+                let plan = build_exact_base_close_plan_with_reference(&m, &r, 2100., position).unwrap();
+                assert_eq!(plan.base_amount, 1);
+                assert!(plan.reduce_only);
+                assert_eq!(plan.time_in_force, 0);
+                assert_eq!(plan.limit_price, 2100.);
+                for invalid_position in [0, -position, position * 2, i64::MIN] {
+                    assert!(build_exact_base_close_plan_with_reference(&m, &r, 2100., invalid_position).is_err());
+                }
+                let mut bad = r.clone(); bad.reduce_only = false;
+                assert!(build_exact_base_close_plan_with_reference(&m, &bad, 2100., position).is_err());
+                bad = r.clone(); bad.size_decimals += 1;
+                assert!(build_exact_base_close_plan_with_reference(&m, &bad, 2100., position).is_err());
+                bad = r.clone(); bad.base_amount = 2;
+                assert!(build_exact_base_close_plan_with_reference(&m, &bad, 2100., position).is_err());
+                assert!(build_exact_base_close_plan_with_reference(&m, &r, 0., position).is_err());
+            }
         }
     }
 
