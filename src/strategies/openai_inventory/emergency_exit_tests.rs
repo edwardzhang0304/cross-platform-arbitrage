@@ -171,3 +171,16 @@ async fn emergency_consumes_depth_beyond_normal_slippage_but_never_beyond_five_p
  f.next_attempt();f.step().await;f.step().await;assert!(!emergency_exit::active(&f.s));
  assert_eq!(f.s.config.execution_slippage_bps,Decimal::ONE,"normal strategy stays 0.01 percent");
 }
+
+#[tokio::test]
+async fn earlier_partial_repair_receipts_are_retained_in_emergency_close_accounting() {
+ let mut f=Fixture::new(MarketPair::Anth,Some(Action::Close),true).await;
+ let now=crate::domain::now_ms();
+ let r=OrderRequest{id:"blocked-v2-repair-previous".into(),venue:Venue::Entropy,side:Side::Sell,units:200,limit:2099.into(),arrival_mid:Some(2100.into()),reduce_only:true,created_ms:now,expires_ms:now+5000,signed_expires_ms:None};
+ for fill in f.workers[1].submit(r).await.unwrap().fills {f.s.record_fill(&fill,Some(2100.into())).unwrap();}
+ f.s.pending.as_mut().unwrap().repair_filled=200;
+ f.step().await;f.step().await;
+ assert!(!emergency_exit::active(&f.s),"{:?}",f.s.emergency_exit);
+ assert_eq!(f.s.closed_groups,1);
+ assert!(accounting::AccountingCache::default().report(&f.s,&f.books.read().unwrap(),crate::domain::now_ms()).closed_net_profit.is_some());
+}

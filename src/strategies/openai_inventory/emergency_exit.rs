@@ -121,8 +121,11 @@ fn finish(s:&mut Snapshot,now:u64)->Result<()> {
     }
     let mut remaining: [Vec<i64>;2]=[lots.iter().map(|l|l.units).collect(),lots.iter().map(|l|l.units).collect()];
     let prior_closes_inventory=s.pending.as_ref().is_none_or(|p|p.action==Action::Close);
-    let mut closes=next.fills.values().filter(|f|e.orders.iter().chain(e.prior.iter().filter(|_|prior_closes_inventory)).any(|o|
-        o.request.id==f.order_id && o.request.reduce_only)).cloned().collect::<Vec<_>>();
+    let prior_close=s.pending.as_ref().filter(|p|p.action==Action::Close);
+    let mut closes=next.fills.values().filter(|f|
+        prior_close.is_some_and(|p|f.order_id==p.id || f.order_id.starts_with(&format!("{}-v2-",p.id)))
+        || e.orders.iter().chain(e.prior.iter().filter(|_|prior_closes_inventory)).any(|o|
+            o.request.id==f.order_id && o.request.reduce_only)).cloned().collect::<Vec<_>>();
     closes.sort_by(|a,b|(a.time_ms,&a.id).cmp(&(b.time_ms,&b.id)));
     for f in closes {
         let mut left=f.units;let mut allocation=vec![];
