@@ -46,11 +46,12 @@ function Pending-View($p) {
   $r=[ordered]@{}
   foreach ($phase in @('first','hedge','repair','align_close','unwind_hedge')) { $r[$phase]=Request-View $p.$phase }
   return [ordered]@{
-    operation_ref=(Ref $p.id); action=$p.action; created_ms=$p.created_ms; requested_units=$p.requested_units
+    operation_ref=(Ref $p.id); action=$p.action; level=$p.level; min_entry_spread=$p.min_entry_spread; created_ms=$p.created_ms; requested_units=$p.requested_units
     first_venue=$p.first_venue; first_filled=$p.first_filled; hedge_filled=$p.hedge_filled; repair_filled=$p.repair_filled
     first_terminal=$p.first_terminal; hedge_terminal=$p.hedge_terminal; repair_terminal=$p.repair_terminal
     align_close_terminal=$p.align_close_terminal; unwind_hedge_terminal=$p.unwind_hedge_terminal
     align_close_filled=$p.align_close_filled; unwind_hedge_filled=$p.unwind_hedge_filled
+    close_lot_ref=(Ref $p.close_lot_id); close_allocations=@($p.close_allocations | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{lot_ref=(Ref $_.lot_id); units=$_.units} })
     failed=$p.failed; repair_attempt=$p.repair_attempt; repair_retry_after_ms=$p.repair_retry_after_ms
     quote_wait_started_ms=$p.quote_wait_started_ms; requests=$r
   }
@@ -68,11 +69,12 @@ function Snapshot-View($s) {
     orphan=($null -ne $s.live_orphan); loss_stop=($null -ne $s.loss_stop)
     held_groups=@($s.lots).Count; closed_groups=$s.closed_groups
     lot_units_sum=($s.lots | Measure-Object units -Sum).Sum
-    ledger=@($s.positions | Select-Object venue,units)
-    lots=@($s.lots | Select-Object level,units,opened_ms,entry_spread)
+    ledger=@(for ($i=0; $i -lt @($s.positions).Count; $i++) { [ordered]@{venue=@('lighter','entropy')[$i]; units=$s.positions[$i].units} })
+    lots=@($s.lots | Select-Object @{Name='lot_ref';Expression={Ref $_.id}},level,units,opened_ms,entry_spread)
+    sequence=$s.sequence; last_sample_ms=$s.last_sample_ms; last_action_ms=$s.last_action_ms; armed=$s.armed; first_armed=$s.first_armed
     direction=$s.direction; anchor=$s.anchor; time_adds_used=$s.time_adds_used; last_open_completed=$s.last_open_completed
     pending=(Pending-View $s.pending)
-    rules=($s.config | Select-Object market,mode,grid,max_groups,group_notional,entry_offset,book_max_age_ms,account_max_age_ms,auto_neutralize,@{Name='accumulation';Expression={$_.accumulation | Select-Object interval_ms,max_time_adds,quota_scope,entry_floor,contraction_ratio}})
+    rules=($s.config | Select-Object market,mode,grid,max_groups,group_notional,entry_offset,entry_threshold_cap,entry_confirmation_ms,decision_ms,mean_window_ms,book_max_age_ms,account_max_age_ms,operation_timeout_ms,execution_slippage_bps,max_notional_per_venue,min_free_margin,max_loss_usdc,fee_lighter,fee_entropy,exit_profit_reserve,close_slice_notional,group_take_profit,exit_policy,auto_neutralize,@{Name='accumulation';Expression={$_.accumulation | Select-Object interval_ms,max_time_adds,quota_scope,entry_floor,contraction_ratio}})
     funding_synced_ms=$s.funding_synced_ms
     fills_in_operation_window=@($selected | ForEach-Object { [ordered]@{fill_ref=(Ref $_.id); order_ref=(Ref $_.order_id); venue=$_.venue; side=$_.side; units=$_.units; price=$_.price; fee=$_.fee; time_ms=$_.time_ms} })
     fills_capped=($selected.Count -eq 120)
@@ -107,7 +109,7 @@ function Capture-Market([string]$Market) {
       snapshot=(Snapshot-View $s)
       accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage)
       books=@($v.books | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{connected=$_.connected; received_ms=$_.received_ms; bid=$(if (@($_.bids).Count -gt 0 -and $null -ne $_.bids) { $_.bids[0].price }); ask=$(if (@($_.asks).Count -gt 0 -and $null -ne $_.asks) { $_.asks[0].price })} })
-      directional_means=$v.directional_means; submission_enabled=$v.submission_enabled
+      sampling=($v.sampling | Select-Object ready,continuity_active,covered_ms,required_ms); directional_means=$v.directional_means; submission_enabled=$v.submission_enabled
       warning=(SafeText $v.transient_warning); lookup_note=(SafeText $v.order_lookup_note)
       funding_complete=$v.profit_accounting.funding_complete
       notifications=[ordered]@{saved=$d.notifications.saved; unlocked=$d.notifications.unlocked; delivery=($d.notifications.delivery | Select-Object enabled,pending,dropped,last_sent_ms,@{Name='error';Expression={SafeText $_.error}})}

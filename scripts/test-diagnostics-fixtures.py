@@ -6,6 +6,20 @@ import sys
 import time
 
 root = pathlib.Path(sys.argv[1])
+if len(sys.argv)>2 and sys.argv[2]=='--hold-lock':
+    locks=[]
+    for p in root.rglob('*.sqlite'):
+        db=sqlite3.connect(p)
+        db.execute('BEGIN EXCLUSIVE')
+        locks.append(db)
+    (root/'lock-ready').touch()
+    try:
+        time.sleep(90)
+    finally:
+        for db in locks:
+            db.rollback()
+            db.close()
+    sys.exit(0)
 now = int(time.time() * 1000)
 secret = "synthetic-credential-MUST-NOT-BE-EXPORTED-0123456789"
 for market, path in [
@@ -25,7 +39,7 @@ for market, path in [
                  reason=f"account worker request deadline exceeded https://private.invalid/?key={secret} Bearer {secret}",
                  config=dict(market=market, mode="live", entropy_address="0x"+"a"*40,
                              private_key=secret, grid="5", accumulation=dict(interval_ms=1800000,max_time_adds=5,quota_scope="grid_stage",unexpected_secret=secret)),
-                 pending=pending, positions=[dict(venue="lighter",units=-4900,account=secret),dict(venue="entropy",units=5600,account=secret)],
+                 pending=pending, positions=[dict(units=-4900),dict(units=5600)],
                  lots=[dict(level=i,units=700,opened_ms=start-10000*(i+1),entry_spread="28.4",private_field=secret) for i in range(7)],
                  fills={"fill-key":dict(id="fill-key",order_id="synthetic-order",venue="entropy",side="buy",units=700,price="2100",fee="0.001",time_ms=start+1000,private_key=secret)},
                  closed_groups=1, direction="lighter_short", anchor="28", time_adds_used=1)
