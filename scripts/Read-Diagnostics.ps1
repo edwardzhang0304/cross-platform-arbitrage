@@ -175,9 +175,9 @@ try {
       $entry.snapshot=Snapshot-View $state
       if ($null -ne $state.pending) {
         try { $entry.operation_events=Read-Events $path ([Math]::Max(0,[long]$state.pending.created_ms-120000)) ([long]$state.pending.created_ms+600000) }
-        catch { $entry.operation_events_error='Window query incomplete or bounded timeout'; $script:Problems.Add("Incident event window incomplete: $market") }
+        catch { $entry.operation_events_error='Window query incomplete or bounded timeout'; $entry.operation_events_error_type=$_.Exception.GetType().Name; $entry.operation_events_error_id=(SafeText $_.FullyQualifiedErrorId); $script:Problems.Add("Incident event window incomplete: $market") }
       }
-      try { $entry.recent_events=Read-Events $path } catch { $entry.recent_events_error='Recent events incomplete or bounded timeout'; $script:Problems.Add("Recent event query incomplete: $market") }
+      try { $entry.recent_events=Read-Events $path } catch { $entry.recent_events_error='Recent events incomplete or bounded timeout'; $entry.recent_events_error_type=$_.Exception.GetType().Name; $entry.recent_events_error_id=(SafeText $_.FullyQualifiedErrorId); $script:Problems.Add("Recent event query incomplete: $market") }
     } catch { $entry.error='Readonly ledger query failed'; $script:Problems.Add("Readonly ledger query failed: $market ($($_.Exception.GetType().Name))") }
     $disk[$market]=$entry
   }

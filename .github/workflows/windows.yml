@@ -7,7 +7,18 @@ on:
 permissions:
   contents: read
 jobs:
+  diagnostics:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Read-only diagnostics regression on Windows PowerShell 5.1
+        shell: pwsh
+        run: ./scripts/test-diagnostics.ps1
   build:
+    needs: diagnostics
     strategy:
       fail-fast: false
       matrix:
@@ -60,10 +71,6 @@ jobs:
       - name: Build Windows live binary
         if: matrix.platform == 'windows'
         run: cargo build --locked --release --target ${{ matrix.target }} --bin cross-platform-arbitrage
-      - name: Read-only diagnostics regression on Windows PowerShell 5.1
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: ./scripts/test-diagnostics.ps1
       - name: Package and smoke test Windows binary without credentials
         if: matrix.platform == 'windows'
         shell: pwsh

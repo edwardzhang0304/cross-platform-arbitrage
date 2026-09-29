@@ -18,7 +18,12 @@ try {
     $Ledger=$Report.ledgers.$Market
     if (!$Ledger.readonly -or !$Ledger.available -or $Ledger.snapshot.held_groups -ne 7 -or $Ledger.snapshot.pending.first_filled -ne 700) { throw 'Offline snapshot extraction failed' }
     if ($Ledger.snapshot.ledger[0].venue -ne 'lighter' -or $Ledger.snapshot.ledger[1].venue -ne 'entropy') { throw 'Ledger venue mapping is incorrect' }
-    if ($Ledger.operation_events.events.Count -ne 2 -or $Ledger.recent_events.events.Count -ne 3) { throw 'Historical pending event window failed' }
+    if ($Ledger.operation_events.events.Count -ne 2 -or $Ledger.recent_events.events.Count -ne 3) {
+      # Only synthetic, already redaction-checked evidence is printed on CI failure.
+      Write-Output ($Ledger | ConvertTo-Json -Depth 16)
+      Write-Output ($Report.collection_problems | ConvertTo-Json)
+      throw 'Historical pending event window failed'
+    }
     if ($Ledger.snapshot.reason -notmatch 'account worker request deadline exceeded') { throw 'Useful diagnostic cause was lost' }
     if ($Ledger.snapshot.pending.requests.first.order_ref -ne $Ledger.snapshot.fills_in_operation_window[0].order_ref) { throw 'Opaque order linkage was lost' }
   }
