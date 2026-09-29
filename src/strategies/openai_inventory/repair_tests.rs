@@ -251,7 +251,10 @@ async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reop
             let first=p.first.clone().unwrap();
             s.record_fill(&Fill{id:"synthetic-first-close".into(),order_id:first.id.clone(),venue:first.venue,
                 side:first.side,units:first.units,price:d(2000),fee:Decimal::ZERO,time_ms:now-8500},None).unwrap();
-            s.paused=true;s.stop_requested=true;
+            s.close_requested=true;s.stop_after_close=true;
+            let pending_before=serde_json::to_value(&s.pending).unwrap();
+            cancel_close_all(&mut s).unwrap();
+            assert_eq!(serde_json::to_value(&s.pending).unwrap(),pending_before);
             let side=direction.open_side(Venue::Entropy).opposite();
             b[0].bids=vec![Level{price:d(1999),units:5000*scale}];
             b[0].asks=vec![Level{price:d(2001),units:5000*scale}];
@@ -290,6 +293,7 @@ async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reop
             assert_eq!(requests.iter().map(|r|&r.id).collect::<std::collections::BTreeSet<_>>().len(),4);
             assert!(requests.iter().all(|r|r.reduce_only && r.venue==Venue::Entropy && r.side==side));
             assert!(s.pending.is_none() && s.paused && s.stop_requested);
+            assert!(!s.close_requested && !s.stop_after_close && s.recovery_after_ms.is_none());
             assert!(s.loss_stop.is_none());
             assert_eq!(serde_json::to_value(&s.lots).unwrap(),untouched);
             assert_eq!(s.paired_units(),810*scale);
@@ -299,6 +303,33 @@ async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reop
             drop(requests);drop(db);std::fs::remove_dir_all(dir).unwrap();
         }
     }
+}
+
+#[test]
+fn rc10_cancel_all_retains_unknown_orders_and_only_discards_unsubmitted_intent() {
+    let now=100_000;
+    for submitted in [false,true] {
+        let (mut s,_,_)=close_incident(now,Direction::LighterShort);
+        let opening_fills=s.fills.values().filter(|f|f.id!="close-first").cloned().collect::<Vec<_>>();
+        s.positions=Default::default();s.fills.clear();
+        for f in opening_fills {s.record_fill(&f,None).unwrap();}
+        s.close_requested=true;s.stop_after_close=true;s.status=Status::Closing;
+        let p=s.pending.as_mut().unwrap();
+        p.first_filled=0;p.first_terminal=false;p.hedge_terminal=false;p.repair_terminal=false;
+        if !submitted {p.first=None;}
+        let before=serde_json::to_value(&s.pending).unwrap();
+        let inventory=serde_json::to_value((&s.positions,&s.lots,&s.fills)).unwrap();
+        cancel_close_all(&mut s).unwrap();
+        assert!(s.paused && s.stop_requested && !s.close_requested && !s.stop_after_close);
+        assert_eq!(serde_json::to_value((&s.positions,&s.lots,&s.fills)).unwrap(),inventory);
+        if submitted {assert_eq!(serde_json::to_value(&s.pending).unwrap(),before);}
+        else {assert!(s.pending.is_none());assert_eq!(s.status,Status::Stopped);}
+    }
+    let (mut s,_,_)=close_incident(now,Direction::LighterShort);
+    s.loss_stop=Some(LossStop{at_ms:now,net_pnl:Decimal::from(-30)});
+    let before=serde_json::to_value(&s).unwrap();
+    assert!(cancel_close_all(&mut s).is_err());
+    assert_eq!(serde_json::to_value(&s).unwrap(),before);
 }
 
 #[tokio::test]

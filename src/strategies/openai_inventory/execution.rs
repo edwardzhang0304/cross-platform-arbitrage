@@ -386,6 +386,29 @@ pub fn cancel_unsent_entry(s: &mut Snapshot) -> bool {
     true
 }
 
+/// Cancel future user-requested exits, not an already submitted/unknown leg.
+/// This is deliberately not a venue order cancellation or a risk-lock reset.
+pub fn cancel_close_all(s:&mut Snapshot)->Result<()> {
+    ensure!(s.loss_stop.is_none() && s.live_orphan.is_none(),
+        "risk protection is active; cannot cancel protective liquidation");
+    let unsent_close=s.pending.as_ref().is_some_and(|p|p.action==Action::Close
+        && [&p.first,&p.hedge,&p.repair,&p.align_close,&p.unwind_hedge].iter().all(|r|r.is_none())
+        && [p.first_filled,p.hedge_filled,p.repair_filled,p.align_close_filled,p.unwind_hedge_filled].iter().all(|n|*n==0));
+    s.paused=true;s.stop_requested=true;s.resume_after_recovery=false;
+    s.close_requested=false;s.stop_after_close=false;s.exit_batch_active=false;
+    s.recovery_after_ms=None;
+    if unsent_close {s.pending=None;}
+    cancel_unsent_entry(s);
+    strategy::clear_entry_confirmation(s);
+    // Preserve the actionable reason: terminal residual recovery uses it to
+    // select the correct reducing phase. A cancel must not strand that phase.
+    if s.pending.is_none() && !matches!(s.status,Status::NeedsAttention|Status::Recovering|Status::RecoveringExposure) {
+        s.status=Status::Stopped;
+        s.reason="unstarted close-all cancelled; trading stopped".into();
+    }
+    Ok(())
+}
+
 /// At most one request/query per tick. On uncertain submission: query the SAME id, never resubmit.
 pub async fn advance(
     s: &mut Snapshot,

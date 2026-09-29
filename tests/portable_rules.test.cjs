@@ -4,6 +4,32 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const path=require('node:path');
 
+test('stop and close receipts remain distinct from completed execution, even during slow commands',async()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../frontend/portable.html'),'utf8');
+  const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)};
+  const posts=[];let polls=0,tick;
+  const payload={ok:true,data:{csrf:'synthetic',view:{snapshot:{status:'needs_attention',lots:[],closed_groups:0,
+    paused:true,stop_requested:true,close_requested:true,pending:{action:'close'}}}}};
+  const ctx=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},
+    crypto:{randomUUID:()=>`synthetic-${posts.length}`},confirm:()=>true,
+    fetch:(url,opts)=>{if(opts?.method==='POST')return new Promise(resolve=>posts.push({body:JSON.parse(opts.body),resolve}));
+      polls++;return Promise.resolve({json:async()=>payload});},setInterval:fn=>{tick=fn;}});
+  vm.runInContext(html.match(/<script>\s*([\s\S]*?)<\/script>/)[1],ctx);
+  await ctx.refresh();
+  const stop=ctx.act('stop');
+  assert.match(element('notice').textContent,/等待后台确认/);
+  await ctx.act('stop');assert.equal(posts.length,1,'same pending command is not sent twice');
+  const before=polls;await tick();assert.ok(polls>before,'status polls continue while a command waits');
+  await ctx.refresh();assert.match(element('control-status').textContent,/已记录全部平仓请求.*未完成订单/);
+  posts[0].resolve({json:async()=>({ok:true,data:{accepted:true}})});await stop;
+  assert.match(element('notice').textContent,/停止新交易请求已记录/);
+  const close=ctx.act('close_all');assert.equal(posts.length,2);
+  posts[1].resolve({json:async()=>({ok:true,data:{accepted:true}})});await close;
+  assert.match(element('notice').textContent,/不代表已全部成交/);
+  assert.match(ctx.controlStateText({status:'stopped',stop_requested:true,pending:null}),/已有持仓不会/);
+  assert.match(ctx.controlStateText({status:'needs_attention',close_requested:true,pending:null}),/异常尚需复核/);
+});
+
 test('parameter text describes the loaded rules, including unchanged legacy accounts',()=>{
   const html=fs.readFileSync(path.join(__dirname,'../frontend/portable.html'),'utf8');
   const script=html.match(/<script>\s*([\s\S]*?)<\/script>/)[1];
