@@ -6,6 +6,34 @@ import sys
 import time
 
 root = pathlib.Path(sys.argv[1])
+if len(sys.argv)>2 and sys.argv[2]=='--serve':
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def do_GET(self):
+            if self.path=='/health':
+                value=dict(application='openai-paired-trader',version='synthetic',data_dir=str(root),build=dict(source_commit='synthetic'))
+            else:
+                market='anth' if 'anth' in self.path else 'openai'
+                path=root/('profiles/anth-live/runtime/inventory.sqlite' if market=='anth' else 'runtime/openai-inventory/live.sqlite')
+                with sqlite3.connect(path) as db:
+                    state=json.loads(db.execute('SELECT body FROM state').fetchone()[0])
+                stamp=int(time.time()*1000)
+                state['config'].update(account_max_age_ms=3000,book_max_age_ms=3000)
+                accounts=[dict(venue=v,position_units=n,open_orders=0,authenticated=True,observed_ms=stamp,account='synthetic-credential-NOT-FOR-EXPORT') for v,n in [('lighter',-4900),('entropy',5600)]]
+                books=[dict(connected=True,received_ms=stamp,bids=[dict(price='2100')],asks=[dict(price='2100.1')]) for _ in range(2)]
+                value=dict(ok=True,data=dict(csrf='synthetic-credential-NOT-FOR-EXPORT',view=dict(snapshot=state,accounts=accounts,books=books,profit_accounting=dict(funding_complete=False)),notifications=dict(saved=True,unlocked=True,delivery=dict(enabled=True,pending=0,error=None))))
+            data=json.dumps(value).encode()
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.send_header('Content-Length',str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+    server=HTTPServer(('127.0.0.1',19998),Handler)
+    (root/'server-ready').touch()
+    server.serve_forever()
+    sys.exit(0)
 if len(sys.argv)>2 and sys.argv[2]=='--hold-lock':
     locks=[]
     for p in root.rglob('*.sqlite'):

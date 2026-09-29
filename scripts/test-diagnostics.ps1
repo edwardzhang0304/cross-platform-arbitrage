@@ -29,6 +29,25 @@ try {
   }
   foreach ($Path in $Before.Keys) { if ((Get-FileHash $Path -Algorithm SHA256).Hash -ne $Before[$Path]) { throw 'Read-only collector modified input' } }
   if (@(Get-ChildItem (Join-Path $Root 'report') -File).Count -ne 2) { throw 'Unexpected raw diagnostic attachments' }
+  $OnlineOutput=Join-Path $Root 'online-output'
+  New-Item -ItemType Directory -Path $OnlineOutput | Out-Null
+  $Server=Start-Process -FilePath (Get-Command python).Source -ArgumentList @(('"{0}"' -f (Join-Path $PSScriptRoot 'test-diagnostics-fixtures.py')),('"{0}"' -f $Data),'--serve') -PassThru
+  try {
+    for ($i=0; $i -lt 50 -and !(Test-Path (Join-Path $Data 'server-ready')); $i++) { Start-Sleep -Milliseconds 100 }
+    if (!(Test-Path (Join-Path $Data 'server-ready'))) { throw 'Synthetic API failed to bind' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Read-Diagnostics.ps1') -Port 19998 -DataDirectory $Data -OutputDirectory $OnlineOutput -Samples 1 -IntervalSeconds 0 -SkipNetwork
+    if ($LASTEXITCODE) { throw 'Loaded-account collector failed' }
+    $OnlineZip=Get-ChildItem $OnlineOutput -Filter '*.zip' | Select-Object -First 1
+    Expand-Archive $OnlineZip.FullName (Join-Path $OnlineOutput 'report')
+    $OnlineText=Get-Content (Join-Path $OnlineOutput 'report/report.json') -Raw -Encoding utf8
+    if ($OnlineText -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key') { throw 'Live API redaction failed' }
+    $OnlineReport=$OnlineText | ConvertFrom-Json
+    foreach ($Observation in $OnlineReport.observations) {
+      if (!$Observation.available -or !$Observation.loaded -or $Observation.snapshot.held_groups -ne 7 -or $Observation.accounts.Count -ne 2) { throw 'Loaded-account API extraction failed' }
+      if ($Observation.flags -notcontains 'PENDING_OPERATION' -or $Observation.flags -match 'LEDGER_MISMATCH') { throw 'Pending ledger attribution is incorrect' }
+      if ($Observation.snapshot.pending.requests.first.order_ref -ne $Observation.snapshot.fills_in_operation_window[0].order_ref) { throw 'Live API order linkage was lost' }
+    }
+  } finally { if (!$Server.HasExited) { Stop-Process -Id $Server.Id -Force } }
   $LockedOutput=Join-Path $Root 'locked-output'
   New-Item -ItemType Directory -Path $LockedOutput | Out-Null
   $Lock=Start-Process -FilePath (Get-Command python).Source -ArgumentList @(('"{0}"' -f (Join-Path $PSScriptRoot 'test-diagnostics-fixtures.py')),('"{0}"' -f $Data),'--hold-lock') -PassThru

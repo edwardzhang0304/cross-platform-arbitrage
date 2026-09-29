@@ -174,7 +174,13 @@ try {
       $raw=@([CpaDiagnosticsSqlite]::State($path)); $state=if ($raw.Count) { $raw[0] | ConvertFrom-Json } else { $null }
       $entry.snapshot=Snapshot-View $state
       if ($null -ne $state.pending) {
-        try { $entry.operation_events=Read-Events $path ([Math]::Max(0,[long]$state.pending.created_ms-120000)) ([long]$state.pending.created_ms+600000) }
+        try {
+          # Explicit Int64 arithmetic avoids ambiguous Math.Max overload binding in PowerShell 5.1.
+          $eventStart=[long]$state.pending.created_ms
+          $eventFrom=[long]($eventStart-120000); if ($eventFrom -lt 0) { $eventFrom=[long]0 }
+          $eventTo=[long]($eventStart+600000)
+          $entry.operation_events=Read-Events -Path $path -From $eventFrom -To $eventTo
+        }
         catch { $entry.operation_events_error='Window query incomplete or bounded timeout'; $entry.operation_events_error_type=$_.Exception.GetType().Name; $entry.operation_events_error_id=(SafeText $_.FullyQualifiedErrorId); $script:Problems.Add("Incident event window incomplete: $market") }
       }
       try { $entry.recent_events=Read-Events $path } catch { $entry.recent_events_error='Recent events incomplete or bounded timeout'; $entry.recent_events_error_type=$_.Exception.GetType().Name; $entry.recent_events_error_id=(SafeText $_.FullyQualifiedErrorId); $script:Problems.Add("Recent event query incomplete: $market") }
