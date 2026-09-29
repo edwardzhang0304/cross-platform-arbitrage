@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "cross-platform-arbitrage"
-version = "0.2.0-rc.10"
+version = "0.2.0-rc.11"
 dependencies = [
  "anyhow",
  "argon2",

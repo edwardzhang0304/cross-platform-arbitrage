@@ -13,7 +13,7 @@ if len(sys.argv)>2 and sys.argv[2]=='--serve':
             pass
         def do_GET(self):
             if self.path=='/health':
-                value=dict(application='openai-paired-trader',version='synthetic',data_dir=str(root),build=dict(source_commit='synthetic'))
+                value=dict(application='openai-paired-trader',version='synthetic',data_dir=str(root),build=dict(source_commit='synthetic'),entropy_info=dict(available=True,limit=900,routine_limit=300,used_weight=432,routine_weight=300,local_deferrals=7,server_cooldown_remaining_ms=0,unexpected_secret='synthetic-credential-NOT-FOR-EXPORT'))
             else:
                 market='anth' if 'anth' in self.path else 'openai'
                 path=root/('profiles/anth-live/runtime/inventory.sqlite' if market=='anth' else 'runtime/openai-inventory/live.sqlite')

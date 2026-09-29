@@ -39,10 +39,20 @@ const INFO_MAX_BACKOFF_MS: u64 = 15_000;
 const INFO_GLOBAL_COOLDOWN_CAP_MS: u64 = 60_000;
 const INFO_REQUEST_TIMEOUT_SECS: u64 = 15;
 const INFO_RATE_WINDOW_MS: u64 = 60_000;
-const INFO_RATE_LIMIT_WEIGHT_PER_MIN: u32 = 300;
+// The venue documents 1200 REST weight/IP/minute. Leave 300 for other
+// clients/response-dependent weight; routine reads cannot spend the reserve
+// needed to establish the outcome of a live order.
+const INFO_RATE_LIMIT_WEIGHT_PER_MIN: u32 = 900;
+const INFO_ROUTINE_WEIGHT_PER_MIN: u32 = 300;
 // Background account seeding may not consume the entire foreground budget.
 const INFO_BACKGROUND_WEIGHT_PER_MIN: u32 = 140;
 tokio::task_local! { static BACKGROUND_INFO: bool; }
+tokio::task_local! { static TRADING_INFO: bool; }
+/// Trading workers already own their retry/expiry policy. Do not hide a
+/// minute-long limiter/backoff wait inside their 3–10 second deadlines.
+pub(crate) async fn trading_info<T>(critical: bool, read: impl std::future::Future<Output = T>) -> T {
+    TRADING_INFO.scope(critical || TRADING_INFO.try_with(|v| *v).unwrap_or(false), read).await
+}
 pub async fn background_info<T>(read: impl std::future::Future<Output = T>) -> T {
     BACKGROUND_INFO.scope(true, read).await
 }
@@ -81,9 +91,11 @@ static INFO_COOLDOWN_UNTIL_MS: LazyLock<Mutex<HashMap<String, u64>>> =
 
 #[derive(Debug, Default)]
 struct InfoRateWindow {
-    entries: VecDeque<(u64, u32, bool)>,
+    entries: VecDeque<(u64, u32, bool, bool)>,
     used_weight: u32,
     background_weight: u32,
+    routine_weight: u32,
+    local_deferrals: u64,
 }
 
 fn reserve_info_capacity(
@@ -91,20 +103,73 @@ fn reserve_info_capacity(
     now: u64,
     weight: u32,
     background: bool,
+    critical: bool,
 ) -> bool {
     prune_info_rate_window(window, now);
     if window.used_weight.saturating_add(weight) > INFO_RATE_LIMIT_WEIGHT_PER_MIN
+        || (!critical && window.routine_weight.saturating_add(weight) > INFO_ROUTINE_WEIGHT_PER_MIN)
         || (background
             && window.background_weight.saturating_add(weight) > INFO_BACKGROUND_WEIGHT_PER_MIN)
     {
+        window.local_deferrals = window.local_deferrals.saturating_add(1);
         return false;
     }
-    window.entries.push_back((now, weight, background));
+    window.entries.push_back((now, weight, background, critical));
     window.used_weight += weight;
+    if !critical { window.routine_weight += weight; }
     if background {
         window.background_weight += weight;
     }
     true
+}
+
+/// Whitelisted diagnostics only: never include addresses, requests or tokens.
+pub(crate) fn info_rate_diagnostics() -> Value {
+    let now=crate::domain::now_ms();
+    let Ok(mut windows)=INFO_RATE_WINDOWS.lock() else { return json!({"available":false}); };
+    let window=windows.entry(DEFAULT_INFO_URL.into()).or_default();
+    prune_info_rate_window(window,now);
+    let cooldown=INFO_COOLDOWN_UNTIL_MS.lock().ok().and_then(|v|v.get(DEFAULT_INFO_URL).copied()).unwrap_or(0);
+    json!({"available":true,"limit":INFO_RATE_LIMIT_WEIGHT_PER_MIN,
+        "routine_limit":INFO_ROUTINE_WEIGHT_PER_MIN,"used_weight":window.used_weight,
+        "routine_weight":window.routine_weight,"local_deferrals":window.local_deferrals,
+        "server_cooldown_remaining_ms":cooldown.saturating_sub(now)})
+}
+
+fn response_extra_weight(info_type: &str, value: &Value) -> u32 {
+    let divisor=match info_type {
+        "userFills"|"userFillsByTime"|"userFunding"|"fundingHistory"|"historicalOrders"|
+        "recentTrades"|"nonUserFundingUpdates"|"twapHistory"|"userTwapSliceFills"|
+        "userTwapSliceFillsByTime"|"delegatorHistory"|"delegatorRewards"|"validatorStats"=>20,
+        "candleSnapshot"=>60,
+        _=>return 0,
+    };
+    value.as_array().map_or(0,|rows|(rows.len()/divisor) as u32)
+}
+
+fn charge_response_weight(info_url: &str, weight: u32) -> Result<()> {
+    if weight==0 { return Ok(()); }
+    let now=crate::domain::now_ms();
+    let critical=TRADING_INFO.try_with(|v|*v).unwrap_or(false);
+    let background=BACKGROUND_INFO.try_with(|v|*v).unwrap_or(false);
+    let mut windows=INFO_RATE_WINDOWS.lock().map_err(|_|anyhow::anyhow!("info rate lock poisoned"))?;
+    let w=windows.entry(info_url.trim().to_ascii_lowercase()).or_default();
+    prune_info_rate_window(w,now);
+    // Response already consumed capacity: debit it even if it exceeds the
+    // remaining allowance, so subsequent requests wait/fail closed.
+    w.entries.push_back((now,weight,background,critical));
+    w.used_weight=w.used_weight.saturating_add(weight);
+    if !critical {w.routine_weight=w.routine_weight.saturating_add(weight);}
+    if background {w.background_weight=w.background_weight.saturating_add(weight);}
+    Ok(())
+}
+
+fn check_info_cooldown(info_url: &str, info_type: &str) -> Result<()> {
+    let until=INFO_COOLDOWN_UNTIL_MS.lock().map_err(|_|anyhow::anyhow!("info cooldown lock poisoned"))?
+        .get(&info_url.trim().to_ascii_lowercase()).copied().unwrap_or(0);
+    let now=crate::domain::now_ms();
+    anyhow::ensure!(until<=now,"Entropy info {info_type}: server cooldown; retry after {} ms",until.saturating_sub(now));
+    Ok(())
 }
 
 fn xyz_snapshot_flight(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
@@ -1361,6 +1426,11 @@ pub async fn fetch_user_abstraction(environment: &str, user_address: &str) -> Re
     post_info(&client, info_url, json!({"type":"userAbstraction", "user":user_address})).await
 }
 
+pub(crate) async fn fetch_user_funding(environment: &str, user: &str, start: u64, end: u64) -> Result<Value> {
+    post_info(&info_client()?, effective_info_url(environment)?,
+        json!({"type":"userFunding","user":user,"startTime":start,"endTime":end})).await
+}
+
 pub fn parse_spot_clearinghouse_state_value(value: Value) -> Result<SpotClearinghouseState> {
     if value.is_null() {
         return Ok(SpotClearinghouseState::default());
@@ -1805,15 +1875,17 @@ fn parse_optional_price(value: Option<&str>) -> Option<f64> {
 }
 
 pub(crate) fn info_client() -> Result<Client> {
-    Client::builder()
+    // Clones share the connection pool; rebuilding four clients for every
+    // account check incurred four fresh DNS/TCP/TLS handshakes.
+    static CLIENT: LazyLock<Result<Client, String>> = LazyLock::new(|| Client::builder()
         .timeout(Duration::from_secs(INFO_REQUEST_TIMEOUT_SECS))
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
             "/",
             env!("CARGO_PKG_VERSION")
         ))
-        .build()
-        .context("failed to build HTTP client")
+        .build().map_err(|e| e.to_string()));
+    CLIENT.as_ref().cloned().map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))
 }
 
 async fn post_info<T: DeserializeOwned>(
@@ -1824,26 +1896,37 @@ async fn post_info<T: DeserializeOwned>(
     let mut last_error: Option<anyhow::Error> = None;
     let info_type = info_request_type(&body);
     let info_weight = info_request_weight(&body);
+    let trading = TRADING_INFO.try_with(|v| *v).ok();
+    let attempts = if trading.is_some() { 1 } else { INFO_MAX_ATTEMPTS };
 
-    for attempt in 1..=INFO_MAX_ATTEMPTS {
+    for attempt in 1..=attempts {
         let metadata = matches!(info_type.as_str(), "perpDexs" | "meta" | "metaAndAssetCtxs");
         if metadata {
             tracing::info!(%info_type, attempt, "metadata: waiting rate capacity");
         }
-        acquire_info_rate_capacity(info_url, info_weight).await;
+        // Check the server cooldown before charging capacity for a request
+        // that will never be sent within the worker deadline.
+        if trading.is_some() {
+            check_info_cooldown(info_url,&info_type)?;
+        }
+        acquire_info_rate_capacity(info_url, info_weight).await
+            .with_context(|| format!("Entropy info {info_type}"))?;
         if metadata {
             tracing::info!(%info_type, attempt, "metadata: waiting cooldown");
         }
-        wait_info_cooldown_if_needed(info_url).await;
+        if trading.is_some() { check_info_cooldown(info_url,&info_type)?; }
+        else { wait_info_cooldown_if_needed(info_url).await; }
         if metadata {
             tracing::info!(%info_type, attempt, "metadata: HTTP send");
         }
-        let request_result = client
+        let mut request = client
             .post(info_url)
-            .json(&body)
+            .json(&body);
+        if trading.is_some() { request = request.timeout(Duration::from_millis(2500)); }
+        let request_result = request
             .send()
             .await
-            .with_context(|| format!("failed to call {info_url}"));
+            .with_context(|| format!("Entropy info {info_type}: HTTP request failed"));
 
         match request_result {
             Ok(response) => {
@@ -1853,22 +1936,23 @@ async fn post_info<T: DeserializeOwned>(
                 }
                 if status.is_success() {
                     match response
-                        .json::<T>()
+                        .json::<Value>()
                         .await
                         .context("failed to parse Hyperliquid info response")
                     {
                         Ok(parsed) => {
+                            charge_response_weight(info_url,response_extra_weight(&info_type,&parsed))?;
                             if metadata {
                                 tracing::info!(%info_type, "metadata: parsed");
                             }
-                            return Ok(parsed);
+                            return serde_json::from_value(parsed).with_context(||format!("Entropy info {info_type}: response shape invalid"));
                         }
                         Err(error) => {
                             if metadata {
                                 tracing::warn!(%info_type, error=%error, "metadata: parse failed");
                             }
                             last_error = Some(error);
-                            if attempt < INFO_MAX_ATTEMPTS {
+                            if attempt < attempts {
                                 let delay_ms =
                                     retry_delay_ms(attempt, None, parse_retry_after_ms(None));
                                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
@@ -1893,7 +1977,12 @@ async fn post_info<T: DeserializeOwned>(
                         }
                     );
 
-                    if should_retry_info_status(status) && attempt < INFO_MAX_ATTEMPTS {
+                    // Preserve Retry-After even when a trading caller returns
+                    // immediately to its own bounded retry state machine.
+                    if status == StatusCode::TOO_MANY_REQUESTS {
+                        set_info_cooldown(info_url, retry_after_ms.unwrap_or(30_000).max(30_000));
+                    }
+                    if should_retry_info_status(status) && attempt < attempts {
                         let delay_ms = retry_delay_ms(attempt, Some(status), retry_after_ms);
                         let cooldown_ms = if status == StatusCode::TOO_MANY_REQUESTS {
                             delay_ms.max(30_000)
@@ -1925,7 +2014,7 @@ async fn post_info<T: DeserializeOwned>(
             }
             Err(error) => {
                 last_error = Some(error);
-                if attempt < INFO_MAX_ATTEMPTS {
+                if attempt < attempts {
                     let delay_ms = retry_delay_ms(attempt, None, None);
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     continue;
@@ -1935,7 +2024,7 @@ async fn post_info<T: DeserializeOwned>(
     }
 
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("unknown info request error"))).with_context(
-        || format!("{info_url} info request failed after {INFO_MAX_ATTEMPTS} attempts"),
+        || format!("Entropy info {info_type} request failed after {attempts} attempt(s)"),
     )
 }
 
@@ -1956,29 +2045,32 @@ fn info_request_weight(body: &serde_json::Value) -> u32 {
             | "spotClearinghouseState"
             | "exchangeStatus",
         ) => 2,
+        Some("userRole") => 60,
         Some("meta" | "perpDexs" | "metaAndAssetCtxs") => 20,
         Some(_) | None => 20,
     }
 }
 
-async fn acquire_info_rate_capacity(info_url: &str, weight: u32) {
+async fn acquire_info_rate_capacity(info_url: &str, weight: u32) -> Result<()> {
     let weight = weight.clamp(1, INFO_RATE_LIMIT_WEIGHT_PER_MIN);
     let endpoint = info_url.trim().to_ascii_lowercase();
     let background = BACKGROUND_INFO.try_with(|v| *v).unwrap_or(false);
+    let trading = TRADING_INFO.try_with(|v| *v).ok();
     loop {
         let sleep_ms = {
             let now = crate::domain::now_ms();
-            let Ok(mut windows) = INFO_RATE_WINDOWS.lock() else {
-                return tokio::time::sleep(Duration::from_millis(250)).await;
-            };
+            let mut windows = INFO_RATE_WINDOWS.lock().map_err(|_| anyhow::anyhow!("info rate lock poisoned"))?;
             let window = windows.entry(endpoint.clone()).or_default();
-            if reserve_info_capacity(window, now, weight, background) {
+            if reserve_info_capacity(window, now, weight, background, trading == Some(true)) {
                 None
             } else {
+                anyhow::ensure!(trading.is_none(),
+                    "local info rate budget exhausted (used={}, routine={}, limit={}); read not sent",
+                    window.used_weight, window.routine_weight, INFO_RATE_LIMIT_WEIGHT_PER_MIN);
                 window
                     .entries
                     .front()
-                    .map(|(timestamp_ms, _, _)| {
+                    .map(|(timestamp_ms, _, _, _)| {
                         timestamp_ms
                             .saturating_add(INFO_RATE_WINDOW_MS)
                             .saturating_add(50)
@@ -1991,18 +2083,19 @@ async fn acquire_info_rate_capacity(info_url: &str, weight: u32) {
         if let Some(sleep_ms) = sleep_ms {
             tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
         } else {
-            return;
+            return Ok(());
         }
     }
 }
 
 fn prune_info_rate_window(window: &mut InfoRateWindow, now_ms: u64) {
-    while let Some((timestamp_ms, weight, background)) = window.entries.front().copied() {
+    while let Some((timestamp_ms, weight, background, critical)) = window.entries.front().copied() {
         if now_ms.saturating_sub(timestamp_ms) < INFO_RATE_WINDOW_MS {
             break;
         }
         window.entries.pop_front();
         window.used_weight = window.used_weight.saturating_sub(weight);
+        if !critical { window.routine_weight = window.routine_weight.saturating_sub(weight); }
         if background {
             window.background_weight = window.background_weight.saturating_sub(weight);
         }
@@ -2075,21 +2168,21 @@ async fn wait_info_cooldown_if_needed(info_url: &str) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn cold_account_seeds_leave_capacity_for_sdk_mapping_without_raising_total() {
+    fn cold_account_seeds_preserve_the_routine_budget() {
         let mut window = super::InfoRateWindow::default();
         for _ in 0..7 {
-            assert!(super::reserve_info_capacity(&mut window, 1000, 20, true));
+            assert!(super::reserve_info_capacity(&mut window, 1000, 20, true, false));
         }
-        assert!(!super::reserve_info_capacity(&mut window, 1000, 20, true));
+        assert!(!super::reserve_info_capacity(&mut window, 1000, 20, true, false));
         // Two markets can still each fetch perpDexs/meta/metaAndAssetCtxs.
         for _ in 0..6 {
-            assert!(super::reserve_info_capacity(&mut window, 1000, 20, false));
+            assert!(super::reserve_info_capacity(&mut window, 1000, 20, false, false));
         }
         assert_eq!(window.used_weight, 260);
-        assert!(super::reserve_info_capacity(&mut window, 1000, 40, false));
-        assert!(!super::reserve_info_capacity(&mut window, 1000, 1, false));
-        assert!(!super::reserve_info_capacity(&mut window, 60999, 20, true));
-        assert!(super::reserve_info_capacity(&mut window, 61000, 20, true));
+        assert!(super::reserve_info_capacity(&mut window, 1000, 40, false, false));
+        assert!(!super::reserve_info_capacity(&mut window, 1000, 1, false, false));
+        assert!(!super::reserve_info_capacity(&mut window, 60999, 20, true, false));
+        assert!(super::reserve_info_capacity(&mut window, 61000, 20, true, false));
         assert_eq!(window.used_weight, 20);
         assert_eq!(window.background_weight, 20);
     }
@@ -2421,3 +2514,7 @@ mod tests {
         assert_eq!(state.balances[0].hold, "1.5");
     }
 }
+
+#[cfg(test)]
+#[path="hyperliquid_transport_tests.rs"]
+mod transport_tests;

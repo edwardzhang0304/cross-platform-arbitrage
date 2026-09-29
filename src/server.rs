@@ -59,7 +59,7 @@ fn local(headers: &HeaderMap, port: u16) -> Result<()> {
 }
 async fn health(State(app): State<App>, h: HeaderMap) -> Json<Value> {
     if local(&h, app.port).is_err() { return Json(json!({"ok":false})); }
-    Json(json!({"application":"openai-paired-trader","version":env!("CARGO_PKG_VERSION"),"build":crate::build_info::current(),"data_dir":app.root.to_string_lossy(),"sleep_prevention":cfg!(windows)}))
+    Json(json!({"application":"openai-paired-trader","version":env!("CARGO_PKG_VERSION"),"build":crate::build_info::current(),"data_dir":app.root.to_string_lossy(),"sleep_prevention":cfg!(windows),"entropy_info":crate::hyperliquid::info_rate_diagnostics()}))
 }
 async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
     if local(&h, app.port).is_err() { return Json(json!({"ok":false,"error":"只允许本机访问"})); }

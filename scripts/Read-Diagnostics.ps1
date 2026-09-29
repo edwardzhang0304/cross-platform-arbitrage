@@ -145,7 +145,7 @@ $health=$null; $root=$DataDirectory
 try {
   $h=Read-Local '/health'
   if ($h.application -ne 'openai-paired-trader') { throw 'Unexpected application' }
-  $health=[ordered]@{version=$h.version; build=($h.build | Select-Object source_commit,strategy_core_sha256,version,runtime,target,dirty); data_dir=$h.data_dir; sleep_prevention=$h.sleep_prevention}
+  $health=[ordered]@{version=$h.version; build=($h.build | Select-Object source_commit,strategy_core_sha256,version,runtime,target,dirty); data_dir=$h.data_dir; sleep_prevention=$h.sleep_prevention; entropy_info=($h.entropy_info | Select-Object available,limit,routine_limit,used_weight,routine_weight,local_deferrals,server_cooldown_remaining_ms)}
   $root=[string]$h.data_dir
 } catch { $script:Problems.Add('Backend health unavailable; will also attempt readonly disk diagnostics') }
 if ($root.StartsWith('\\?\')) { $root=$root.Substring(4) }
@@ -199,7 +199,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc9.1'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc11'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

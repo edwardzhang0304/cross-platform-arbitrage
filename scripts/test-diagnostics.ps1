@@ -42,6 +42,7 @@ try {
     $OnlineText=Get-Content (Join-Path $OnlineOutput 'report/report.json') -Raw -Encoding utf8
     if ($OnlineText -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key') { throw 'Live API redaction failed' }
     $OnlineReport=$OnlineText | ConvertFrom-Json
+    if ($OnlineReport.health.entropy_info.limit -ne 900 -or $OnlineReport.health.entropy_info.local_deferrals -ne 7) { throw 'Info limiter diagnostics were lost' }
     foreach ($Observation in $OnlineReport.observations) {
       if (!$Observation.available -or !$Observation.loaded -or $Observation.snapshot.held_groups -ne 7 -or $Observation.accounts.Count -ne 2) { throw 'Loaded-account API extraction failed' }
       if ($Observation.flags -notcontains 'PENDING_OPERATION' -or $Observation.flags -match 'LEDGER_MISMATCH') { throw 'Pending ledger attribution is incorrect' }

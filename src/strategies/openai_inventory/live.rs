@@ -395,6 +395,7 @@ async fn build_backends(
             leverage_confirmed: false,
             clock_evidence: None,
             abstraction: None,
+            preflight_account: None,
         }),
     ])
 }
@@ -866,6 +867,14 @@ struct EntropyLive {
     leverage_confirmed: bool,
     clock_evidence: Option<(u64, u64, u64)>,
     abstraction: Option<(String, u64)>,
+    preflight_account: Option<AccountEvidence>,
+}
+
+/// Consume once, preserve the original observation time, and never carry
+/// evidence across a submission or an order lookup.
+fn take_entropy_preflight(cache: &mut Option<AccountEvidence>, c: &InventoryConfig, now: u64) -> Option<AccountEvidence> {
+    cache.take().filter(|a| a.venue == Venue::Entropy && a.account == c.entropy_account
+        && a.authenticated && a.observed_ms <= now && now - a.observed_ms <= c.account_max_age_ms)
 }
 
 fn entropy_price(r: &OrderRequest) -> Result<Decimal> {
@@ -914,6 +923,9 @@ fn entropy_result(config: &InventoryConfig, r: &OrderRequest,
 }
 impl EntropyLive {
     async fn inspect(&self, r: &OrderRequest, evidence: Option<&venue::LookupEvidence>) -> Result<OrderResult> {
+        hyperliquid::trading_info(true, self.inspect_inner(r, evidence)).await
+    }
+    async fn inspect_inner(&self, r: &OrderRequest, evidence: Option<&venue::LookupEvidence>) -> Result<OrderResult> {
         let cloid = format!("0x{}", id(r).simple());
         let status = hyperliquid::fetch_order_status_by_cloid(
             "mainnet",
@@ -988,15 +1000,15 @@ impl VenueBackend for EntropyLive {
     }
     fn reconcile_account(&mut self) -> BoxFuture<'_, AccountEvidence> {
         self.last_rest = 0;
-        self.account()
+        Box::pin(async move { hyperliquid::trading_info(true, self.account()).await })
     }
 
     fn funding(&mut self, start: u64, end: u64) -> BoxFuture<'_, Vec<Funding>> {
-        Box::pin(async move {
+        Box::pin(hyperliquid::trading_info(false, async move {
             let mut from = start;
             let mut out = vec![];
             for _ in 0..100 {
-                let rows:Value=hyperliquid::info_client()?.post(hyperliquid::effective_info_url("mainnet")?).json(&json!({"type":"userFunding","user":self.config.entropy_address,"startTime":from,"endTime":end})).send().await?.error_for_status()?.json().await?;
+                let rows=hyperliquid::fetch_user_funding("mainnet",&self.config.entropy_address,from,end).await?;
                 let rows = rows.as_array().context("invalid funding history")?;
                 for row in rows {
                     let t = timestamp(&row["time"])?;
@@ -1024,7 +1036,7 @@ impl VenueBackend for EntropyLive {
                 from = last;
             }
             anyhow::bail!("funding history exceeds bounded pagination")
-        })
+        }))
     }
 
     fn submit(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult> {
@@ -1040,9 +1052,12 @@ impl VenueBackend for EntropyLive {
             // Reserve time for signing/dispatch. A read-only preflight timeout
             // is a proven non-submission, not an unknown exchange order.
             let remaining = r.expires_ms.saturating_sub(crate::domain::now_ms());
-            let a = match entropy_preflight(self.reconcile_account(), remaining).await {
-                Ok(a) => a,
-                Err(e) => return Ok(rejected(e)),
+            let a = match take_entropy_preflight(&mut self.preflight_account, &self.config, crate::domain::now_ms()) {
+                Some(a) => a,
+                None => match entropy_preflight(self.reconcile_account(), remaining).await {
+                    Ok(a) => { self.preflight_account = None; a },
+                    Err(e) => return Ok(rejected(format!("{e:#}"))),
+                },
             };
             if let Err(e) = final_risk(&self.config, &a, &r) {
                 return Ok(rejected(e));
@@ -1087,13 +1102,16 @@ impl VenueBackend for EntropyLive {
         })
     }
     fn lookup(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult> {
+        self.preflight_account = None;
         Box::pin(async move { self.inspect(&r, None).await })
     }
     fn lookup_reconciled(&mut self, r: OrderRequest, evidence: venue::LookupEvidence) -> BoxFuture<'_, OrderResult> {
+        self.preflight_account = None;
         Box::pin(async move { self.inspect(&r, Some(&evidence)).await })
     }
     fn account(&mut self) -> BoxFuture<'_, AccountEvidence> {
-        Box::pin(async move {
+        self.preflight_account = None;
+        Box::pin(hyperliquid::trading_info(false, async move {
             let now = crate::domain::now_ms();
             if self.abstraction.as_ref().is_none_or(|(_, at)| now.saturating_sub(*at) >= 60_000) {
                 let mode = hyperliquid::fetch_user_abstraction("mainnet", &self.config.entropy_address).await?;
@@ -1122,8 +1140,9 @@ impl VenueBackend for EntropyLive {
                     .count();
                 Ok((serde_json::from_value(state)?, count, active, serde_json::from_value(spot)?))
             })();
-            let (a, order_count, active, spot) = if self.last_rest != 0 && stream.is_ok() {
-                stream?
+            let (a, order_count, active, spot, rest_started) = if self.last_rest != 0 && stream.is_ok() {
+                let (a,n,active,spot)=stream?;
+                (a,n,active,spot,None)
             } else {
                 let now = crate::domain::now_ms();
                 ensure!(
@@ -1141,7 +1160,7 @@ impl VenueBackend for EntropyLive {
                     hyperliquid::fetch_spot_clearinghouse_state("mainnet",&self.config.entropy_address)
                 )?;
                 self.clock_evidence = a.time.map(|server| (started, server, crate::domain::now_ms()));
-                (a, orders.iter().filter(|o| o.coin == self.config.market.entropy_symbol()).count(), active, spot)
+                (a, orders.iter().filter(|o| o.coin == self.config.market.entropy_symbol()).count(), active, spot, Some(started))
             };
             let p = a
                 .asset_positions
@@ -1174,10 +1193,10 @@ impl VenueBackend for EntropyLive {
                 &spot,
                 &active,
             )?;
-            Ok(AccountEvidence {
+            let evidence=AccountEvidence {
                 venue: Venue::Entropy,
                 account: self.config.entropy_account.clone(),
-                observed_ms: crate::domain::now_ms(),
+                observed_ms: rest_started.unwrap_or_else(crate::domain::now_ms),
                 position_units,
                 free_margin: free,
                 equity,
@@ -1188,8 +1207,12 @@ impl VenueBackend for EntropyLive {
                 liquidation_price: p
                     .and_then(|p| p.position.liquidation_px.as_ref())
                     .and_then(|p| Decimal::from_str(p).ok()),
-            })
-        })
+            };
+            // Only a complete REST snapshot is eligible. Failed/cancelled
+            // queries and stream-only updates never populate this cache.
+            if rest_started.is_some() { self.preflight_account=Some(evidence.clone()); }
+            Ok(evidence)
+        }))
     }
 }
 
@@ -1620,3 +1643,7 @@ mod clock_tests;
 #[cfg(test)]
 #[path = "entropy_absence_tests.rs"]
 mod entropy_absence_tests;
+
+#[cfg(test)]
+#[path="live_transport_tests.rs"]
+mod transport_tests;
