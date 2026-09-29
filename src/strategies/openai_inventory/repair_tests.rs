@@ -64,6 +64,30 @@ fn result(req:&OrderRequest, units:i64, terminal:bool)->OrderResult {
 }
 
 #[test]
+fn rc10_repair_slices_only_protected_depth_in_both_markets_and_directions() {
+    let now=100_000;
+    for market in [MarketPair::Openai,MarketPair::Anth] {
+        for side in [Side::Buy,Side::Sell] {
+            let (mut s,_,mut b)=incident(now,Direction::LighterShort);
+            s.config.market=market;
+            let step=s.config.common_step();
+            let levels=vec![Level{price:d(2000),units:step*6+step/2},
+                Level{price:if side==Side::Buy {d(2001)}else{d(1999)},units:step*100}];
+            b[1].bids=vec![Level{price:d(1999),units:step*100}];
+            b[1].asks=vec![Level{price:d(2001),units:step*100}];
+            if side==Side::Buy {b[1].asks=levels;}else{b[1].bids=levels;}
+            let r=request(&s,&b,Venue::Entropy,side,step*18,true,"repair",now).unwrap();
+            assert_eq!(r.units,step*6);
+            assert!(r.reduce_only);
+            assert_eq!(r.side,side);
+            assert!(if side==Side::Buy {r.limit<=Decimal::new(20002,1)}else{r.limit>=Decimal::new(19998,1)});
+            // The ordinary hedge/entry still requires full protected depth.
+            assert!(request(&s,&b,Venue::Entropy,side,step*18,true,"hedge",now).is_err());
+        }
+    }
+}
+
+#[test]
 fn automatic_retry_preserves_ten_pairs_on_full_and_partial_fills_in_both_directions() {
     let now=100_000;
     for direction in [Direction::LighterShort,Direction::LighterLong] {
@@ -112,7 +136,8 @@ fn retry_requires_terminal_outcomes_fresh_accounts_owned_positions_and_protected
             7=>a[1].position_units+=10,
             8=>{a[1].position_units+=10;s.positions[1].units+=10;},
             9=>b[1].received_ms=now-2000,
-            10=>b[1].bids=vec![Level{price:d(1628),units:80},Level{price:d(1627),units:1000}],
+            // Less than one venue step cannot be sliced safely.
+            10=>b[1].bids=vec![Level{price:d(1628),units:9},Level{price:d(1627),units:1000}],
             _=>s.config.auto_neutralize=false,
         }
         let before=serde_json::to_value(&s).unwrap();
@@ -180,6 +205,99 @@ impl venue::VenueBackend for RepairBackend {
     }
     fn account(&mut self)->venue::BoxFuture<'_,AccountEvidence> {
         Box::pin(async { anyhow::bail!("fixture does not provide live accounts") })
+    }
+}
+
+struct SlicedRepairBackend {
+    requests:std::sync::Arc<std::sync::Mutex<Vec<OrderRequest>>>,
+    scale:i64,
+}
+impl venue::VenueBackend for SlicedRepairBackend {
+    fn submit(&mut self,r:OrderRequest)->venue::BoxFuture<'_,OrderResult> {
+        let mut sent=self.requests.lock().unwrap();
+        let qty=if sent.is_empty(){40*self.scale}else{r.units};sent.push(r.clone());
+        Box::pin(async move{Ok(result(&r,qty,true))})
+    }
+    fn lookup(&mut self,_:OrderRequest)->venue::BoxFuture<'_,OrderResult> {
+        Box::pin(async{anyhow::bail!("no unknown request in terminal fixture")})
+    }
+    fn account(&mut self)->venue::BoxFuture<'_,AccountEvidence> {
+        Box::pin(async{anyhow::bail!("synthetic accounts supplied by fixture")})
+    }
+}
+
+#[tokio::test]
+async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reopen() {
+    for market in [MarketPair::Openai,MarketPair::Anth] {
+        for direction in [Direction::LighterShort,Direction::LighterLong] {
+            let mut now=crate::domain::now_ms();
+            let scale=market.common_step()/10;
+            let (mut s,mut a,mut b)=close_incident(now,direction);
+            s.config.market=market;s.positions=Default::default();s.fills.clear();s.lots.clear();
+            for i in 0..11 {
+                let id=format!("synthetic-selected-{i}");
+                for venue in [Venue::Lighter,Venue::Entropy] {
+                    s.record_fill(&Fill{id:format!("{id}-{venue:?}"),order_id:format!("{id}-entry"),
+                        venue,side:direction.open_side(venue),units:90*scale,price:d(2000),fee:Decimal::ZERO,time_ms:now-20_000},None).unwrap();
+                }
+                s.lots.push(Lot{id,units:90*scale,level:i,opened_ms:now-20_000,entry_spread:d(20),entry_net_spread:Some(d(20))});
+            }
+            let untouched=serde_json::to_value(&s.lots[..9]).unwrap();
+            let p=s.pending.as_mut().unwrap();
+            p.requested_units=180*scale;p.first_filled=180*scale;p.first_value=d(2000)*d(180*scale);
+            p.first.as_mut().unwrap().units=180*scale;
+            p.first.as_mut().unwrap().limit=d(2000);
+            p.close_allocations=s.lots[9..].iter().map(|l|CloseAllocation{lot_id:l.id.clone(),units:l.units}).collect();
+            let first=p.first.clone().unwrap();
+            s.record_fill(&Fill{id:"synthetic-first-close".into(),order_id:first.id.clone(),venue:first.venue,
+                side:first.side,units:first.units,price:d(2000),fee:Decimal::ZERO,time_ms:now-8500},None).unwrap();
+            s.paused=true;s.stop_requested=true;
+            let side=direction.open_side(Venue::Entropy).opposite();
+            b[0].bids=vec![Level{price:d(1999),units:5000*scale}];
+            b[0].asks=vec![Level{price:d(2001),units:5000*scale}];
+            b[1].bids=vec![Level{price:d(1999),units:5000*scale}];
+            b[1].asks=vec![Level{price:d(2001),units:5000*scale}];
+            let thin=vec![Level{price:d(2000),units:65*scale},
+                Level{price:if side==Side::Sell{d(1999)}else{d(2001)},units:5000*scale}];
+            if side==Side::Sell{b[1].bids=thin;}else{b[1].asks=thin;}
+            let sent=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let workers=[Venue::Lighter,Venue::Entropy].map(|v|venue::AccountWorker::spawn(v,Mode::Paper,true,
+                Box::new(SlicedRepairBackend{requests:sent.clone(),scale})).unwrap());
+            let dir=std::env::temp_dir().join(format!("cpa-rc10-slices-{}",uuid::Uuid::new_v4()));
+            let path=dir.join("ledger.sqlite");
+            let (mut db,_)=Store::open(&path,&s.config).unwrap();
+            db.commit(&s,now,"synthetic_incident").unwrap();
+            for round in 0..4 {
+                for x in &mut a {x.position_units=s.positions[x.venue.index()].units;x.observed_ms=now;}
+                for x in &mut b {x.received_ms=now;}
+                assert!(resume_protected_repair(&mut s,&a,&b,now).unwrap(),"round {round}, {:?}, {}, {:?}",s.status,s.reason,s.pending);
+                advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
+                let req=s.pending.as_ref().unwrap().repair.clone().unwrap();
+                let fill=if round==0{40*scale}else{req.units};
+                let total=s.pending.as_ref().unwrap().repair_filled;
+                apply(&mut s,2,&req,result(&req,fill,true)).unwrap();
+                assert_eq!(s.pending.as_ref().unwrap().repair_filled,total,"duplicate receipt counted twice");
+                db.commit(&s,now,"synthetic_duplicate").unwrap();
+                // Close the real SQLite connection and restore the exact durable state.
+                drop(db);let (restored,state)=Store::open(&path,&s.config).unwrap();db=restored;s=state;
+                advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
+                if round<3 {
+                    now=s.pending.as_ref().unwrap().repair_retry_after_ms.unwrap();
+                }
+            }
+            let requests=sent.lock().unwrap();
+            assert_eq!(requests.iter().map(|r|r.units/scale).collect::<Vec<_>>(),vec![60,60,60,20]);
+            assert_eq!(requests.iter().map(|r|&r.id).collect::<std::collections::BTreeSet<_>>().len(),4);
+            assert!(requests.iter().all(|r|r.reduce_only && r.venue==Venue::Entropy && r.side==side));
+            assert!(s.pending.is_none() && s.paused && s.stop_requested);
+            assert!(s.loss_stop.is_none());
+            assert_eq!(serde_json::to_value(&s.lots).unwrap(),untouched);
+            assert_eq!(s.paired_units(),810*scale);
+            assert_eq!(s.positions[0].units,-s.positions[1].units);
+            assert_eq!(s.positions[0].units.abs(),810*scale);
+            assert_eq!(s.config.execution_slippage_bps,Decimal::ONE);
+            drop(requests);drop(db);std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }
 
@@ -323,7 +441,7 @@ fn close_retry_rejects_unknown_unowned_stale_and_unprotected_residuals_without_m
             9=>a[1].observed_ms=now-4000,
             10=>a[1].open_orders=1,
             11=>b[1].received_ms=now-2000,
-            12=>b[1].bids=vec![Level{price:d(1628),units:260},Level{price:d(1627),units:1000}],
+            12=>b[1].bids=vec![Level{price:d(1628),units:9},Level{price:d(1627),units:1000}],
             13=>s.pending.as_mut().unwrap().repair_retry_after_ms=Some(now+1),
             _=>s.config.auto_neutralize=false,
         }

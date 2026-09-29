@@ -252,10 +252,9 @@ impl InventoryService {
                     Some(command)=rx.recv()=>{
                         let name=serde_json::to_string(&command.control).unwrap();
                         let repair_evidence = if matches!(command.control, Control::Reconcile) {
-                            let (l,e)=tokio::join!(workers[0].reconcile_account(),workers[1].reconcile_account());
-                            match (l,e) {
-                                (Ok(l),Ok(e))=>{accounts=Some([l,e]);last_accounts=crate::domain::now_ms();Ok(())},
-                                (Err(e),_)|(_,Err(e))=>Err(e),
+                            match venue::fresh_reconciled_accounts(&workers,config.account_max_age_ms).await {
+                                Ok(a)=>{accounts=Some(a);last_accounts=crate::domain::now_ms();Ok(())},
+                                Err(e)=>Err(e),
                             }
                         } else { Ok(()) };
                         let outcome=(||->Result<()>{
@@ -326,8 +325,7 @@ impl InventoryService {
                             } else if execution::automatic_repair_due(&state,now)
                                 && now.saturating_sub(last_repair_check)>=execution::REPAIR_RETRY_DELAY_MS {
                                 last_repair_check=now;
-                                let (l,e)=tokio::join!(workers[0].reconcile_account(),workers[1].reconcile_account());
-                                let verified=[l?,e?];
+                                let verified=venue::fresh_reconciled_accounts(&workers,config.account_max_age_ms).await?;
                                 let checked_at=crate::domain::now_ms();
                                 let mut next=state.clone();
                                 if execution::resume_protected_repair(&mut next,&verified,
@@ -367,8 +365,7 @@ impl InventoryService {
                                 let checking=state.status==Status::NeedsAttention && state.reason.starts_with("venue position differs from owned ledger");
                                 if state.pending.is_none() && (mismatch || checking || recovery_due) && now.saturating_sub(last_position_check)>=15_000 {
                                     last_position_check=now;
-                                    let (l,e)=tokio::join!(workers[0].reconcile_account(),workers[1].reconcile_account());
-                                    let verified=[l?,e?];
+                                    let verified=venue::fresh_reconciled_accounts(&workers,config.account_max_age_ms).await?;
                                     let mut next=state.clone();
                                     if clear_verified_position_halt(&mut next,&verified,crate::domain::now_ms())? {
                                         store.commit(&next,crate::domain::now_ms(),"position_halt_rest_verified")?;state=next;
@@ -416,6 +413,9 @@ impl InventoryService {
                             }
                             transient_warning=if transient_warning.is_empty(){message}else{format!("{transient_warning} · {message}")};
                         }
+                        // Account/funding I/O may have taken seconds. Publish
+                        // the latest feed, not the pre-await book snapshot.
+                        let current=books.read().unwrap().clone();
                         let mean_now=crate::domain::now_ms();
                         let mean=strategy::entry_reference_mean_for(&state,mean_now,Direction::LighterLong);
                         let mut v=output.write().unwrap();
@@ -424,7 +424,9 @@ impl InventoryService {
                         v.transient_warning=transient_warning;
                         if state.pending.is_none() { order_lookup_note.clear(); }
                         v.order_lookup_note=order_lookup_note.clone();
-                        v.submission_enabled=v.transient_warning.is_empty() && state.live_orphan.is_none() && config.mode==Mode::Live && workers.iter().all(AccountWorker::is_alive) && matches!(state.status,Status::Running|Status::Closing|Status::PausedEntries);
+                        v.submission_enabled=v.transient_warning.is_empty() && state.live_orphan.is_none() && config.mode==Mode::Live && workers.iter().all(AccountWorker::is_alive) && matches!(state.status,Status::Running|Status::Closing|Status::PausedEntries)
+                            && current.iter().all(|b|b.validate(mean_now,config.book_max_age_ms).is_ok())
+                            && accounts.as_ref().is_some_and(|a|a.iter().all(|a|a.authenticated && a.open_orders==0 && a.observed_ms<=mean_now && mean_now-a.observed_ms<=config.account_max_age_ms));
                         v.snapshot=state.clone();v.books=current.clone();v.accounts=accounts.clone();v.mean=mean;v.directional_means=[Direction::LighterLong,Direction::LighterShort].map(|d|strategy::entry_reference_mean_for(&state,mean_now,d));v.net_pnl=if state.live_orphan.is_some(){None}else{state.total_pnl(&current).ok()};v.estimated_exit_net=if state.live_orphan.is_some(){None}else{state.remaining_net(&current).ok()};v.cumulative_fees=state.cumulative_fees();v.cumulative_execution_cost=state.execution_cost;v.execution_cost_started_ms=state.execution_cost_started_ms;v.execution_cost_tracked_fills=state.execution_cost_tracked_fills;v.execution_cost_untracked_fills=state.untracked_execution_fills();
                         v.profit_accounting=accounting_cache.report(&state,&current,mean_now);
                         v.sampling=strategy::entry_sampling_progress(&state,mean_now);v.marks=marks.read().unwrap().clone();

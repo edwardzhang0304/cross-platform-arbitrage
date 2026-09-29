@@ -6,6 +6,8 @@ use std::{path::{Path,PathBuf},sync::{Arc,RwLock,atomic::{AtomicBool,Ordering}},
 use zeroize::{Zeroize,ZeroizeOnDrop,Zeroizing};
 use crate::openai_inventory::alerts;
 
+const QUEUE_ERROR:&str="通知队列暂不可读，将重试；请检查磁盘和文件权限";
+
 #[derive(Clone,Serialize,Deserialize,Zeroize,ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub struct FeishuSettings {
@@ -66,7 +68,7 @@ impl NotificationHandle {
                 if handle.settings.read().unwrap().is_none(){sender.forget();}
                 handle.deliver_emergency(&mut sender).await;
                 let result=handle.deliver_once(&path,&mut sender).await;
-                if result.is_err(){handle.status.write().unwrap().error=Some("通知队列暂不可读，将重试；请检查磁盘和文件权限".into());}
+                if result.is_err(){handle.status.write().unwrap().error=Some(QUEUE_ERROR.into());}
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         })
@@ -98,7 +100,12 @@ impl NotificationHandle {
             let entry:Option<(String,String,u32)>=db.query_row("SELECT id,body,attempts FROM notification_outbox WHERE id=(SELECT id FROM notification_outbox ORDER BY at_ms,rowid LIMIT 1) AND next_ms<=?1",[now],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             (entry,count,dropped)
         };
-        {let mut status=self.status.write().unwrap();status.pending=count;status.dropped=dropped;}
+        {let mut status=self.status.write().unwrap();status.pending=count;status.dropped=dropped;
+            // A successful queue read is enough to clear a prior database
+            // error, including an empty queue. Keep a real send failure while
+            // its durable message is still waiting for its retry deadline.
+            if count==0 || status.error.as_deref()==Some(QUEUE_ERROR) {status.error=None;}
+        }
         let Some(settings)=self.settings.read().unwrap().clone() else {sender.forget();return Ok(())};
         let Some((id,body,attempts))=entry else{return Ok(())};
         let body=if dropped>0 {format!("{body}\n通知队列曾超限，已丢弃最旧 {dropped} 条通知；详情请检查本机账本。")}else{body};

@@ -6,6 +6,33 @@ use std::sync::{Mutex,atomic::{AtomicBool,AtomicUsize,Ordering}};
 fn config()->FeishuSettings {FeishuSettings{app_id:"cli_synthetic_test".into(),app_secret:"synthetic-secret-for-test-only".into(),receive_id_type:"open_id".into(),receive_id:"ou_synthetic_person".into()}}
 fn directory()->PathBuf {std::env::temp_dir().join(format!("cpa-notification-test-{}",uuid::Uuid::new_v4()))}
 
+#[tokio::test]
+async fn rc10_readable_empty_queue_clears_prior_database_error_without_sending() {
+    let dir=directory();std::fs::create_dir_all(&dir).unwrap();let path=dir.join("ledger.sqlite");
+    let db=rusqlite::Connection::open(&path).unwrap();db.execute_batch(alerts::SCHEMA).unwrap();
+    let handle=NotificationHandle::default();handle.configure(Some(config()));
+    handle.status.write().unwrap().error=Some("通知队列暂不可读，将重试；请检查磁盘和文件权限".into());
+    let mut sender=FeishuSender::new().unwrap();
+    handle.deliver_once(&path,&mut sender).await.unwrap();
+    assert!(handle.status().error.is_none());
+    assert!(handle.status().last_sent_ms.is_none());assert_eq!(handle.status().pending,0);
+    drop(db);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn rc10_readable_queue_does_not_clear_backing_off_send_error() {
+    let dir=directory();std::fs::create_dir_all(&dir).unwrap();let path=dir.join("ledger.sqlite");
+    let mut db=rusqlite::Connection::open(&path).unwrap();db.execute_batch(alerts::SCHEMA).unwrap();
+    {let tx=db.transaction().unwrap();alerts::enqueue(&tx,1,"synthetic delivery retry").unwrap();tx.commit().unwrap();}
+    db.execute("UPDATE notification_outbox SET next_ms=?1",[crate::domain::now_ms()+60_000]).unwrap();
+    let handle=NotificationHandle::default();handle.configure(Some(config()));
+    handle.status.write().unwrap().error=Some("synthetic send failure still backing off".into());
+    let mut sender=FeishuSender::new().unwrap();handle.deliver_once(&path,&mut sender).await.unwrap();
+    assert_eq!(handle.status().error.as_deref(),Some("synthetic send failure still backing off"));
+    assert_eq!(handle.status().pending,1);assert!(handle.status().last_sent_ms.is_none());
+    drop(db);std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn public_config_never_contains_secret_and_destinations_are_typed() {
     let mut c=config();assert!(c.validate().is_ok());

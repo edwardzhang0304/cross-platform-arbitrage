@@ -227,6 +227,35 @@ impl AccountWorker {
     }
 }
 
+/// Parallel REST reconciliation can age out the faster venue while waiting for
+/// the slower venue. Refresh only stale evidence, without restamping it or
+/// relaxing the original TTL. Every call is read-only and bounded.
+pub(super) async fn fresh_reconciled_accounts(
+    workers:&[AccountWorker;2], max_age_ms:u64,
+)->Result<[AccountEvidence;2]> {
+    tokio::time::timeout(std::time::Duration::from_secs(20),async {
+        let (l,e)=tokio::join!(workers[0].reconcile_account(),workers[1].reconcile_account());
+        let mut accounts=[l?,e?];
+        for refresh in 0..=2 {
+            let now=crate::domain::now_ms();
+            for (i,a) in accounts.iter().enumerate() {
+                ensure!(a.venue.index()==i && a.authenticated,"invalid authenticated reconciliation evidence");
+                ensure!(a.observed_ms<=now,"reconciliation evidence is in the future");
+            }
+            let stale=accounts.each_ref().map(|a|now-a.observed_ms>max_age_ms);
+            if !stale[0] && !stale[1] {return Ok(accounts);}
+            ensure!(refresh<2,"paired account reconciliation remains stale after bounded refresh");
+            let refresh_one=|i:usize,old:AccountEvidence|async move {
+                if stale[i] {workers[i].reconcile_account().await}else{Ok(old)}
+            };
+            let [l,e]=accounts;
+            let (l,e)=tokio::join!(refresh_one(0,l),refresh_one(1,e));
+            accounts=[l?,e?];
+        }
+        unreachable!()
+    }).await.context("paired account reconciliation deadline exceeded")?
+}
+
 /// Virtual backend; absent from ordinary live builds.
 #[cfg(any(test, feature="paper-runtime"))]
 pub struct PaperBackend {
@@ -631,5 +660,46 @@ mod lookup_timeout_tests {
         };
         assert!(worker.lookup(r.clone()).await.unwrap().terminal);
         assert!(worker.submit(r).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod fresh_pair_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    struct Evidence {venue:Venue,case:u8,calls:Arc<AtomicUsize>}
+    impl VenueBackend for Evidence {
+        fn submit(&mut self,_:OrderRequest)->BoxFuture<'_,OrderResult>{panic!("reconciliation must never submit")}
+        fn lookup(&mut self,_:OrderRequest)->BoxFuture<'_,OrderResult>{panic!("no order lookup required")}
+        fn account(&mut self)->BoxFuture<'_,AccountEvidence> {
+            let n=self.calls.fetch_add(1,Ordering::SeqCst);
+            let now=crate::domain::now_ms();
+            let observed_ms=match self.case {1 if n==0=>now-10_000,2=>now-10_000,3=>now+10_000,_=>now};
+            let venue=self.venue;
+            Box::pin(async move{Ok(AccountEvidence{venue,account:"synthetic-only".into(),observed_ms,
+                position_units:if venue==Venue::Lighter{-810}else{990},free_margin:Decimal::from(50),equity:Decimal::from(100),
+                leverage:3,isolated:true,open_orders:0,authenticated:true,liquidation_price:None})})
+        }
+    }
+    #[tokio::test]
+    async fn rc10_refreshes_only_the_stale_venue_without_changing_positions_or_timestamps() {
+        let counts=[Arc::new(AtomicUsize::new(0)),Arc::new(AtomicUsize::new(0))];
+        let workers=[Venue::Lighter,Venue::Entropy].map(|v|AccountWorker::spawn(v,Mode::Paper,true,
+            Box::new(Evidence{venue:v,case:if v==Venue::Lighter{1}else{0},calls:counts[v.index()].clone()})).unwrap());
+        let before=crate::domain::now_ms();
+        let result=fresh_reconciled_accounts(&workers,3000).await.unwrap();
+        assert_eq!(counts.each_ref().map(|n|n.load(Ordering::SeqCst)),[2,1]);
+        assert_eq!(result.each_ref().map(|a|a.position_units),[-810,990]);
+        assert!(result.iter().all(|a|a.observed_ms>=before && a.observed_ms<=crate::domain::now_ms()));
+    }
+    #[tokio::test]
+    async fn rc10_stale_forever_and_future_evidence_fail_closed_with_bounded_reads() {
+        for case in [2,3] {
+            let counts=[Arc::new(AtomicUsize::new(0)),Arc::new(AtomicUsize::new(0))];
+            let workers=[Venue::Lighter,Venue::Entropy].map(|v|AccountWorker::spawn(v,Mode::Paper,true,
+                Box::new(Evidence{venue:v,case,calls:counts[v.index()].clone()})).unwrap());
+            assert!(fresh_reconciled_accounts(&workers,3000).await.is_err());
+            assert_eq!(counts.each_ref().map(|n|n.load(Ordering::SeqCst)),[if case==2{3}else{1};2]);
+        }
     }
 }

@@ -157,8 +157,10 @@ pub(super) fn resume_protected_repair(
         }
         RecoveryPhase::Unwind => (Venue::Lighter, p.hedge_filled - p.unwind_hedge_filled, "unwind-hedge"),
     };
-    if request(s, books, venue, s.direction.open_side(venue).opposite(),
-        qty, true, suffix, now).is_err() { return Ok(false); }
+    // Keep the durable halt reason, but return the actual gate failure to the
+    // service's transient warning instead of silently waiting forever.
+    request(s, books, venue, s.direction.open_side(venue).opposite(),
+        qty, true, suffix, now)?;
     if phase == RecoveryPhase::Repair {
         resume_terminal_repair(s, Some(accounts), now)?;
     } else {
@@ -186,6 +188,15 @@ pub(super) fn protected_limit(
     let b = &books[venue.index()];
     b.validate(now, s.config.book_max_age_ms)?;
     let (_, worst) = b.vwap(side, qty)?;
+    let limit = protected_price_bound(s, b, venue, side)?;
+    ensure!(
+        if side == Side::Buy { worst <= limit } else { worst >= limit },
+        "depth exceeds protected execution price"
+    );
+    Ok(limit)
+}
+
+fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side)->Result<Decimal> {
     let best = if side == Side::Buy {
         b.asks[0].price
     } else {
@@ -197,15 +208,25 @@ pub(super) fn protected_limit(
     let limit=if s.config.market==MarketPair::Anth {
         s.config.market.protected_price(venue,limit,side==Side::Buy)?
     }else{limit};
-    ensure!(
-        if side == Side::Buy {
-            worst <= limit
-        } else {
-            worst >= limit
-        },
-        "depth exceeds protected execution price"
-    );
     Ok(limit)
+}
+
+/// A reducing Entropy repair may consume only the available protected depth.
+/// It never increases the limit, rounds up, changes an existing request, or
+/// marks the remaining operation complete. The next slice needs a new terminal
+/// reconciliation and its own persisted request identity.
+fn protected_repair_units(s:&Snapshot,b:&Book,venue:Venue,side:Side,wanted:i64)->Result<i64> {
+    let limit=protected_price_bound(s,b,venue,side)?;
+    let mut available=0;
+    for level in if side==Side::Buy {&b.asks}else{&b.bids} {
+        if if side==Side::Buy {level.price>limit}else{level.price<limit} {break;}
+        available+=level.units.min(wanted-available);
+        if available==wanted {break;}
+    }
+    let step=s.config.market.venue_step(venue);
+    let units=available/step*step;
+    ensure!(units>0,"protected recovery depth below venue quantity step");
+    Ok(units)
 }
 
 fn request(
@@ -224,6 +245,12 @@ fn request(
         qty > 0 && (venue == Venue::Lighter || qty % s.config.common_step() == 0),
         "unrepresentable hedge quantity"
     );
+    // Both current markets open Entropy first and close Lighter first, so
+    // their residual repair reduces Entropy. Preserve Lighter minimum-order
+    // handling and the full-depth admission checks for ordinary entry/hedge.
+    let qty=if reduce && suffix=="repair" && venue==Venue::Entropy {
+        protected_repair_units(s,b,venue,side,qty)?
+    }else{qty};
     let (vwap, worst) = b.vwap(side, qty)?;
     if !reduce {
         ensure!(

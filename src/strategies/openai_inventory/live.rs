@@ -1132,20 +1132,15 @@ impl VenueBackend for EntropyLive {
                 );
                 self.last_rest = now;
                 let started = crate::domain::now_ms();
-                let a = hyperliquid::fetch_clearinghouse_state(
-                    "mainnet",
-                    "io",
-                    &self.config.entropy_address,
-                )
-                .await?;
+                // Independent read-only evidence used to run serially and
+                // consume the entire submit preflight deadline in latency.
+                let (a,orders,active,spot)=tokio::try_join!(
+                    hyperliquid::fetch_clearinghouse_state("mainnet","io",&self.config.entropy_address),
+                    hyperliquid::fetch_open_orders("mainnet","io",&self.config.entropy_address),
+                    hyperliquid::fetch_active_asset_data("mainnet",&self.config.entropy_address,self.config.market.entropy_symbol()),
+                    hyperliquid::fetch_spot_clearinghouse_state("mainnet",&self.config.entropy_address)
+                )?;
                 self.clock_evidence = a.time.map(|server| (started, server, crate::domain::now_ms()));
-                let orders =
-                    hyperliquid::fetch_open_orders("mainnet", "io", &self.config.entropy_address)
-                        .await?;
-                let active = hyperliquid::fetch_active_asset_data(
-                    "mainnet", &self.config.entropy_address, self.config.market.entropy_symbol()).await?;
-                let spot = hyperliquid::fetch_spot_clearinghouse_state(
-                    "mainnet", &self.config.entropy_address).await?;
                 (a, orders.iter().filter(|o| o.coin == self.config.market.entropy_symbol()).count(), active, spot)
             };
             let p = a
