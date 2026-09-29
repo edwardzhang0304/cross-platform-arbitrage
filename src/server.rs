@@ -133,8 +133,8 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
     if matches!(r.command.as_str(),"save_notifications"|"test_notifications"|"disable_notifications") {
         return notification_action(app,r).await;
     }
-    if matches!(r.command.as_str(),"pause"|"stop"|"close_all"|"cancel_close_all") {
-        let command=match r.command.as_str(){"pause"=>Control::Pause,"stop"=>Control::Stop,"cancel_close_all"=>Control::CancelCloseAll,_=>{
+    if matches!(r.command.as_str(),"pause"|"stop"|"close_all") {
+        let command=match r.command.as_str(){"pause"=>Control::Pause,"stop"=>Control::Stop,_=>{
             ensure!(r.confirmation=="CLOSE_ALL_POSITIONS","请确认平掉全部持仓");Control::CloseAll}};
         let service=app.inner.lock().await.service.clone().context("账户尚未加载")?;
         service.control(r.id.clone(),command).await?;

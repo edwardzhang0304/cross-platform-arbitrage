@@ -357,6 +357,10 @@ pub struct LossStop {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emergency_exit: Option<super::emergency_exit::EmergencyExit>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub emergency_fill_allocations: BTreeMap<String, Vec<CloseAllocation>>,
     /// Live-only incident: one owned leg vanished at the venue; never infer its PnL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_orphan: Option<super::live_orphan::Incident>,
@@ -470,6 +474,8 @@ impl Snapshot {
             liquidation_protection: None,
             previous_group_exit: BTreeMap::new(),
             closed_lot_allocations: BTreeMap::new(),
+            emergency_exit: None,
+            emergency_fill_allocations: BTreeMap::new(),
             direction: Direction::default(),
             previous_reverse_signal: None,
             reverse_first_armed: true,

@@ -247,6 +247,7 @@ impl InventoryService {
             let mut last_timeout_lookup = 0;
             let mut order_lookup_note = String::new();
             let mut last_repair_check = 0;
+            let mut last_emergency_poll = 0;
             loop {
                 tokio::select! {
                     biased;
@@ -263,8 +264,9 @@ impl InventoryService {
                             ensure!(!command.id.is_empty() && command.id.len()<=128,"invalid command id");
                             if store.command_seen(&command.id,&name)?{return Ok(());}
                             let mut next=state.clone();
-                            ensure!(next.live_orphan.is_none() || matches!(command.control,Control::Shutdown),
+                            ensure!(next.live_orphan.is_none() || matches!(command.control,Control::Shutdown|Control::CloseAll),
                                 "emergency incident requires manual reconciliation before strategy controls");
+                            ensure!(!super::emergency_exit::active(&next) || matches!(command.control,Control::CloseAll|Control::Stop|Control::Pause), "紧急全部平仓尚未完成，不能恢复交易或取消");
                             validate_loss_stop_control(&next, &command.control)?;
                             match command.control {
                                 Control::Start=>{start_continuous(&mut next)?;},
@@ -272,7 +274,7 @@ impl InventoryService {
                                 Control::StartLiveStrategy=>{start_live_strategy(&mut next, accounts.as_ref(), &books.read().unwrap().clone(), crate::domain::now_ms())?;},
                                 Control::Pause=>{next.paused=true;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::PausedEntries;}},
                                 Control::Stop=>{next.stop_requested=true;next.paused=true;next.resume_after_recovery=false;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::Stopped;}else if next.status!=Status::NeedsAttention {next.reason="finishing active paired operation before stopping".into();}},
-                                Control::CloseAll=>{next.paused=true;next.close_requested=true;next.stop_after_close=true;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=if next.paired_units()==0 {next.close_requested=false;Status::Stopped}else{Status::Closing};}},
+                                Control::CloseAll=>{super::emergency_exit::latch(&mut next,crate::domain::now_ms())?;last_emergency_poll=0;},
                                 Control::CancelCloseAll=>{execution::cancel_close_all(&mut next)?;},
                                 Control::Reconcile=>{execution::resume_terminal_repair(&mut next,accounts.as_ref(),crate::domain::now_ms())?;next.status=Status::Recovering;},
                                 Control::SetDirectionPolicy { direction_policy }=>{set_direction_policy(&mut next, direction_policy, accounts.as_ref(), crate::domain::now_ms())?;},
@@ -295,6 +297,13 @@ impl InventoryService {
                     _=timer.tick()=>{
                         let now=crate::domain::now_ms();let current=books.read().unwrap().clone();
                         let result=async {
+                            if super::emergency_exit::active(&state) {
+                                if now.saturating_sub(last_emergency_poll)<1000 {return Ok::<(),anyhow::Error>(());}
+                                last_emergency_poll=now;
+                                let seen=super::emergency_exit::advance(&mut state,&mut store,&workers,&books).await?;
+                                if let [Some(l),Some(e)]=seen {accounts=Some([l,e]);last_accounts=crate::domain::now_ms();}
+                                return Ok::<(),anyhow::Error>(());
+                            }
                             #[cfg(feature="paper-runtime")]
                             if liquidation::protect(&mut state,&mut store,&workers,&current,now).await? {
                                 return Ok::<(),anyhow::Error>(());
@@ -429,7 +438,7 @@ impl InventoryService {
                         v.submission_enabled=v.transient_warning.is_empty() && state.live_orphan.is_none() && config.mode==Mode::Live && workers.iter().all(AccountWorker::is_alive) && matches!(state.status,Status::Running|Status::Closing|Status::PausedEntries)
                             && current.iter().all(|b|b.validate(mean_now,config.book_max_age_ms).is_ok())
                             && accounts.as_ref().is_some_and(|a|a.iter().all(|a|a.authenticated && a.open_orders==0 && a.observed_ms<=mean_now && mean_now-a.observed_ms<=config.account_max_age_ms));
-                        v.snapshot=state.clone();v.books=current.clone();v.accounts=accounts.clone();v.mean=mean;v.directional_means=[Direction::LighterLong,Direction::LighterShort].map(|d|strategy::entry_reference_mean_for(&state,mean_now,d));v.net_pnl=if state.live_orphan.is_some(){None}else{state.total_pnl(&current).ok()};v.estimated_exit_net=if state.live_orphan.is_some(){None}else{state.remaining_net(&current).ok()};v.cumulative_fees=state.cumulative_fees();v.cumulative_execution_cost=state.execution_cost;v.execution_cost_started_ms=state.execution_cost_started_ms;v.execution_cost_tracked_fills=state.execution_cost_tracked_fills;v.execution_cost_untracked_fills=state.untracked_execution_fills();
+                        v.snapshot=state.clone();v.books=current.clone();v.accounts=accounts.clone();v.mean=mean;v.directional_means=[Direction::LighterLong,Direction::LighterShort].map(|d|strategy::entry_reference_mean_for(&state,mean_now,d));v.net_pnl=if state.live_orphan.is_some() || super::emergency_exit::active(&state){None}else{state.total_pnl(&current).ok()};v.estimated_exit_net=if state.live_orphan.is_some() || super::emergency_exit::active(&state){None}else{state.remaining_net(&current).ok()};v.cumulative_fees=state.cumulative_fees();v.cumulative_execution_cost=state.execution_cost;v.execution_cost_started_ms=state.execution_cost_started_ms;v.execution_cost_tracked_fills=state.execution_cost_tracked_fills;v.execution_cost_untracked_fills=state.untracked_execution_fills();
                         v.profit_accounting=accounting_cache.report(&state,&current,mean_now);
                         v.sampling=strategy::entry_sampling_progress(&state,mean_now);v.marks=marks.read().unwrap().clone();
                     }
@@ -607,6 +616,7 @@ pub(super) fn set_direction_policy(
 }
 
 pub(super) fn start_continuous(s: &mut Snapshot) -> Result<()> {
+    ensure!(!super::emergency_exit::active(s),"emergency exit is incomplete");
     ensure!(s.config.mode == Mode::Paper,
         "continuous OPENAI inventory start remains paper-only; live uses bounded entry");
     ensure!(s.pending.is_none(), "reconcile pending operation first");

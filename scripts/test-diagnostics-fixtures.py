@@ -71,6 +71,11 @@ for market, path in [
                  lots=[dict(level=i,units=700,opened_ms=start-10000*(i+1),entry_spread="28.4",private_field=secret) for i in range(7)],
                  fills={"fill-key":dict(id="fill-key",order_id="synthetic-order",venue="entropy",side="buy",units=700,price="2100",fee="0.001",time_ms=start+1000,private_key=secret)},
                  closed_groups=1, direction="lighter_short", anchor="28", time_adds_used=1)
+    state['emergency_exit']=dict(id='synthetic-emergency',requested_ms=start,completed_ms=None,flat_confirmed_ms=None,
+        remaining_units=[-4900,5600],observed_ms=[now,now],next_attempt_ms=[now,now],next_sequence=1,
+        warnings=[f'query failed https://private.invalid/?key={secret}', ''],accounting_error='',
+        prior=[dict(request=request,terminal=False)],orders=[dict(request=request,terminal=False)],
+        fills=state['fills'],unexpected_secret=secret)
     with sqlite3.connect(path) as db:
         db.executescript("CREATE TABLE state(id INTEGER PRIMARY KEY,body TEXT); CREATE TABLE events(seq INTEGER PRIMARY KEY,at_ms INTEGER,kind TEXT,body TEXT);")
         db.execute("INSERT INTO state VALUES(1,?)", (json.dumps(state),))

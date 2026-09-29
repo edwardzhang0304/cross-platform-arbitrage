@@ -24,6 +24,8 @@ try {
       Write-Output ($Report.collection_problems | ConvertTo-Json)
       throw 'Historical pending event window failed'
     }
+    if ($Ledger.snapshot.emergency_exit.order_count -ne 1 -or $Ledger.snapshot.emergency_exit.buffered_fill_count -ne 1) { throw 'Emergency progress missing from diagnostics' }
+    if ($Ledger.snapshot.emergency_exit.orders[0].request.order_ref -ne $Ledger.snapshot.emergency_exit.buffered_fills[0].order_ref) { throw 'Emergency order/fill linkage lost' }
     if ($Ledger.snapshot.reason -notmatch 'account worker request deadline exceeded') { throw 'Useful diagnostic cause was lost' }
     if ($Ledger.snapshot.pending.requests.first.order_ref -ne $Ledger.snapshot.fills_in_operation_window[0].order_ref) { throw 'Opaque order linkage was lost' }
   }

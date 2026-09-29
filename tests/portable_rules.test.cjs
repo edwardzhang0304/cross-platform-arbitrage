@@ -63,3 +63,16 @@ test('paper console renders both core identities without shadowing response data
     assert.match(text,/每个网格阶段最多 5 次/);
   }
 });
+
+test('emergency close has explicit 5 percent confirmation and physical progress, no cancel button',()=>{
+ const html=fs.readFileSync(path.join(__dirname,'../frontend/portable.html'),'utf8');
+ const paper=fs.readFileSync(path.join(__dirname,'../frontend/paper.html'),'utf8');
+ assert.doesNotMatch(html,/cancel_close_all|取消全部平仓请求/);assert.doesNotMatch(paper,/cancel_close_all/);
+ assert.match(html,/最大滑点 5%.*允许亏损/);
+ const ctx=vm.createContext({document:{getElementById(){return {}}},fetch:()=>new Promise(()=>{}),setInterval(){}});
+ vm.runInContext(html.match(/<script>\s*([\s\S]*?)<\/script>/)[1],ctx);
+ const e={remaining_units:[-700,0],warnings:[],observed_ms:[1,1]};
+ assert.match(ctx.controlStateText({config:{market:'anth'},emergency_exit:e}),/剩余 Lighter 0\.007 \/ Entropy 0/);
+ assert.match(ctx.controlStateText({emergency_exit:{...e,remaining_units:[0,0],flat_confirmed_ms:1}}),/原订单与成交记录仍在核对/);
+ assert.match(ctx.controlStateText({status:'stopped',emergency_exit:{...e,completed_ms:1}}),/紧急全部平仓完成/);
+});

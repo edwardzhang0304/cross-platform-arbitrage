@@ -122,3 +122,13 @@ fn alerts_roll_back_with_trade_state_and_queue_is_bounded() {
     assert_eq!(rows(&db).len(),512);
     let dropped:i64=db.query_row("SELECT dropped FROM notification_counters",[],|r|r.get(0)).unwrap();assert_eq!(dropped,8);
 }
+
+#[test]
+fn emergency_exit_alert_waits_for_grace_and_cancels_when_flat_and_reconciled() {
+    let mut db=db();let mut s=Snapshot::new(InventoryConfig::default()).unwrap();
+    super::super::emergency_exit::latch(&mut s,1000).unwrap();
+    record(&mut db,&s,1000);record(&mut db,&s,60_999);assert!(rows(&db).is_empty());
+    record(&mut db,&s,61_000);assert_eq!(rows(&db).len(),1);assert!(rows(&db)[0].1.contains("紧急全部平仓"));
+    s.emergency_exit.as_mut().unwrap().completed_ms=Some(61_001);s.status=Status::Stopped;s.close_requested=false;
+    record(&mut db,&s,61_001);assert!(rows(&db).is_empty());
+}

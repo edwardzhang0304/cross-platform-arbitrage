@@ -13,6 +13,9 @@ pub mod accounting;
 pub mod alerts;
 pub mod liquidation;
 pub mod execution;
+pub mod emergency_exit;
+#[cfg(test)]
+mod emergency_exit_tests;
 #[cfg(feature="openai-inventory-live")]
 pub mod live;
 pub mod live_orphan;

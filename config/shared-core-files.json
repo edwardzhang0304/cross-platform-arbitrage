@@ -12,7 +12,8 @@
     "src/strategies/openai_inventory/charts.rs",
     "src/strategies/openai_inventory/store.rs",
     "src/strategies/openai_inventory/rules_upgrade.rs",
-    "src/strategies/openai_inventory/alerts.rs"
+    "src/strategies/openai_inventory/alerts.rs",
+    "src/strategies/openai_inventory/emergency_exit.rs"
   ],
   "mode_agnostic": [
     "src/strategies/openai_inventory/strategy.rs",
@@ -20,6 +21,7 @@
     "src/strategies/openai_inventory/execution.rs",
     "src/strategies/openai_inventory/accounting.rs",
     "src/strategies/openai_inventory/entry_mean.rs",
-    "src/strategies/openai_inventory/rules_upgrade.rs"
+    "src/strategies/openai_inventory/rules_upgrade.rs",
+    "src/strategies/openai_inventory/emergency_exit.rs"
   ]
 }

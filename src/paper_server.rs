@@ -54,7 +54,7 @@ async fn control(State(app):State<PaperApp>,h:HeaderMap,Json(r):Json<PaperComman
     let result=async {
         authorize(&app,&h,&r,market)?;
         let service=app.services.get(&market).ok_or_else(||anyhow::anyhow!("该模拟策略尚未加载"))?;
-        let command=match r.command.as_str() {"start"=>Control::Start,"pause"=>Control::Pause,"stop"=>Control::Stop,"close_all"=>Control::CloseAll,"cancel_close_all"=>Control::CancelCloseAll,_=>anyhow::bail!("模拟版不支持此操作")};
+        let command=match r.command.as_str() {"start"=>Control::Start,"pause"=>Control::Pause,"stop"=>Control::Stop,"close_all"=>Control::CloseAll,_=>anyhow::bail!("模拟版不支持此操作")};
         service.control(r.id,command).await
     }.await;
     match result {Ok(())=>Json(json!({"ok":true})),Err(e)=>Json(json!({"ok":false,"error":e.to_string()}))}

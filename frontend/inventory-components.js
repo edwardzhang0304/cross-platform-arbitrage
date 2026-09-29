@@ -55,7 +55,7 @@
     const emptyRow = table => `<tr><td colspan="${table.columns.length}" class="empty">${table.empty}</td></tr>`;
     function mount() {
       get('status-metrics').innerHTML = metrics.map(m =>
-        `<div class="metric" data-metric="${m.id}"><small>${m.label}</small><strong id="${m.id}">—</strong></div>`).join('');
+        `<div class="metric" data-metric="${m.id}"><small>${m.label}</small><strong id="${m.id}">—</strong></div>`).join('')+'<p id="emergency-progress" role="status" hidden style="grid-column:1 / -1;margin:8px 0 0"></p>';
       get('inventory-tables').innerHTML = tables.map(t => `<section class="card" data-module="${t.id}" aria-labelledby="${t.id}-heading">
         <h2 id="${t.id}-heading">${t.title}</h2><div class="scroll"><table class="inventory-table" style="--table-min-width:${t.minWidth}px" aria-labelledby="${t.id}-heading">
         <colgroup>${t.columns.map(c => `<col style="width:${c.width}%">`).join('')}</colgroup>
@@ -71,6 +71,12 @@
     }
     function render(view) {
       const snapshot = view.snapshot;
+      const emergency=snapshot.emergency_exit, progress=get('emergency-progress');
+      progress.hidden=!emergency || (emergency.completed_ms && snapshot.status!=='stopped');
+      progress.textContent=!emergency?'':emergency.completed_ms?'紧急全部平仓完成：两平台持仓为零，已停止交易。':
+        `紧急平仓 · 最大滑点 5% · 剩余 Lighter ${quantity(emergency.remaining_units?.[0])} / Entropy ${quantity(emergency.remaining_units?.[1])}。`+
+        (emergency.flat_confirmed_ms?'持仓已归零，仍在核对原订单和成交记录。':'正在按各平台实际持仓独立减仓。')+
+        (emergency.warnings||[]).filter(Boolean).join('；')+(emergency.accounting_error||'');
       get('groups').textContent = `${(snapshot.lots || []).length} / ${snapshot.closed_groups || 0}`;
       for (const [id, value] of [['pnl', view.net_pnl], ['closed-pnl', view.profit_accounting?.closed_net_profit]]) {
         const cell = profit(value);

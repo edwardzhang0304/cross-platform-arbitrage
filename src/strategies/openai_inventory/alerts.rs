@@ -22,6 +22,7 @@ struct Incident {
 }
 
 fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
+    if super::emergency_exit::active(s) {return Some(("紧急全部平仓仍未完成，请查看两平台剩余持仓和订单核对进度",false));}
     if s.live_orphan.is_some() {return Some(("出现未归属或不一致仓位，需要人工核对",true));}
     if s.loss_stop.is_some() && !s.lots.is_empty() {return Some(("已触发总亏损保护，正在受控平仓",true));}
     if s.status==Status::NeedsAttention && !(s.pending.is_none() && s.reason.starts_with("execution recovered;")) {
@@ -44,6 +45,7 @@ fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
     None
 }
 fn action(s:&Snapshot)->String {
+    if super::emergency_exit::active(s) {return "紧急全部平仓".into();}
     match s.pending.as_ref().map(|p|p.action) {
         Some(Action::Close)=>"平仓", Some(Action::Open) if !s.lots.is_empty()=>"加仓",
         Some(Action::Open)=>"开仓", _=>"持仓核对",
@@ -122,7 +124,7 @@ pub fn observe(tx:&Transaction<'_>,s:&Snapshot,at:u64)->Result<()> {
         tx.execute("UPDATE notification_policy SET version=2 WHERE id=1",[])?;
     }
     if let Some((detail,urgent))=issue(s) {
-        let key=s.pending.as_ref().map(|p|p.id.clone()).unwrap_or_else(||format!("{}-account",s.instance_id));
+        let key=s.emergency_exit.as_ref().filter(|_|super::emergency_exit::active(s)).map(|e|e.id.clone()).or_else(||s.pending.as_ref().map(|p|p.id.clone())).unwrap_or_else(||format!("{}-account",s.instance_id));
         let fresh=active.as_ref().is_none_or(|a|a.key!=key);
         if fresh {cancel(tx,&active)?;}
         let mut incident=if fresh {Incident{key,action:action(s),started_ms:at,notice_ms:0,urgent,outbox_id:None,body:String::new()}}else{active.take().unwrap()};

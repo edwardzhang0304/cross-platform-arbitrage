@@ -56,6 +56,18 @@ function Pending-View($p) {
     quote_wait_started_ms=$p.quote_wait_started_ms; requests=$r
   }
 }
+function Emergency-View($e) {
+  if ($null -eq $e) { return $null }
+  return [ordered]@{
+    operation_ref=(Ref $e.id); requested_ms=$e.requested_ms; completed_ms=$e.completed_ms; flat_confirmed_ms=$e.flat_confirmed_ms
+    remaining_units=$e.remaining_units; observed_ms=$e.observed_ms; next_attempt_ms=$e.next_attempt_ms
+    warnings=@($e.warnings | ForEach-Object { SafeText $_ }); accounting_error=(SafeText $e.accounting_error)
+    prior=@($e.prior | ForEach-Object { [ordered]@{terminal=$_.terminal; request=(Request-View $_.request)} })
+    orders=@($e.orders | Select-Object -Last 40 | ForEach-Object { [ordered]@{terminal=$_.terminal; request=(Request-View $_.request)} })
+    order_count=$e.next_sequence; buffered_fill_count=@($e.fills.PSObject.Properties).Count
+    buffered_fills=@($e.fills.PSObject.Properties.Value | Sort-Object time_ms -Descending | Select-Object -First 120 | ForEach-Object { [ordered]@{fill_ref=(Ref $_.id); order_ref=(Ref $_.order_id); venue=$_.venue; side=$_.side; units=$_.units; price=$_.price; fee=$_.fee; time_ms=$_.time_ms} })
+  }
+}
 function Snapshot-View($s) {
   if ($null -eq $s) { return $null }
   $fills=@($s.fills.PSObject.Properties.Value)
@@ -64,6 +76,7 @@ function Snapshot-View($s) {
   $selected=@($fills | Where-Object { $null -ne $_ -and $_.time_ms -ge $from -and $_.time_ms -le $to } | Sort-Object time_ms -Descending | Select-Object -First 120)
   return [ordered]@{
     status=$s.status; reason=(SafeText $s.reason); reason_ref=(Ref $s.reason)
+    emergency_exit=(Emergency-View $s.emergency_exit)
     paused=$s.paused; stop_requested=$s.stop_requested; close_requested=$s.close_requested; stop_after_close=$s.stop_after_close
     consecutive_rollbacks=$s.consecutive_rollbacks; recovery_after_ms=$s.recovery_after_ms
     orphan=($null -ne $s.live_orphan); loss_stop=($null -ne $s.loss_stop)
@@ -112,6 +125,7 @@ function Capture-Market([string]$Market) {
       sampling=($v.sampling | Select-Object ready,continuity_active,covered_ms,required_ms); directional_means=$v.directional_means; submission_enabled=$v.submission_enabled
       warning=(SafeText $v.transient_warning); lookup_note=(SafeText $v.order_lookup_note)
       funding_complete=$v.profit_accounting.funding_complete
+      profit_accounting=($v.profit_accounting | Select-Object closed_net_profit,settled_funding,unallocated_funding,funding_complete)
       notifications=[ordered]@{saved=$d.notifications.saved; unlocked=$d.notifications.unlocked; delivery=($d.notifications.delivery | Select-Object enabled,pending,dropped,last_sent_ms,@{Name='error';Expression={SafeText $_.error}})}
     }
   } catch {
@@ -199,7 +213,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc11'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc12'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

@@ -94,7 +94,7 @@ fn attribute(s: &Snapshot) -> Attribution {
     let mut ids: BTreeSet<String> = s.lots.iter().map(|l| l.id.clone()).collect();
     ids.extend(s.closed_lot_allocations.values().flatten().map(|a| a.lot_id.clone()));
     let mut result = Attribution { complete: funding_history_complete(s)
-        && s.pending.is_none() && s.live_orphan.is_none(), ..Default::default() };
+        && s.pending.is_none() && s.live_orphan.is_none() && !super::emergency_exit::active(s), ..Default::default() };
     for id in &ids { result.groups.insert(id.clone(), Default::default()); }
     let mut other: [Bucket; 2] = Default::default();
     let mut closed_used: BTreeMap<(String, usize), i64> = BTreeMap::new();
@@ -158,14 +158,16 @@ fn apply_fill(f: &Fill, s: &Snapshot, ids: &BTreeSet<String>, result: &mut Attri
     other: &mut [Bucket; 2], used: &mut BTreeMap<(String, usize), i64>) {
     let i = f.venue.index();
     let cash = -s.config.quantity(f.units) * f.price * Decimal::from(f.side.sign()) - f.fee;
-    if let Some(id) = ids.iter().find(|id| owns(&f.order_id, id)) {
+    let forced=s.emergency_fill_allocations.get(&format!("{:?}:{}",f.venue,f.id));
+    if let Some(id) = ids.iter().find(|id| forced.is_none() && owns(&f.order_id, id)) {
         let b = &mut result.groups.get_mut(id).unwrap()[i];
         b.opening_units += f.units * f.side.sign();
         b.opening_cash += cash;
         b.fill(f.units * f.side.sign());
         return;
     }
-    if let Some((op, allocations)) = s.closed_lot_allocations.iter().find(|(op, _)| owns(&f.order_id, op)) {
+    let unique=format!("emergency-fill:{:?}:{}",f.venue,f.id);
+    if let Some((op, allocations)) = forced.map(|a|(&unique,a)).or_else(||s.closed_lot_allocations.iter().find(|(op, _)| owns(&f.order_id, op))) {
         let offset = used.entry((op.clone(), i)).or_default();
         let mut skip = *offset;
         let mut left = f.units;
@@ -190,7 +192,7 @@ fn apply_fill(f: &Fill, s: &Snapshot, ids: &BTreeSet<String>, result: &mut Attri
             }
         }
         *offset += f.units;
-        if left > 0 { result.complete = false; other[i].fill(left * f.side.sign()); }
+        if left > 0 { if forced.is_none() {result.complete = false;} other[i].fill(left * f.side.sign()); }
     } else {
         other[i].fill(f.units * f.side.sign());
     }
@@ -254,7 +256,7 @@ impl AccountingCache {
             lots: s.lots.iter().map(|l| (l.id.clone(), l.units)).collect(),
             units: s.positions.each_ref().map(|p| p.units),
             funding: s.positions.each_ref().map(|p| p.funding),
-            unresolved: s.pending.is_some() || s.live_orphan.is_some() };
+            unresolved: s.pending.is_some() || s.live_orphan.is_some() || super::emergency_exit::active(s) };
         if self.key.as_ref() != Some(&key) {
             self.attribution = attribute(s);
             self.key = Some(key);
