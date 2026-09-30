@@ -419,6 +419,8 @@ fn ordinary_start_clears_exhausted_bounded_entry_budget() {
         hedge: None,
         repair: None,
         repair_attempt: 0,
+        recovery_slippage_bps: 0,
+        recovery_wait_reason: String::new(),
         repair_retry_after_ms: None,
         align_close: None,
         first_terminal: false,

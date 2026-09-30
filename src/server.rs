@@ -74,6 +74,7 @@ async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
         "vault_exists":app.paths.vault.exists(),
         "notifications":{"saved":notification_path(&app).exists(),"unlocked":s.notification.is_some(),"config":s.notification.as_ref().map(|c|c.public()),"execution_grace_ms":inventory::alerts::EXECUTION_GRACE_MS,"delivery":s.service.as_ref().map(|v|v.notifications.status())},
         "residual_recovery_version":inventory::execution::RESIDUAL_RECOVERY_VERSION,
+        "recovery_policy":inventory::execution::recovery_policy(),
         "profile":{"market":app.paths.market,"mode":"live"},
         "strategy":s.settings.as_ref().map(|x|&x.strategy),"sleep_prevention":cfg!(windows),
         "data_dir":app.root.to_string_lossy()

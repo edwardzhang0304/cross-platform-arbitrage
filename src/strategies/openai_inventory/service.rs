@@ -325,7 +325,7 @@ impl InventoryService {
                             }
                             if state.pending.is_some() && state.status==Status::NeedsAttention
                                 && state.reason.starts_with("order unresolved past execution deadline")
-                                && now.saturating_sub(last_timeout_lookup)>=30_000 {
+                                && now.saturating_sub(last_timeout_lookup)>=execution::REPAIR_RETRY_DELAY_MS {
                                 last_timeout_lookup=now;
                                 let lookup = execution::recheck_timed_out(&mut state,&mut store,&workers,now).await;
                                 order_lookup_note = match &lookup {Ok(note)=>note.clone(),Err(e)=>format!("{e:#}")};
@@ -336,6 +336,12 @@ impl InventoryService {
                             } else if execution::automatic_repair_due(&state,now)
                                 && now.saturating_sub(last_repair_check)>=execution::REPAIR_RETRY_DELAY_MS {
                                 last_repair_check=now;
+                                let mut next=state.clone();
+                                if execution::defer_unfillable_recovery(&mut next,&books.read().unwrap().clone(),now)? {
+                                    store.commit(&next,now,"recovery_price_retry_deferred")?;
+                                    state=next;
+                                    return Ok::<(),anyhow::Error>(());
+                                }
                                 let verified=venue::fresh_reconciled_accounts(&workers,config.account_max_age_ms).await?;
                                 let checked_at=crate::domain::now_ms();
                                 let mut next=state.clone();
@@ -422,6 +428,10 @@ impl InventoryService {
                                 state.status=Status::NeedsAttention;
                                 if changed {let _=store.commit(&state,now,"reconciliation_blocked");}
                             }
+                            transient_warning=if transient_warning.is_empty(){message}else{format!("{transient_warning} · {message}")};
+                        }
+                        if let Some(p)=state.pending.as_ref().filter(|p|!p.recovery_wait_reason.is_empty()) {
+                            let message=format!("recovery slippage {} bps: {}",p.recovery_slippage_bps,p.recovery_wait_reason);
                             transient_warning=if transient_warning.is_empty(){message}else{format!("{transient_warning} · {message}")};
                         }
                         // Account/funding I/O may have taken seconds. Publish

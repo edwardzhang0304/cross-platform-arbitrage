@@ -3,10 +3,17 @@ use super::{store::Store, venue::AccountWorker, *};
 use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
 
-pub(super) const REPAIR_RETRY_DELAY_MS: u64 = 5_000;
-pub(super) const FAST_REPAIR_RETRIES: u32 = 3;
+pub(super) const REPAIR_RETRY_DELAY_MS: u64 = 3_000;
+pub const RECOVERY_INITIAL_SLIPPAGE_BPS: u32 = 2;
+pub const RECOVERY_MAX_SLIPPAGE_BPS: u32 = 5;
 /// Read-only capability used to verify that a user-requested reload took effect.
-pub const RESIDUAL_RECOVERY_VERSION: u32 = 2;
+pub const RESIDUAL_RECOVERY_VERSION: u32 = 3;
+pub fn recovery_policy() -> serde_json::Value {
+    serde_json::json!({"retry_interval_ms":REPAIR_RETRY_DELAY_MS,
+        "initial_slippage_bps":RECOVERY_INITIAL_SLIPPAGE_BPS,
+        "step_slippage_bps":1,"max_slippage_bps":RECOVERY_MAX_SLIPPAGE_BPS,
+        "unknown_order_action":"lookup_only"})
+}
 const RESIDUAL_HALT: &str = "residual could not be neutralized within protected execution; manual attention required";
 const ALIGNMENT_HALT: &str = "close precision alignment incomplete; residual review required";
 const UNWIND_HALT: &str = "non-common hedge fill could not be fully unwound; reconciliation required";
@@ -14,10 +21,12 @@ const UNWIND_HALT: &str = "non-common hedge fill could not be fully unwound; rec
 #[derive(Clone, Copy, PartialEq)]
 enum RecoveryPhase { Repair, Alignment, Unwind }
 
-fn retry_delay(attempt: u32) -> u64 {
-    if attempt < FAST_REPAIR_RETRIES { REPAIR_RETRY_DELAY_MS }
-    else if attempt < FAST_REPAIR_RETRIES * 2 { 15_000 } else { 30_000 }
-}
+fn retry_delay(_: u32) -> u64 { REPAIR_RETRY_DELAY_MS }
+fn recovery_slippage(p:&Operation)->u32 {p.recovery_slippage_bps.clamp(RECOVERY_INITIAL_SLIPPAGE_BPS,RECOVERY_MAX_SLIPPAGE_BPS)}
+fn next_recovery_slippage(p:&Operation)->u32 {p.recovery_slippage_bps.saturating_add(1).clamp(RECOVERY_INITIAL_SLIPPAGE_BPS,RECOVERY_MAX_SLIPPAGE_BPS)}
+fn recovery_request(reduce:bool,suffix:&str)->bool {reduce && matches!(suffix,"repair"|"align-close"|"unwind-hedge")}
+fn price_unavailable(e:&anyhow::Error)->bool {matches!(e.to_string().as_str(),
+    "depth exceeds protected execution price"|"protected recovery depth below venue quantity step"|"insufficient depth")}
 
 // A terminal failure can be retried; an unknown request must only be looked up.
 fn recovery_phase(s: &Snapshot) -> Option<RecoveryPhase> {
@@ -82,6 +91,8 @@ pub fn resume_terminal_repair(
     ensure!(residual > 0, "no residual exposure requires repair");
     // Count pre-dispatch failures as well as submitted terminal requests.
     p.repair_attempt = p.repair_attempt.checked_add(1).context("repair retry counter overflow")?;
+    p.recovery_slippage_bps=next_recovery_slippage(p);
+    p.recovery_wait_reason.clear();
     p.repair = None;
     p.repair_terminal = false;
     p.repair_retry_after_ms = None;
@@ -93,6 +104,39 @@ pub(super) fn automatic_repair_due(s: &Snapshot, now: u64) -> bool {
     s.config.auto_neutralize && s.live_orphan.is_none()
         && s.status == Status::NeedsAttention && recovery_phase(s).is_some()
         && s.pending.as_ref().is_some_and(|p| p.repair_retry_after_ms.is_some_and(|after| now >= after))
+}
+
+fn recovery_target(s:&Snapshot,phase:RecoveryPhase)->Result<(Venue,i64,&'static str)> {
+    let p=s.pending.as_ref().context("missing recovery operation")?;
+    Ok(match phase {
+        RecoveryPhase::Repair=>(if p.action==Action::Close {p.hedge_venue()}else{p.first_venue},
+            p.first_filled-p.paired_filled()-p.repair_filled,"repair"),
+        RecoveryPhase::Alignment=>{
+            let remaining=s.config.common_step()-p.first_filled%s.config.common_step();
+            ensure!(p.first_filled+remaining<=p.requested_units,"close alignment exceeds original quantity");
+            (Venue::Lighter,remaining,"align-close")
+        },
+        RecoveryPhase::Unwind=>(Venue::Lighter,p.hedge_filled-p.unwind_hedge_filled,"unwind-hedge"),
+    })
+}
+
+/// Price-only failures advance the durable ladder without sending an order or
+/// consuming account-query capacity. Stale/invalid books never advance it.
+pub(super) fn defer_unfillable_recovery(s:&mut Snapshot,books:&[Book;2],now:u64)->Result<bool> {
+    if !automatic_repair_due(s,now) {return Ok(false);}
+    let (venue,qty,suffix)=recovery_target(s,recovery_phase(s).unwrap())?;
+    let bps=next_recovery_slippage(s.pending.as_ref().unwrap());
+    match request_with_slippage(s,books,venue,s.direction.open_side(venue).opposite(),qty,true,suffix,now,Decimal::from(bps)) {
+        Ok(_)=>Ok(false),
+        Err(e) if price_unavailable(&e)=>{
+            let p=s.pending.as_mut().unwrap();
+            p.repair_attempt=p.repair_attempt.checked_add(1).context("recovery retry counter overflow")?;
+            p.recovery_slippage_bps=bps;p.recovery_wait_reason=e.to_string();
+            p.repair_retry_after_ms=Some(now.saturating_add(REPAIR_RETRY_DELAY_MS));
+            Ok(true)
+        },
+        Err(e)=>Err(e),
+    }
 }
 
 /// Caller must obtain explicit REST reconciliation first. Only the confirmed
@@ -147,25 +191,14 @@ pub(super) fn resume_protected_repair(
         ensure!(s.positions[venue.index()].units == expected,
             "residual ownership differs from existing paired inventory");
     }
-    let (venue, qty, suffix) = match phase {
-        RecoveryPhase::Repair => (if close { p.hedge_venue() } else { p.first_venue },
-            p.first_filled - p.paired_filled() - p.repair_filled, "repair"),
-        RecoveryPhase::Alignment => {
-            let remaining = s.config.common_step() - p.first_filled % s.config.common_step();
-            ensure!(p.first_filled + remaining <= p.requested_units, "close alignment exceeds original quantity");
-            (Venue::Lighter, remaining, "align-close")
-        }
-        RecoveryPhase::Unwind => (Venue::Lighter, p.hedge_filled - p.unwind_hedge_filled, "unwind-hedge"),
-    };
-    // Keep the durable halt reason, but return the actual gate failure to the
-    // service's transient warning instead of silently waiting forever.
-    request(s, books, venue, s.direction.open_side(venue).opposite(),
-        qty, true, suffix, now)?;
+    if defer_unfillable_recovery(s,books,now)? {return Ok(true);}
     if phase == RecoveryPhase::Repair {
         resume_terminal_repair(s, Some(accounts), now)?;
     } else {
         let p = s.pending.as_mut().unwrap();
         p.repair_attempt = p.repair_attempt.checked_add(1).context("recovery retry counter overflow")?;
+        p.recovery_slippage_bps=next_recovery_slippage(p);
+        p.recovery_wait_reason.clear();
         p.repair_retry_after_ms = None;
         p.quote_wait_started_ms = None;
         if phase == RecoveryPhase::Alignment { p.align_close = None; p.align_close_terminal = false; }
@@ -185,10 +218,14 @@ pub(super) fn protected_limit(
     qty: i64,
     now: u64,
 ) -> Result<Decimal> {
+    protected_limit_with_slippage(s,books,venue,side,qty,now,s.config.execution_slippage_bps)
+}
+
+fn protected_limit_with_slippage(s:&Snapshot,books:&[Book;2],venue:Venue,side:Side,qty:i64,now:u64,slippage:Decimal)->Result<Decimal> {
     let b = &books[venue.index()];
     b.validate(now, s.config.book_max_age_ms)?;
     let (_, worst) = b.vwap(side, qty)?;
-    let limit = protected_price_bound(s, b, venue, side)?;
+    let limit = protected_price_bound(s, b, venue, side,slippage)?;
     ensure!(
         if side == Side::Buy { worst <= limit } else { worst >= limit },
         "depth exceeds protected execution price"
@@ -196,7 +233,7 @@ pub(super) fn protected_limit(
     Ok(limit)
 }
 
-fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side)->Result<Decimal> {
+fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side,slippage:Decimal)->Result<Decimal> {
     let best = if side == Side::Buy {
         b.asks[0].price
     } else {
@@ -204,7 +241,7 @@ fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side)->Result<Deci
     };
     let limit = best
         * (Decimal::ONE
-            + Decimal::from(side.sign()) * s.config.execution_slippage_bps / Decimal::from(10_000));
+            + Decimal::from(side.sign()) * slippage / Decimal::from(10_000));
     let limit=if s.config.market==MarketPair::Anth {
         s.config.market.protected_price(venue,limit,side==Side::Buy)?
     }else{limit};
@@ -212,11 +249,11 @@ fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side)->Result<Deci
 }
 
 /// A reducing Entropy repair may consume only the available protected depth.
-/// It never increases the limit, rounds up, changes an existing request, or
+/// It never exceeds this attempt's limit, rounds up, changes an existing request, or
 /// marks the remaining operation complete. The next slice needs a new terminal
 /// reconciliation and its own persisted request identity.
-fn protected_repair_units(s:&Snapshot,b:&Book,venue:Venue,side:Side,wanted:i64)->Result<i64> {
-    let limit=protected_price_bound(s,b,venue,side)?;
+fn protected_repair_units(s:&Snapshot,b:&Book,venue:Venue,side:Side,wanted:i64,slippage:Decimal)->Result<i64> {
+    let limit=protected_price_bound(s,b,venue,side,slippage)?;
     let mut available=0;
     for level in if side==Side::Buy {&b.asks}else{&b.bids} {
         if if side==Side::Buy {level.price>limit}else{level.price<limit} {break;}
@@ -239,6 +276,13 @@ fn request(
     suffix: &str,
     now: u64,
 ) -> Result<OrderRequest> {
+    let slippage=if recovery_request(reduce,suffix) {
+        Decimal::from(recovery_slippage(s.pending.as_ref().context("missing operation")?))
+    }else{s.config.execution_slippage_bps};
+    request_with_slippage(s,books,venue,side,qty,reduce,suffix,now,slippage)
+}
+
+fn request_with_slippage(s:&Snapshot,books:&[Book;2],venue:Venue,side:Side,qty:i64,reduce:bool,suffix:&str,now:u64,slippage:Decimal)->Result<OrderRequest> {
     let b = &books[venue.index()];
     b.validate(now, s.config.book_max_age_ms)?;
     ensure!(
@@ -249,7 +293,7 @@ fn request(
     // their residual repair reduces Entropy. Preserve Lighter minimum-order
     // handling and the full-depth admission checks for ordinary entry/hedge.
     let qty=if reduce && suffix=="repair" && venue==Venue::Entropy {
-        protected_repair_units(s,b,venue,side,qty)?
+        protected_repair_units(s,b,venue,side,qty,slippage)?
     }else{qty};
     let (vwap, worst) = b.vwap(side, qty)?;
     if !reduce {
@@ -258,7 +302,7 @@ fn request(
             "hedge below minimum notional"
         );
     }
-    let mut limit = protected_limit(s, books, venue, side, qty, now)?;
+    let mut limit = protected_limit_with_slippage(s, books, venue, side, qty, now,slippage)?;
     let op = s
         .pending
         .as_ref()
@@ -690,6 +734,10 @@ pub async fn advance(
                 }
                 let p = s.pending.as_mut().unwrap();
                 p.failed = true;
+                if matches!(which,2|3|4) {
+                    p.recovery_slippage_bps=recovery_slippage(p);
+                    p.recovery_wait_reason=error.to_string();
+                }
                 p.quote_wait_started_ms = None;
                 match which {
                     0 => p.first_terminal = true,
@@ -707,6 +755,10 @@ pub async fn advance(
     };
     if is_new {
         let p = s.pending.as_mut().unwrap();
+        if matches!(which,2|3|4) {
+            p.recovery_slippage_bps=recovery_slippage(p);
+            p.recovery_wait_reason.clear();
+        }
         p.quote_wait_started_ms = None;
         match which {
             0 => p.first = Some(req.clone()),

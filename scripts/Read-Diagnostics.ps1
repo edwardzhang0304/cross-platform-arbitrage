@@ -53,6 +53,7 @@ function Pending-View($p) {
     align_close_filled=$p.align_close_filled; unwind_hedge_filled=$p.unwind_hedge_filled
     close_lot_ref=(Ref $p.close_lot_id); close_allocations=@($p.close_allocations | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{lot_ref=(Ref $_.lot_id); units=$_.units} })
     failed=$p.failed; repair_attempt=$p.repair_attempt; repair_retry_after_ms=$p.repair_retry_after_ms
+    recovery_slippage_bps=$p.recovery_slippage_bps; recovery_wait_reason=(SafeText $p.recovery_wait_reason)
     quote_wait_started_ms=$p.quote_wait_started_ms; requests=$r
   }
 }
@@ -120,6 +121,7 @@ function Capture-Market([string]$Market) {
     return [ordered]@{
       market=$Market; captured_ms=$at; available=$true; loaded=($null -ne $s); flags=$flags.ToArray()
       snapshot=(Snapshot-View $s)
+      recovery_policy=($d.recovery_policy | Select-Object retry_interval_ms,initial_slippage_bps,step_slippage_bps,max_slippage_bps,unknown_order_action)
       accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage)
       books=@($v.books | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{connected=$_.connected; received_ms=$_.received_ms; bid=$(if (@($_.bids).Count -gt 0 -and $null -ne $_.bids) { $_.bids[0].price }); ask=$(if (@($_.asks).Count -gt 0 -and $null -ne $_.asks) { $_.asks[0].price })} })
       sampling=($v.sampling | Select-Object ready,continuity_active,covered_ms,required_ms); directional_means=$v.directional_means; submission_enabled=$v.submission_enabled
@@ -213,7 +215,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc12'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc13'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

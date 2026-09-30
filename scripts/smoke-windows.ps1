@@ -19,7 +19,9 @@ try {
   }
   $Status = (Invoke-RestMethod "$Base/api/openai-inventory").data
   if ($Status.vault_unlocked -or $Status.configured -or $Status.view) { throw 'Clean package contains account state' }
-  if ($Status.residual_recovery_version -ne 2) { throw 'Residual recovery version is incorrect' }
+  if ($Status.residual_recovery_version -ne 3) { throw 'Residual recovery version is incorrect' }
+  $Policy=$Status.recovery_policy
+  if ($Policy.retry_interval_ms -ne 3000 -or $Policy.initial_slippage_bps -ne 2 -or $Policy.step_slippage_bps -ne 1 -or $Policy.max_slippage_bps -ne 5 -or $Policy.unknown_order_action -ne 'lookup_only') { throw 'Recovery policy is incorrect' }
   # Exercise the shipped collector with Windows PowerShell 5.1, not only pwsh.
   $Collector=Join-Path (Split-Path $Exe) 'Read-Diagnostics.ps1'
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Collector -Port $Port -DataDirectory $Root -OutputDirectory $Root -Samples 1 -IntervalSeconds 0 -SkipNetwork
@@ -31,9 +33,11 @@ try {
   if ($ReportText.Contains($Status.csrf) -or !$Report.read_only -or $Report.observations.Count -ne 2) { throw 'Diagnostic redaction or schema failed' }
   foreach ($Observation in $Report.observations) {
     if (!$Observation.available -or $Observation.loaded -or $null -ne $Observation.snapshot) { throw 'Unloaded account misreported as a position' }
+    if ($Observation.recovery_policy.max_slippage_bps -ne 5 -or $Observation.recovery_policy.retry_interval_ms -ne 3000) { throw 'Recovery policy missing from diagnostics' }
   }
   if ($Report.health.build.source_commit -ne $Build.source_commit) { throw 'Diagnostic build identity failed' }
   $Anth = (Invoke-RestMethod "$Base/api/anth-inventory").data
+  if (($Anth.recovery_policy | ConvertTo-Json -Compress) -ne ($Policy | ConvertTo-Json -Compress)) { throw 'Markets have different recovery policies' }
   if ($Anth.profile.market -ne 'anth' -or $Anth.profile.mode -ne 'live' -or $Anth.view -or $Anth.configured -or $Anth.vault_unlocked) { throw 'ANTH profile is not empty/isolated' }
   if ($Anth.csrf -eq $Status.csrf) { throw 'Profiles share a control token' }
   $CrossProfile = Invoke-RestMethod "$Base/api/anth-portable" -Method Post -ContentType 'application/json' -Headers @{'X-Inventory-Token'=$Status.csrf} -Body '{"command":"start","id":"cross-profile","confirmation":"START_ANTH_LIVE_STRATEGY"}'

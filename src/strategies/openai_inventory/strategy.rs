@@ -673,6 +673,8 @@ fn evaluate_inner(
         hedge: None,
         repair: None,
         repair_attempt: 0,
+        recovery_slippage_bps: 0,
+        recovery_wait_reason: String::new(),
         repair_retry_after_ms: None,
         first_terminal: false,
         hedge_terminal: false,

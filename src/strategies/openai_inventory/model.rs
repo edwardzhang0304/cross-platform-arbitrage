@@ -308,6 +308,11 @@ pub struct Operation {
     /// Terminal repair retries use a fresh client order id; never reset on restart.
     #[serde(default)]
     pub repair_attempt: u32,
+    /// Last reserved recovery slippage in basis points (2..=5); zero is legacy/unstarted.
+    #[serde(default)]
+    pub recovery_slippage_bps: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub recovery_wait_reason: String,
     /// Durable cooldown before a fresh-account-verified reducing repair retry.
     #[serde(default)]
     pub repair_retry_after_ms: Option<u64>,

@@ -80,7 +80,7 @@ fn rc10_repair_slices_only_protected_depth_in_both_markets_and_directions() {
             assert_eq!(r.units,step*6);
             assert!(r.reduce_only);
             assert_eq!(r.side,side);
-            assert!(if side==Side::Buy {r.limit<=Decimal::new(20002,1)}else{r.limit>=Decimal::new(19998,1)});
+            assert!(if side==Side::Buy {r.limit<=Decimal::new(20004,1)}else{r.limit>=Decimal::new(19996,1)});
             // The ordinary hedge/entry still requires full protected depth.
             assert!(request(&s,&b,Venue::Entropy,side,step*18,true,"hedge",now).is_err());
         }
@@ -137,7 +137,7 @@ fn retry_requires_terminal_outcomes_fresh_accounts_owned_positions_and_protected
             8=>{a[1].position_units+=10;s.positions[1].units+=10;},
             9=>b[1].received_ms=now-2000,
             // Less than one venue step cannot be sliced safely.
-            10=>b[1].bids=vec![Level{price:d(1628),units:9},Level{price:d(1627),units:1000}],
+
             _=>s.config.auto_neutralize=false,
         }
         let before=serde_json::to_value(&s).unwrap();
@@ -147,7 +147,7 @@ fn retry_requires_terminal_outcomes_fresh_accounts_owned_positions_and_protected
 }
 
 #[test]
-fn retries_back_off_but_keep_following_residual_and_survive_restart() {
+fn retries_every_three_seconds_with_capped_slippage_and_survive_restart() {
     let now=100_000;
     let (mut s,a,b)=incident(now,Direction::LighterShort);
     assert!(!automatic_repair_due(&s,now-1));
@@ -157,6 +157,7 @@ fn retries_back_off_but_keep_following_residual_and_survive_restart() {
         assert!(resume_protected_repair(&mut s,&a,&b,now).unwrap());
         let p=s.pending.as_mut().unwrap();
         assert_eq!(p.repair_attempt,attempt);
+        assert_eq!(p.recovery_slippage_bps,(attempt+1).min(5));
         assert!(!p.repair_terminal && p.repair_retry_after_ms.is_none());
         p.repair_terminal=true;
         p.repair_retry_after_ms=Some(now);
@@ -165,7 +166,99 @@ fn retries_back_off_but_keep_following_residual_and_survive_restart() {
     }
     assert!(resume_protected_repair(&mut s,&a,&b,now).unwrap());
     assert_eq!([retry_delay(0),retry_delay(3),retry_delay(6),retry_delay(100)],
-        [5000,15000,30000,30000]);
+        [3000,3000,3000,3000]);
+}
+
+#[test]
+fn price_only_rejections_advance_once_per_three_seconds_and_never_exceed_five_bps() {
+    for market in [MarketPair::Openai,MarketPair::Anth] {
+        for direction in [Direction::LighterLong,Direction::LighterShort] {
+            for close in [false,true] {
+                let mut now=100_000;
+                let (mut s,_,mut b)=if close {close_incident(now,direction)}else{incident(now,direction)};
+                s.config.market=market;
+                let step=market.common_step();
+                let side=direction.open_side(Venue::Entropy).opposite();
+                let p=s.pending.as_mut().unwrap();
+                p.requested_units=step*18;p.first_filled=step*18;
+                // Less than a full quantity step at the top. Available depth is
+                // six bps away, beyond every automatic retry's permitted price.
+                b[1].bids=vec![Level{price:d(1998),units:step*100}];
+                b[1].asks=vec![Level{price:d(2002),units:step*100}];
+                let levels=vec![Level{price:d(2000),units:step-1},
+                    Level{price:if side==Side::Buy {Decimal::new(20012,1)}else{Decimal::new(19988,1)},units:step*100}];
+                if side==Side::Buy {b[1].asks=levels;}else{b[1].bids=levels;}
+                let owned=serde_json::to_value((&s.positions,&s.lots,&s.fills)).unwrap();
+                let requests=serde_json::to_value((&s.pending.as_ref().unwrap().first,
+                    &s.pending.as_ref().unwrap().hedge,&s.pending.as_ref().unwrap().repair)).unwrap();
+                for expected in [2,3,4,5,5,5] {
+                    for book in &mut b {book.received_ms=now;}
+                    assert!(defer_unfillable_recovery(&mut s,&b,now).unwrap());
+                    let p=s.pending.as_ref().unwrap();
+                    assert_eq!(p.recovery_slippage_bps,expected);
+                    assert_eq!(p.repair_retry_after_ms,Some(now+3000));
+                    assert!(!p.recovery_wait_reason.is_empty());
+                    assert_eq!(serde_json::to_value((&p.first,&p.hedge,&p.repair)).unwrap(),requests);
+                    assert_eq!(serde_json::to_value((&s.positions,&s.lots,&s.fills)).unwrap(),owned);
+                    let before=serde_json::to_value(&s).unwrap();
+                    assert!(!defer_unfillable_recovery(&mut s,&b,now+2999).unwrap());
+                    assert_eq!(serde_json::to_value(&s).unwrap(),before);
+                    s=serde_json::from_value(before).unwrap();
+                    now+=3000;
+                }
+                assert_eq!(s.config.execution_slippage_bps,Decimal::ONE);
+            }
+        }
+    }
+}
+
+#[test]
+fn fourth_basis_point_can_unlock_depth_while_ordinary_hedge_remains_at_one() {
+    let mut now=100_000;
+    let (mut s,mut accounts,mut books)=incident(now,Direction::LighterShort);
+    books[1].bids=vec![Level{price:d(2000),units:9},Level{price:Decimal::new(19993,1),units:1000}];
+    books[1].asks=vec![Level{price:d(2001),units:1000}];
+    for expected in [2,3] {
+        assert!(defer_unfillable_recovery(&mut s,&books,now).unwrap());
+        assert_eq!(s.pending.as_ref().unwrap().recovery_slippage_bps,expected);
+        now+=3000;
+        for b in &mut books {b.received_ms=now;}
+    }
+    for a in &mut accounts {a.observed_ms=now;}
+    assert!(resume_protected_repair(&mut s,&accounts,&books,now).unwrap());
+    assert_eq!(s.pending.as_ref().unwrap().recovery_slippage_bps,4);
+    let r=request(&s,&books,Venue::Entropy,Side::Sell,90,true,"repair",now).unwrap();
+    assert_eq!(r.units,90);assert_eq!(r.limit,Decimal::new(19992,1));
+    assert!(request(&s,&books,Venue::Entropy,Side::Sell,90,true,"hedge",now).is_err());
+    assert!(protected_limit(&s,&books,Venue::Entropy,Side::Sell,90,now).is_err());
+    assert_eq!(super::super::emergency_exit::SLIPPAGE_BPS,500);
+}
+
+#[test]
+fn stale_price_preview_and_legacy_unknown_order_never_advance_or_reprice() {
+    let now=100_000;
+    for invalid in 0..3 {
+        let (mut s,_,mut b)=incident(now,Direction::LighterShort);
+        match invalid {0=>b[1].received_ms=now-2000,1=>b[1].bids.clear(),_=>b[1].connected=false}
+        let before=serde_json::to_value(&s).unwrap();
+        assert!(defer_unfillable_recovery(&mut s,&b,now).is_err());
+        assert_eq!(serde_json::to_value(&s).unwrap(),before);
+    }
+    let (mut s,a,b)=incident(now,Direction::LighterShort);
+    s.pending.as_mut().unwrap().repair_attempt=80;
+    s.pending.as_mut().unwrap().repair_terminal=false;
+    let mut old=serde_json::to_value(&s).unwrap();
+    old["pending"].as_object_mut().unwrap().remove("recovery_slippage_bps");
+    old["pending"].as_object_mut().unwrap().remove("recovery_wait_reason");
+    s=serde_json::from_value(old).unwrap();
+    let before=serde_json::to_value(&s).unwrap();
+    assert!(!defer_unfillable_recovery(&mut s,&b,now).unwrap());
+    assert!(!resume_protected_repair(&mut s,&a,&b,now).unwrap());
+    assert_eq!(serde_json::to_value(&s).unwrap(),before);
+    s.pending.as_mut().unwrap().repair_terminal=true;
+    assert!(resume_protected_repair(&mut s,&a,&b,now).unwrap());
+    assert_eq!(s.pending.as_ref().unwrap().repair_attempt,81);
+    assert_eq!(s.pending.as_ref().unwrap().recovery_slippage_bps,2);
 }
 
 #[test]
@@ -206,6 +299,52 @@ impl venue::VenueBackend for RepairBackend {
     fn account(&mut self)->venue::BoxFuture<'_,AccountEvidence> {
         Box::pin(async { anyhow::bail!("fixture does not provide live accounts") })
     }
+}
+
+struct UnknownRepairBackend(std::sync::Arc<std::sync::Mutex<Vec<(bool,OrderRequest)>>>);
+impl venue::VenueBackend for UnknownRepairBackend {
+    fn submit(&mut self,r:OrderRequest)->venue::BoxFuture<'_,OrderResult> {
+        self.0.lock().unwrap().push((true,r.clone()));
+        Box::pin(async move {Ok(result(&r,0,false))})
+    }
+    fn lookup(&mut self,r:OrderRequest)->venue::BoxFuture<'_,OrderResult> {
+        self.0.lock().unwrap().push((false,r.clone()));
+        Box::pin(async move {Ok(result(&r,0,false))})
+    }
+    fn account(&mut self)->venue::BoxFuture<'_,AccountEvidence> {
+        Box::pin(async {anyhow::bail!("synthetic accounts supplied separately")})
+    }
+}
+
+#[tokio::test]
+async fn unknown_retry_keeps_exact_id_price_and_quantity_through_restart_and_repeated_lookups() {
+    let now=crate::domain::now_ms();
+    let (mut s,a,b)=close_incident(now,Direction::LighterShort);
+    s.pending.as_mut().unwrap().recovery_slippage_bps=2;
+    assert!(resume_protected_repair(&mut s,&a,&b,now).unwrap());
+    let calls=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workers=[Venue::Lighter,Venue::Entropy].map(|v|venue::AccountWorker::spawn(v,Mode::Paper,true,
+        Box::new(UnknownRepairBackend(calls.clone()))).unwrap());
+    let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+    advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
+    assert_eq!(s.pending.as_ref().unwrap().recovery_slippage_bps,3);
+    let expected=serde_json::to_value(&s.pending.as_ref().unwrap().repair).unwrap();
+    let owned=serde_json::to_value((&s.positions,&s.lots,&s.fills)).unwrap();
+    for offset in [3000,6000,9000,70000,73000] {
+        s=serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        let at=now+offset;
+        assert!(!automatic_repair_due(&s,at));
+        let mut fresh=b.clone();for book in &mut fresh {book.received_ms=at;}
+        if s.status==Status::NeedsAttention {recheck_timed_out(&mut s,&mut db,&workers,at).await.unwrap();}
+        else {advance(&mut s,&mut db,&workers,&fresh,at).await.unwrap();}
+        assert_eq!(s.pending.as_ref().unwrap().recovery_slippage_bps,3);
+        assert_eq!(serde_json::to_value(&s.pending.as_ref().unwrap().repair).unwrap(),expected);
+        assert_eq!(serde_json::to_value((&s.positions,&s.lots,&s.fills)).unwrap(),owned);
+    }
+    let calls=calls.lock().unwrap();
+    assert_eq!(calls.iter().filter(|(submit,_)|*submit).count(),1);
+    assert_eq!(calls.len(),6);
+    for (_,r) in calls.iter() {assert_eq!(serde_json::to_value(r).unwrap(),expected);}
 }
 
 struct SlicedRepairBackend {
@@ -261,7 +400,7 @@ async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reop
             b[1].bids=vec![Level{price:d(1999),units:5000*scale}];
             b[1].asks=vec![Level{price:d(2001),units:5000*scale}];
             let thin=vec![Level{price:d(2000),units:65*scale},
-                Level{price:if side==Side::Sell{d(1999)}else{d(2001)},units:5000*scale}];
+                Level{price:if side==Side::Sell{d(1998)}else{d(2002)},units:5000*scale}];
             if side==Side::Sell{b[1].bids=thin;}else{b[1].asks=thin;}
             let sent=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let workers=[Venue::Lighter,Venue::Entropy].map(|v|venue::AccountWorker::spawn(v,Mode::Paper,true,
@@ -274,6 +413,7 @@ async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reop
                 for x in &mut a {x.position_units=s.positions[x.venue.index()].units;x.observed_ms=now;}
                 for x in &mut b {x.received_ms=now;}
                 assert!(resume_protected_repair(&mut s,&a,&b,now).unwrap(),"round {round}, {:?}, {}, {:?}",s.status,s.reason,s.pending);
+                assert_eq!(s.pending.as_ref().unwrap().recovery_slippage_bps,round+2);
                 advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
                 let req=s.pending.as_ref().unwrap().repair.clone().unwrap();
                 let fill=if round==0{40*scale}else{req.units};
@@ -283,6 +423,7 @@ async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reop
                 db.commit(&s,now,"synthetic_duplicate").unwrap();
                 // Close the real SQLite connection and restore the exact durable state.
                 drop(db);let (restored,state)=Store::open(&path,&s.config).unwrap();db=restored;s=state;
+                assert_eq!(s.pending.as_ref().unwrap().recovery_slippage_bps,round+2);
                 advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
                 if round<3 {
                     now=s.pending.as_ref().unwrap().repair_retry_after_ms.unwrap();
@@ -292,6 +433,10 @@ async fn rc10_close_990_to_810_slices_180_with_partial_fill_and_real_ledger_reop
             assert_eq!(requests.iter().map(|r|r.units/scale).collect::<Vec<_>>(),vec![60,60,60,20]);
             assert_eq!(requests.iter().map(|r|&r.id).collect::<std::collections::BTreeSet<_>>().len(),4);
             assert!(requests.iter().all(|r|r.reduce_only && r.venue==Venue::Entropy && r.side==side));
+            for (i,r) in requests.iter().enumerate() {
+                let bound=d(2000)*(Decimal::ONE+Decimal::from(side.sign())*Decimal::from(i+2)/d(10000));
+                assert_eq!(r.limit,market.protected_price(Venue::Entropy,bound,side==Side::Buy).unwrap());
+            }
             assert!(s.pending.is_none() && s.paused && s.stop_requested);
             assert!(!s.close_requested && !s.stop_after_close && s.recovery_after_ms.is_none());
             assert!(s.loss_stop.is_none());
@@ -345,9 +490,9 @@ async fn workflow_dispatches_only_remaining_quantity_then_finishes_without_touch
     a[1].position_units=s.positions[1].units;
     s.pending.as_mut().unwrap().repair_retry_after_ms=None;
     advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
-    assert_eq!(s.pending.as_ref().unwrap().repair_retry_after_ms,Some(now+5000));
+    assert_eq!(s.pending.as_ref().unwrap().repair_retry_after_ms,Some(now+3000));
     assert!(!resume_protected_repair(&mut s,&a,&b,now).unwrap());
-    let due=now+5000;
+    let due=now+3000;
     a.iter_mut().for_each(|a|a.observed_ms=due);
     let mut fresh=b.clone();fresh.iter_mut().for_each(|b|b.received_ms=due);
     assert!(resume_protected_repair(&mut s,&a,&fresh,due).unwrap());
@@ -427,9 +572,9 @@ async fn close_retry_finishes_only_selected_three_groups_in_both_directions() {
                 let (mut db,_)=Store::offline_replay(&s.config).unwrap();
                 s.pending.as_mut().unwrap().repair_retry_after_ms=None;
                 advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
-                assert_eq!(s.pending.as_ref().unwrap().repair_retry_after_ms,Some(now+5000));
-                assert!(!automatic_repair_due(&s,now+4999));
-                let at=now+5000;
+                assert_eq!(s.pending.as_ref().unwrap().repair_retry_after_ms,Some(now+3000));
+                assert!(!automatic_repair_due(&s,now+2999));
+                let at=now+3000;
                 a.iter_mut().for_each(|x|x.observed_ms=at);
                 let mut b=b;b.iter_mut().for_each(|x|x.received_ms=at);
                 assert!(resume_protected_repair(&mut s,&a,&b,at).unwrap());
@@ -472,7 +617,7 @@ fn close_retry_rejects_unknown_unowned_stale_and_unprotected_residuals_without_m
             9=>a[1].observed_ms=now-4000,
             10=>a[1].open_orders=1,
             11=>b[1].received_ms=now-2000,
-            12=>b[1].bids=vec![Level{price:d(1628),units:9},Level{price:d(1627),units:1000}],
+
             13=>s.pending.as_mut().unwrap().repair_retry_after_ms=Some(now+1),
             _=>s.config.auto_neutralize=false,
         }
@@ -491,6 +636,7 @@ fn close_retry_counter_and_stop_loss_survive_restart() {
         assert!(resume_protected_repair(&mut s,&a,&b,now).unwrap());
         assert!(s.paused && s.stop_requested && s.loss_stop.is_some());
         let p=s.pending.as_mut().unwrap();assert_eq!(p.repair_attempt,attempt);
+        assert_eq!(p.recovery_slippage_bps,(attempt+1).min(5));
         p.repair_terminal=true;p.repair_retry_after_ms=Some(now);
         s.status=Status::NeedsAttention;s.reason=RESIDUAL_HALT.into();
         s=serde_json::from_value(serde_json::to_value(s).unwrap()).unwrap();

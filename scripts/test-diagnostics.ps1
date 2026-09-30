@@ -18,6 +18,7 @@ try {
     $Ledger=$Report.ledgers.$Market
     if (!$Ledger.readonly -or !$Ledger.available -or $Ledger.snapshot.held_groups -ne 7 -or $Ledger.snapshot.pending.first_filled -ne 700) { throw 'Offline snapshot extraction failed' }
     if ($Ledger.snapshot.ledger[0].venue -ne 'lighter' -or $Ledger.snapshot.ledger[1].venue -ne 'entropy') { throw 'Ledger venue mapping is incorrect' }
+    if ($Ledger.snapshot.pending.recovery_slippage_bps -ne 3 -or $Ledger.snapshot.pending.recovery_wait_reason -notmatch 'depth exceeds protected execution price') { throw 'Recovery price diagnostics were lost' }
     if ($Ledger.operation_events.events.Count -ne 2 -or $Ledger.recent_events.events.Count -ne 3) {
       # Only synthetic, already redaction-checked evidence is printed on CI failure.
       Write-Output ($Ledger | ConvertTo-Json -Depth 16)
