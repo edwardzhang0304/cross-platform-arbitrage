@@ -1,5 +1,96 @@
 use super::*;
 
+fn market_record(db: &mut Connection, s: &Snapshot, at: u64, healthy: bool) {
+    let good = Book { bids: vec![Level { price: 2000.into(), units: 1000 }],
+        asks: vec![Level { price: 2001.into(), units: 1000 }], received_ms: at, connected: true };
+    let mut books = [good.clone(), good];
+    if !healthy { books[1].received_ms = at.saturating_sub(10_000); }
+    let tx = db.transaction().unwrap();
+    observe_market(&tx, s, &books, at).unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
+fn market_outage_waits_for_grace_survives_snapshot_blips_and_recovers_without_spam() {
+    for market in [MarketPair::Openai, MarketPair::Anth] {
+        let mut db = db();
+        let mut c = InventoryConfig::default(); c.market = market;
+        let mut s = Snapshot::new(c).unwrap(); s.status = Status::Running;
+        s.reason = "secret-token-do-not-send".into();
+        market_record(&mut db, &s, 10_000, false);
+        // Short REST snapshots must not hide an otherwise broken subscription.
+        for at in (11_000..70_000).step_by(1000) {
+            market_record(&mut db, &s, at, at % 15_000 == 0);
+            assert!(rows(&db).is_empty());
+        }
+        market_record(&mut db, &s, 70_000, false);
+        assert_eq!(rows(&db).len(), 1);
+        let (id, body) = rows(&db).pop().unwrap();
+        assert!(body.contains("Entropy")); assert!(body.contains(&market.id().to_uppercase()));
+        assert!(!body.contains("secret-token"));
+        { let tx = db.transaction().unwrap();
+          tx.execute("DELETE FROM notification_outbox WHERE id=?1", [&id]).unwrap();
+          delivered(&tx, &id, 70_000).unwrap(); tx.commit().unwrap(); }
+        market_record(&mut db, &s, 369_999, false); assert!(rows(&db).is_empty());
+        market_record(&mut db, &s, 370_000, false); assert_eq!(rows(&db).len(), 1);
+        for at in (371_000..=381_000).step_by(1000) { market_record(&mut db, &s, at, true); }
+        assert!(rows(&db).is_empty());
+        { let tx = db.transaction().unwrap(); tick(&tx, 999_000).unwrap(); tx.commit().unwrap(); }
+        assert!(rows(&db).is_empty());
+    }
+}
+
+#[test]
+fn market_short_outage_stays_silent_and_observation_gaps_are_not_recovery() {
+    let mut db = db(); let mut s = Snapshot::new(InventoryConfig::default()).unwrap();
+    s.status = Status::Running;
+    market_record(&mut db, &s, 10_000, false);
+    for at in (11_000..=21_000).step_by(1000) { market_record(&mut db, &s, at, true); }
+    { let tx = db.transaction().unwrap(); tick(&tx, 70_000).unwrap(); tx.commit().unwrap(); }
+    assert!(rows(&db).is_empty());
+    market_record(&mut db, &s, 100_000, false);
+    market_record(&mut db, &s, 101_000, true);
+    market_record(&mut db, &s, 120_000, true); // unobserved gap != 19 healthy seconds
+    { let tx = db.transaction().unwrap(); tick(&tx, 160_000).unwrap(); tx.commit().unwrap(); }
+    assert_eq!(rows(&db).len(), 1);
+}
+
+#[test]
+fn market_alerts_monitor_held_stopped_positions_without_canceling_execution_alerts() {
+    let mut db = db(); let mut s = Snapshot::new(InventoryConfig::default()).unwrap();
+    s.status = Status::Stopped; s.paused = true; s.stop_requested = true;
+    market_record(&mut db, &s, 10_000, false);
+    market_record(&mut db, &s, 70_000, false);
+    assert!(rows(&db).is_empty()); // stopped and flat needs no market alert
+    s.positions[0].units = -700; s.positions[1].units = 700;
+    market_record(&mut db, &s, 80_000, false);
+    market_record(&mut db, &s, 140_000, false);
+    assert_eq!(rows(&db).len(), 1);
+    pending(&mut s); s.pending.as_mut().unwrap().failed = true;
+    record(&mut db, &s, 140_000); record(&mut db, &s, 200_000);
+    assert_eq!(rows(&db).len(), 2);
+    for at in (201_000..=211_000).step_by(1000) { market_record(&mut db, &s, at, true); }
+    assert_eq!(rows(&db).len(), 1);
+    assert!(rows(&db)[0].1.contains("持续交易异常"));
+}
+
+#[test]
+fn market_outage_grace_and_deduplication_survive_database_reopen() {
+    let path = std::env::temp_dir().join(format!("cpa-market-alert-{}.sqlite", uuid::Uuid::new_v4()));
+    let mut s = Snapshot::new(InventoryConfig::default()).unwrap(); s.status = Status::Running;
+    { let mut db = Connection::open(&path).unwrap(); db.execute_batch(SCHEMA).unwrap();
+      market_record(&mut db, &s, 10_000, false); }
+    for at in [69_999, 70_000, 900_000] {
+        let mut db = Connection::open(&path).unwrap();
+        let tx = db.transaction().unwrap(); tick(&tx, at).unwrap(); tx.commit().unwrap();
+        assert_eq!(rows(&db).len(), usize::from(at >= 70_000));
+    }
+    { let mut db = Connection::open(&path).unwrap();
+      for at in (901_000..=911_000).step_by(1000) { market_record(&mut db, &s, at, true); }
+      assert!(rows(&db).is_empty()); }
+    std::fs::remove_file(path).unwrap();
+}
+
 fn db()->Connection {let db=Connection::open_in_memory().unwrap();db.execute_batch(SCHEMA).unwrap();db}
 fn record(db:&mut Connection,s:&Snapshot,at:u64){let tx=db.transaction().unwrap();observe(&tx,s,at).unwrap();tx.commit().unwrap();}
 fn rows(db:&Connection)->Vec<(String,String)> {

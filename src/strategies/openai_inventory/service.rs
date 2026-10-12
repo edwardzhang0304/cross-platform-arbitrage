@@ -248,6 +248,7 @@ impl InventoryService {
             let mut order_lookup_note = String::new();
             let mut last_repair_check = 0;
             let mut last_emergency_poll = 0;
+            let mut last_market_notice_check = 0;
             loop {
                 tokio::select! {
                     biased;
@@ -296,6 +297,13 @@ impl InventoryService {
                     },
                     _=timer.tick()=>{
                         let now=crate::domain::now_ms();let current=books.read().unwrap().clone();
+                        if now.saturating_sub(last_market_notice_check) >= 1_000 {
+                            last_market_notice_check = now;
+                            // Notification failures never stop account/order recovery.
+                            if let Err(error) = store.observe_market(&state, &current, now) {
+                                tracing::warn!(%error, "market notification state unavailable");
+                            }
+                        }
                         let result=async {
                             if super::emergency_exit::active(&state) {
                                 if now.saturating_sub(last_emergency_poll)<1000 {return Ok::<(),anyhow::Error>(());}

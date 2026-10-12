@@ -10,6 +10,27 @@ pub struct Store {
     db: Connection,
     _lock: Option<File>,
 }
+
+#[cfg(test)]
+mod market_notice_tests {
+    use super::*;
+
+    #[test]
+    fn observing_stale_quotes_only_updates_notification_tables() {
+        let mut config = InventoryConfig::default(); config.mode = Mode::Paper;
+        let (mut store, mut state) = Store::offline_replay(&config).unwrap();
+        state.status = Status::Running;
+        let original: String = store.db.query_row("SELECT body FROM state", [], |r| r.get(0)).unwrap();
+        let events: i64 = store.db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        for at in [10_000, 70_000] {
+            store.observe_market(&state, &[Book::default(), Book::default()], at).unwrap();
+        }
+        let after: String = store.db.query_row("SELECT body FROM state", [], |r| r.get(0)).unwrap();
+        let after_events: i64 = store.db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        let notices: i64 = store.db.query_row("SELECT COUNT(*) FROM notification_outbox", [], |r| r.get(0)).unwrap();
+        assert_eq!(original, after); assert_eq!(events, after_events); assert_eq!(notices, 1);
+    }
+}
 impl Store {
     /// Isolated, non-durable ledger used only by offline paper replays.
     #[cfg(test)]
@@ -150,6 +171,13 @@ impl Store {
         } else {
             Ok(false)
         }
+    }
+    /// Notification-only transaction; no position, execution or event-log edits.
+    pub fn observe_market(&mut self, s: &Snapshot, books: &[Book; 2], at: u64) -> Result<()> {
+        let tx = self.db.transaction()?;
+        alerts::observe_market(&tx, s, books, at)?;
+        tx.commit()?;
+        Ok(())
     }
     pub fn command(&mut self, s: &Snapshot, id: &str, command: &str, at: u64) -> Result<()> {
         self.command_inner(s, id, command, at)

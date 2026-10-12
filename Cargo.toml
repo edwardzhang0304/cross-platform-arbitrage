@@ -1,6 +1,6 @@
 [package]
 name = "cross-platform-arbitrage"
-version = "0.2.0-rc.13"
+version = "0.2.0-rc.14"
 edition = "2024"
 
 [lib]
@@ -58,6 +58,9 @@ zeroize = { version = "1", features = ["derive"] }
 
 [patch.crates-io]
 hyperliquid_rust_sdk = { path = "vendor/hyperliquid_rust_sdk" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 
 [workspace]
 members = ["vendor/lighter-signing"]

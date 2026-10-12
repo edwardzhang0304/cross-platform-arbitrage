@@ -37,6 +37,7 @@ const PUBLIC_RECOVERY_MIN_INTERVAL_MS: u64 = 15_000;
 const PUBLIC_RECOVERY_REQUEST_TIMEOUT_MS: u64 = 5_000;
 const TRADE_SESSION_SETUP_TIMEOUT_MS: u64 = 4_000;
 const TRADE_MIN_CONNECTION_CYCLE_MS: u64 = 4_000;
+const FAST_BOOK_SILENCE_MS: u64 = 3_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -465,6 +466,34 @@ enum TradeBookMode {
     Fast,
 }
 
+/// Only a validated websocket book resets this deadline. Asset context, trades
+/// and the independent REST fallback must not keep a dead L2 subscription alive.
+struct TradeBookWatchdog {
+    mode: TradeBookMode,
+    last_book: tokio::time::Instant,
+}
+impl TradeBookWatchdog {
+    fn new(mode: TradeBookMode) -> Self {
+        Self { mode, last_book: tokio::time::Instant::now() }
+    }
+    fn observed_book(&mut self) { self.last_book = tokio::time::Instant::now(); }
+    async fn next(&self, receiver: &mut mpsc::UnboundedReceiver<HyperliquidMessage>, idle_ms: u64)
+        -> Result<HyperliquidMessage> {
+        let now = tokio::time::Instant::now();
+        let idle_deadline = now + Duration::from_millis(idle_ms);
+        let deadline = if self.mode == TradeBookMode::Fast {
+            let book_deadline = self.last_book + Duration::from_millis(FAST_BOOK_SILENCE_MS);
+            // Check before polling: an endless queue of non-book messages must
+            // not win a ready-future race against an already expired timer.
+            ensure!(now < book_deadline, "fast trade L2 book stopped updating; reconnecting");
+            book_deadline.min(idle_deadline)
+        } else { idle_deadline };
+        tokio::time::timeout_at(deadline, receiver.recv()).await
+            .context("trade market book/transport deadline expired; reconnecting")?
+            .context("trade websocket receiver closed")
+    }
+}
+
 impl TradeBookMode {
     fn validate_stream_book(self, book: &OrderBook) -> Result<()> {
         if self == Self::Fast {
@@ -636,16 +665,9 @@ async fn run_trade_session(
         },
     )?;
 
+    let mut book_watchdog = TradeBookWatchdog::new(book_mode);
     loop {
-        let message = tokio::time::timeout(
-            Duration::from_millis(config.stale_timeout_ms),
-            sdk_receiver.recv(),
-        )
-        .await
-        .context("trade market websocket became stale")?;
-        let Some(message) = message else {
-            bail!("trade websocket receiver closed");
-        };
+        let message = book_watchdog.next(&mut sdk_receiver, config.stale_timeout_ms).await?;
         match message {
             HyperliquidMessage::NoData => {
                 bail!("trade websocket disconnected");
@@ -666,6 +688,7 @@ async fn run_trade_session(
                     sequence_valid: true,
                 };
                 book_mode.validate_stream_book(&book)?;
+                book_watchdog.observed_book();
                 last_book_at_ms.store(book.received_timestamp_ms, Ordering::Relaxed);
                 try_emit(
                     sender,
@@ -1118,6 +1141,94 @@ fn parse_optional_finite(value: Option<&str>) -> Result<Option<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn fast_book_watchdog_ignores_other_traffic_and_keeps_markets_independent() {
+        let mut openai = TradeBookWatchdog::new(TradeBookMode::Fast);
+        let anth = TradeBookWatchdog::new(TradeBookMode::Fast);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for _ in 0..2 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tx.send(HyperliquidMessage::Pong).unwrap();
+            assert!(anth.next(&mut rx, 30_000).await.is_ok());
+            openai.observed_book();
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        // Even a ready queue cannot defeat the book deadline.
+        tx.send(HyperliquidMessage::Pong).unwrap();
+        assert!(anth.next(&mut rx, 30_000).await.is_err());
+        assert!(openai.next(&mut rx, 30_000).await.is_ok());
+        // A live transport is not required to trigger a timeout, either.
+        assert!(openai.next(&mut rx, 30_000).await.is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn standard_book_retains_transport_timeout_and_fast_book_accepts_new_snapshots() {
+        let standard = TradeBookWatchdog::new(TradeBookMode::Standard);
+        let mut fast = TradeBookWatchdog::new(TradeBookMode::Fast);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for _ in 0..20 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            fast.observed_book();
+            tx.send(HyperliquidMessage::Pong).unwrap();
+            assert!(fast.next(&mut rx, 30_000).await.is_ok());
+        }
+        tx.send(HyperliquidMessage::Pong).unwrap();
+        assert!(standard.next(&mut rx, 30_000).await.is_ok());
+        let start = tokio::time::Instant::now();
+        assert!(standard.next(&mut rx, 30_000).await.is_err());
+        assert_eq!(start.elapsed(), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn stalled_fast_socket_is_released_and_new_subscription_receives_books() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::{accept_async, tungstenite::Message};
+        tokio::time::timeout(Duration::from_secs(15), async {
+            for coin in ["io:ANTH", "io:OAI"] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server = tokio::spawn(async move {
+                    for attempt in 0..2 {
+                        let (socket, _) = listener.accept().await.unwrap();
+                        let mut ws = accept_async(socket).await.unwrap();
+                        loop {
+                            let Message::Text(text) = ws.next().await.unwrap().unwrap() else { continue; };
+                            let value: Value = serde_json::from_str(&text).unwrap();
+                            if value["method"] == "subscribe" {
+                                assert_eq!(value["subscription"], json!({"type":"l2Book","coin":coin,"fast":true}));
+                                break;
+                            }
+                        }
+                        if attempt == 1 {
+                            ws.send(Message::Text(json!({"channel":"l2Book","data":{"coin":coin,"time":1,
+                                "levels":[[{"px":"2000","sz":"1","n":1}],[{"px":"2001","sz":"1","n":1}]]}}).to_string())).await.unwrap();
+                        }
+                        // Stay completely silent. Dropping the client must close
+                        // this socket promptly, including a reader blocked on IO.
+                        tokio::time::timeout(Duration::from_secs(5), async {
+                            while let Some(Ok(frame)) = ws.next().await {
+                                if matches!(frame, Message::Close(_)) { break; }
+                            }
+                        }).await.expect("old websocket leaked after watchdog reconnect");
+                    }
+                });
+                for attempt in 0..2 {
+                    let mut client = hyperliquid_rust_sdk::InfoClient::new(None, None).await.unwrap();
+                    client.http_client.base_url = format!("http://{address}");
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+                    client.subscribe_l2_book_fast(coin.into(), tx).await.unwrap();
+                    let watchdog = TradeBookWatchdog::new(TradeBookMode::Fast);
+                    let result = watchdog.next(&mut rx, 30_000).await;
+                    if attempt == 0 { assert!(result.is_err()); }
+                    else { assert!(matches!(result.unwrap(), HyperliquidMessage::L2Book(b) if b.data.coin == coin)); }
+                    drop(client);
+                }
+                server.await.unwrap();
+            }
+        }).await.unwrap();
+    }
 
     #[test]
     fn fast_book_recovery_caps_depth_and_rejects_wrong_stream_or_empty_side() {

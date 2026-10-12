@@ -44,6 +44,7 @@ pub(crate) struct WsManager {
     subscriptions: Arc<Mutex<HashMap<String, Vec<SubscriptionData>>>>,
     subscription_id: u32,
     subscription_identifiers: HashMap<u32, String>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -109,6 +110,7 @@ impl WsManager {
         let subscriptions_map: HashMap<String, Vec<SubscriptionData>> = HashMap::new();
         let subscriptions = Arc::new(Mutex::new(subscriptions_map));
         let subscriptions_copy = Arc::clone(&subscriptions);
+        let mut tasks = Vec::new();
 
         {
             let writer = writer.clone();
@@ -183,7 +185,7 @@ impl WsManager {
                 }
                 warn!("ws message reader task stopped");
             };
-            spawn(reader_fut);
+            tasks.push(spawn(reader_fut));
         }
 
         {
@@ -204,7 +206,7 @@ impl WsManager {
                 }
                 warn!("ws ping task stopped");
             };
-            spawn(ping_fut);
+            tasks.push(spawn(ping_fut));
         }
 
         Ok(WsManager {
@@ -213,6 +215,7 @@ impl WsManager {
             subscriptions,
             subscription_id: 0,
             subscription_identifiers: HashMap::new(),
+            tasks,
         })
     }
 
@@ -470,6 +473,9 @@ impl WsManager {
 impl Drop for WsManager {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
+        // A silent socket can otherwise keep reader.next() pending forever.
+        // Release both socket halves when the owner rebuilds its subscription.
+        for task in &self.tasks { task.abort(); }
     }
 }
 

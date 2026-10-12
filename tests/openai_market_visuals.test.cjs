@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {chartModel,renderCharts,renderQuoteCards}=require('../frontend/openai-market-visuals.js');
+const {chartModel,renderCharts,renderQuoteCards,quoteRows}=require('../frontend/openai-market-visuals.js');
 
 // Offline SVG harness: model the browser's xMidYMid/meet transform, including
 // letterboxing and CSS/page scaling. No live API, credentials or trading state.
@@ -33,9 +33,33 @@ function fixture({width=1300,height=186,zoom=1,left=40,top=20}={}) {
   const render=()=>renderCharts(payload,get);
   const cursor=()=>root.children[0].children.find(n=>n.attrs['pointer-events']==='none');
   const move=(x,y=120)=>{const {s,tx,ty}=matrix();root.dispatch('pointermove',{clientX:x*s+tx,clientY:y*s+ty});};
-  return {root,hover,payload,render,cursor,move,viewport};
+  return {root,status,hover,payload,render,cursor,move,viewport};
 }
 const near=(actual,expected)=>assert.ok(Math.abs(Number(actual)-expected)<1e-8,`${actual} != ${expected}`);
+
+test('stale Entropy remains visible while fresh Lighter is labeled independently',()=>{
+  const now=1700000000000;
+  const payload={available:true,symbols:['ANTHROPIC','io:ANTH'],status:{running:true,observed_ms:now,
+    books:[now,now-15000].map(received_ms=>({bid:{price:2000},ask:{price:2001},received_ms,connected:true}))}};
+  const quotes=quoteRows(payload,now,true);
+  assert.deepEqual(quotes.map(q=>q.state),['行情有效','报价过期']);
+  const element=()=>({children:[],textContent:'',append(...children){this.children.push(...children)},replaceChildren(){this.children=[]}});
+  global.document={createElement:element}; const root=element();
+  renderQuoteCards(quotes,'shortL',()=>root);
+  assert.deepEqual(root.children.map(r=>r.children[3].textContent),['行情有效','报价过期']);
+  assert.equal(root.children[1].children[3].className,'quote-state quote-stale');
+  assert.match(root.children[1].children[3].title,/最近盘口/);
+  assert(quoteRows(payload,now,false).every(q=>!q.fresh));
+});
+
+test('chart explains missing latest quotes and clears the message on recovery',()=>{
+  const f=fixture();f.payload.chart_points.at(-1).entropy_bid=null;
+  f.payload.chart_points.at(-1).entropy_ask=null;
+  f.render();assert.match(f.status.textContent,/行情缺失或过期/);
+  f.payload.chart_points.at(-1).entropy_bid=99;f.payload.chart_points.at(-1).entropy_ask=100;
+  f.render();assert.equal(f.status.textContent,'');
+  f.payload.chart_points=[];f.render();assert.equal(f.status.textContent,'等待有效行情');
+});
 
 test('quote cards keep Lighter then Entropy when the trading direction changes',()=>{
   const element=()=>({children:[],textContent:'',append(...children){this.children.push(...children)},replaceChildren(){this.children=[]}});

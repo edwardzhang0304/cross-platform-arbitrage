@@ -58,7 +58,7 @@
     const pointer=pointerState(root);pointer.draw=null;
     root.replaceChildren();status.textContent='';if(hover)hover.textContent='';
     const model=chartModel(payload?.chart_points);
-    if(!model)return;
+    if(!model){status.textContent='等待有效行情';return;}
     const node=(tag,attrs={},text)=>{const n=document.createElementNS('http://www.w3.org/2000/svg',tag);
       for(const [k,v] of Object.entries(attrs))n.setAttribute(k,String(v));if(text!=null)n.textContent=text;return n;};
     const compact=root.clientWidth>0&&root.clientWidth<580;
@@ -76,6 +76,7 @@
       else {const step=2;model.spread={min:Math.floor((Math.min(lo,previous?.min??lo)-.25)/step)*step,max:Math.ceil((Math.max(hi,previous?.max??hi)+.25)/step)*step};chartRanges.set(selected,model.spread);}
     }
     const latest=model.rows.at(-1),value=v=>v==null?'—':v.toFixed(4);
+    if(latest[selected]==null || latest[closing]==null)status.textContent='行情缺失或过期，价差暂停更新';
     svg.append(node('text',{x:left,y:25,fill:'#526277','font-size':12},selected==='shortL'?'空 Lighter / 多 Entropy':'空 Entropy / 多 Lighter'));
     const panels=[{top:62,range:model.spread,title:'盘口价差（第一档）· U / 份',
       series:[[selected,'Bid−Ask','#139b55'],[closing,'Ask−Bid','#e24444']]}];
@@ -156,7 +157,9 @@
       const tr=document.createElement('tr'),platform=cell(q.platform),symbol=cell(q.symbol,'small');
       symbol.className='subline';platform.append(symbol);
       const buy=cell(q.buy),sell=cell(q.sell);buy.className=sell.className='quote-price';
-      const state=cell('');
+      const state=cell(q.state||'');
+      state.className=q.fresh?'quote-state':'quote-state quote-stale';
+      if(q.time)state.title=`最近盘口：${q.time}`;
       tr.append(platform,buy,sell,state);root.append(tr);
     }
   }

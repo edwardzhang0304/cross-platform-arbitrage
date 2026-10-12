@@ -215,7 +215,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc13'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc14'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'
