@@ -174,10 +174,14 @@ async fn rc15_live_quote_recheck_after_token_load_cancels_only_recovered_market_
         let dir=directory();std::fs::create_dir_all(&dir).unwrap();let path=dir.join("ledger.sqlite");
         let mut db=rusqlite::Connection::open(&path).unwrap();db.execute_batch(alerts::SCHEMA).unwrap();
         let mut s=Snapshot::new(InventoryConfig::default()).unwrap();s.status=Status::Running;
-        let now=crate::domain::now_ms();
-        for at in (now-60_000..=now).step_by(1000) {
-            let tx=db.transaction().unwrap();alerts::observe_market(&tx,&s,&[Book::default(),Book::default()],at).unwrap();tx.commit().unwrap();
-        }
+        // Seed a synthetic minute in one transaction. Sixty-one synchronous
+        // NTFS commits can consume the real three-second observation lease
+        // before delivery even starts, correctly expiring the fixture.
+        {let tx=db.transaction().unwrap();let now=crate::domain::now_ms();
+         for at in (now-60_000..=now).step_by(1000) {
+             alerts::observe_market(&tx,&s,&[Book::default(),Book::default()],at).unwrap();
+         }
+         tx.commit().unwrap();}
         assert_eq!(db.query_row("SELECT COUNT(*) FROM notification_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),1);
         drop(db);
         let books=Arc::new(RwLock::new([Book::default(),Book::default()]));
@@ -186,7 +190,7 @@ async fn rc15_live_quote_recheck_after_token_load_cancels_only_recovered_market_
         let work=tokio::spawn({let path=path.clone();let handle=handle.clone();async move{
             let mut sender=FeishuSender::new().unwrap();sender.base=format!("http://{address}");handle.deliver_once(&path,&mut sender).await.unwrap();
         }});
-        tokio::time::timeout(Duration::from_secs(2),entered.notified()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10),entered.notified()).await.unwrap();
         if recover {
             let good=Book{bids:vec![Level{price:2000.into(),units:1000}],asks:vec![Level{price:2001.into(),units:1000}],received_ms:crate::domain::now_ms(),connected:true};
             *books.write().unwrap()=[good.clone(),good];
