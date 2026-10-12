@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notification_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS market_notification_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS market_notification_history(seq INTEGER PRIMARY KEY,body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS notification_outbox(id TEXT PRIMARY KEY,at_ms INTEGER NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_ms INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS notification_counters(id INTEGER PRIMARY KEY CHECK(id=1),dropped INTEGER NOT NULL DEFAULT 0);
 INSERT OR IGNORE INTO notification_counters(id,dropped) VALUES(1,0);
@@ -14,69 +15,15 @@ INSERT OR IGNORE INTO notification_policy(id,version) VALUES(1,0);";
 const MAX_PENDING: i64 = 512;
 const REMINDER_MS: u64 = 300_000;
 pub const EXECUTION_GRACE_MS: u64 = 60_000;
-const MARKET_HEALTHY_MS: u64 = 10_000;
-const MARKET_OBSERVATION_MAX_GAP_MS: u64 = 3_000;
+#[path = "market_alerts.rs"]
+mod market;
+pub use market::{MarketContext, MarketObservation, observe_market, observe_market_context, reset_market, market_send_confirmed};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Incident {
     key:String, action:String, started_ms:u64, notice_ms:u64, urgent:bool,
     #[serde(default)] outbox_id:Option<String>,
     #[serde(default)] body:String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct MarketIncident {
-    incident: Incident,
-    healthy_since_ms: Option<u64>,
-    last_observed_ms: u64,
-}
-fn market_cursor(tx: &Transaction<'_>) -> Result<Option<MarketIncident>> {
-    let raw: Option<String> = tx.query_row("SELECT body FROM market_notification_state WHERE id=1", [], |r| r.get(0)).optional()?;
-    Ok(raw.as_ref().map(|v| serde_json::from_str::<Option<MarketIncident>>(v)).transpose()?.flatten())
-}
-fn save_market(tx: &Transaction<'_>, active: &Option<MarketIncident>) -> Result<()> {
-    tx.execute("INSERT INTO market_notification_state VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE body<>excluded.body",
-        [serde_json::to_string(active)?])?;
-    Ok(())
-}
-
-/// Separate durable incident: a quote outage must neither erase nor restart an
-/// execution alarm. Brief REST snapshots do not count as sustained recovery.
-pub fn observe_market(tx: &Transaction<'_>, s: &Snapshot, books: &[Book; 2], at: u64) -> Result<()> {
-    let mut active = market_cursor(tx)?;
-    let monitoring = s.pending.is_some() || s.positions.iter().any(|p| p.units != 0)
-        || (!s.paused && !s.stop_requested && matches!(s.status, Status::Running | Status::Warming | Status::Closing));
-    if !monitoring {
-        if let Some(a) = &active { cancel(tx, &Some(a.incident.clone()))?; save_market(tx, &None)?; }
-        return Ok(());
-    }
-    let bad: Vec<&str> = books.iter().enumerate().filter(|(_, b)| b.validate(at, s.config.book_max_age_ms).is_err())
-        .map(|(i, _)| if i == 0 { "Lighter RH" } else { "Entropy" }).collect();
-    if bad.is_empty() {
-        let Some(a) = &mut active else { return Ok(()); };
-        if at < a.last_observed_ms || at.saturating_sub(a.last_observed_ms) > MARKET_OBSERVATION_MAX_GAP_MS {
-            a.healthy_since_ms = None;
-        }
-        let since = *a.healthy_since_ms.get_or_insert(at);
-        a.last_observed_ms = at;
-        if at.saturating_sub(since) >= MARKET_HEALTHY_MS {
-            cancel(tx, &Some(a.incident.clone()))?;
-            active = None;
-        }
-    } else {
-        let a = active.get_or_insert_with(|| MarketIncident {
-            incident: Incident { key: format!("{}-market-data", s.instance_id), action: "行情监测".into(),
-                started_ms: at, notice_ms: 0, urgent: false, outbox_id: None, body: String::new() },
-            healthy_since_ms: None, last_observed_ms: at,
-        });
-        a.healthy_since_ms = None;
-        a.last_observed_ms = at;
-        a.incident.body = format!("【多平台套利 · 行情持续异常】\n标的 {} · 模式 {:?}\n{} 盘口断连、过期或无效，正在自动恢复。\n常规交易需要有效报价；已有订单继续按原机制核对。\n账本数量：Lighter {} / Entropy {}\n短暂更新不代表行情已经稳定恢复。",
-            s.config.market.id().to_uppercase(), s.config.mode, bad.join("、"),
-            s.config.quantity(s.positions[0].units), s.config.quantity(s.positions[1].units));
-    }
-    if let Some(a) = &mut active { promote(tx, &mut a.incident, at)?; }
-    save_market(tx, &active)
 }
 
 fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
@@ -157,8 +104,8 @@ fn promote(tx:&Transaction<'_>,a:&mut Incident,at:u64)->Result<()> {
 pub fn tick(tx:&Transaction<'_>,at:u64)->Result<()> {
     let mut active=cursor(tx)?;
     if let Some(a)=&mut active {promote(tx,a,at)?;save(tx,&active)?;}
-    let mut market = market_cursor(tx)?;
-    if let Some(a) = &mut market { promote(tx, &mut a.incident, at)?; save_market(tx, &market)?; }
+    // Missing observations are unknown, not evidence of a continuing outage.
+    market::expire_unobserved(tx, at)?;
     Ok(())
 }
 pub fn delivered(tx:&Transaction<'_>,id:&str,at:u64)->Result<()> {
@@ -166,12 +113,7 @@ pub fn delivered(tx:&Transaction<'_>,id:&str,at:u64)->Result<()> {
     if let Some(a)=&mut active {
         if a.outbox_id.as_deref()==Some(id) {a.outbox_id=None;a.notice_ms=at;save(tx,&active)?;}
     }
-    let mut market = market_cursor(tx)?;
-    if let Some(a) = &mut market {
-        if a.incident.outbox_id.as_deref() == Some(id) {
-            a.incident.outbox_id = None; a.incident.notice_ms = at; save_market(tx, &market)?;
-        }
-    }
+    market::delivered(tx, id, at)?;
     Ok(())
 }
 pub fn queued(path:&std::path::Path,id:&str)->Result<bool> {

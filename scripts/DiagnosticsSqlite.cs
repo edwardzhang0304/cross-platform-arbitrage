@@ -48,6 +48,14 @@ public static class CpaDiagnosticsSqlite {
         }
     }
     public static string[] State(string path) { return Query(path,"SELECT body FROM state WHERE id=1",1,16*1024*1024); }
+    public static string[] MarketState(string path) {
+        if(Query(path,"SELECT name FROM sqlite_master WHERE type='table' AND name='market_notification_state'",1,128).Length==0) return new string[0];
+        return Query(path,"SELECT body FROM market_notification_state WHERE id=1",1,128*1024);
+    }
+    public static string[] MarketHistory(string path) {
+        if(Query(path,"SELECT name FROM sqlite_master WHERE type='table' AND name='market_notification_history'",1,128).Length==0) return new string[0];
+        return Query(path,"SELECT body FROM market_notification_history ORDER BY seq DESC LIMIT 64",64,256*1024);
+    }
     public static string[] Events(string path,long from,long to) {
         string where="kind NOT IN ('sample','halted_market_sample','funding_reconciled')";
         if(from>=0 && to>=from) where+=" AND at_ms BETWEEN "+from.ToString(CultureInfo.InvariantCulture)+" AND "+to.ToString(CultureInfo.InvariantCulture);

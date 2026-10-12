@@ -13,6 +13,7 @@
     "src/strategies/openai_inventory/store.rs",
     "src/strategies/openai_inventory/rules_upgrade.rs",
     "src/strategies/openai_inventory/alerts.rs",
+    "src/strategies/openai_inventory/market_alerts.rs",
     "src/strategies/openai_inventory/emergency_exit.rs"
   ],
   "mode_agnostic": [

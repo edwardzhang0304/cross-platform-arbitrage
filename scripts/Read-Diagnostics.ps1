@@ -144,6 +144,25 @@ function Read-Events([string]$Path,[long]$From=-1,[long]$To=-1) {
   })
   return [ordered]@{limit=120; capped=($rows.Count -eq 120); events=$events}
 }
+function Market-Evidence($e) {
+  if ($null -eq $e) { return $null }
+  return [ordered]@{
+    at_ms=$e.at_ms; window_ms=$e.window_ms; observed_ms=$e.observed_ms; unavailable_ms=$e.unavailable_ms
+    current_bad=$e.current_bad; eligible=$e.eligible; received_ms=$e.received_ms
+    reasons=@($e.reasons | ForEach-Object { SafeText $_ })
+  }
+}
+function Read-MarketAlerts([string]$Path) {
+  $raw=@([CpaDiagnosticsSqlite]::MarketState($Path))
+  $state=if ($raw.Count) { $raw[0] | ConvertFrom-Json } else { $null }
+  $rows=@([CpaDiagnosticsSqlite]::MarketHistory($Path))
+  return [ordered]@{
+    schema=$state.schema; last_sent_ms=$state.last_sent_ms; queued=($null -ne $state.outbox_id)
+    evidence=(Market-Evidence $state.evidence)
+    history=@($rows | ForEach-Object { $item=$_ | ConvertFrom-Json; [ordered]@{kind=(SafeText $item.kind); at_ms=$item.at_ms; evidence=(Market-Evidence $item.evidence)} })
+    history_limit=64; history_capped=($rows.Count -eq 64)
+  }
+}
 function Public-Clock([string]$Url) {
   $watch=[Diagnostics.Stopwatch]::StartNew(); $before=[DateTimeOffset]::UtcNow
   $req=[Net.HttpWebRequest]::Create($Url); $req.Method='HEAD'; $req.Timeout=3000; $req.AllowAutoRedirect=$false
@@ -189,6 +208,7 @@ try {
     try {
       $raw=@([CpaDiagnosticsSqlite]::State($path)); $state=if ($raw.Count) { $raw[0] | ConvertFrom-Json } else { $null }
       $entry.snapshot=Snapshot-View $state
+      try { $entry.market_alerts=Read-MarketAlerts $path } catch { $entry.market_alerts_error='Market alert evidence unavailable'; $script:Problems.Add("Market alert query incomplete: $market") }
       if ($null -ne $state.pending) {
         try {
           # Explicit Int64 arithmetic avoids ambiguous Math.Max overload binding in PowerShell 5.1.
@@ -215,7 +235,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc14'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc15'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

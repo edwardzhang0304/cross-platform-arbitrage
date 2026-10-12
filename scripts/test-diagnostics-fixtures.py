@@ -80,6 +80,10 @@ for market, path in [
     with sqlite3.connect(path) as db:
         db.executescript("CREATE TABLE state(id INTEGER PRIMARY KEY,body TEXT); CREATE TABLE events(seq INTEGER PRIMARY KEY,at_ms INTEGER,kind TEXT,body TEXT);")
         db.execute("INSERT INTO state VALUES(1,?)", (json.dumps(state),))
+        db.executescript("CREATE TABLE market_notification_state(id INTEGER PRIMARY KEY,body TEXT); CREATE TABLE market_notification_history(seq INTEGER PRIMARY KEY,body TEXT);")
+        evidence=dict(at_ms=now,window_ms=60000,observed_ms=60000,unavailable_ms=[50000,0],current_bad=[True,False],eligible=[True,False],received_ms=[now-2000,now],reasons=['stale','healthy'],unexpected_secret=secret)
+        db.execute("INSERT INTO market_notification_state VALUES(1,?)", (json.dumps(dict(schema=2,last_sent_ms=now,outbox_id=None,evidence=evidence,unexpected_secret=secret)),))
+        db.execute("INSERT INTO market_notification_history VALUES(1,?)", (json.dumps(dict(kind='delivered',at_ms=now,evidence=evidence,unexpected_secret=secret)),))
         for seq, at, kind in [(1,start,"operation_reserved"),(2,start+1000,"order_observed"),(3,now,"reconciliation_blocked")]:
             db.execute("INSERT INTO events VALUES(?,?,?,?)",(seq,at,kind,json.dumps(dict(status=state['status'],reason=state['reason'],pending=pending,private_key=secret,groups=7))))
 (root / "vault-secret-MUST-NOT-BE-READ.txt").write_text(secret)

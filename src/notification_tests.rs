@@ -154,3 +154,73 @@ async fn recovery_while_token_is_loading_cancels_the_message_before_post() {
     assert_eq!(handle.status().pending,0);assert!(handle.status().last_sent_ms.is_none());
     server.abort();std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn rc15_live_quote_recheck_after_token_load_cancels_only_recovered_market_notice() {
+    use crate::openai_inventory::{Book,InventoryConfig,Level,Snapshot,Status};
+    for recover in [true,false] {
+        let entered=Arc::new(tokio::sync::Notify::new()); let release=Arc::new(tokio::sync::Notify::new());
+        let sent=Arc::new(AtomicUsize::new(0));
+        let router=Router::new().route("/auth/v3/tenant_access_token/internal",post({
+            let entered=entered.clone();let release=release.clone();move||{let entered=entered.clone();let release=release.clone();async move{
+                entered.notify_one();release.notified().await;
+                Json(json!({"code":0,"tenant_access_token":"synthetic-token","expire":7200}))
+            }}
+        })).route("/im/v1/messages",post({let sent=sent.clone();move||{let sent=sent.clone();async move{
+            sent.fetch_add(1,Ordering::SeqCst);Json(json!({"code":0}))
+        }}}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move{axum::serve(listener,router).await.unwrap()});
+        let dir=directory();std::fs::create_dir_all(&dir).unwrap();let path=dir.join("ledger.sqlite");
+        let mut db=rusqlite::Connection::open(&path).unwrap();db.execute_batch(alerts::SCHEMA).unwrap();
+        let mut s=Snapshot::new(InventoryConfig::default()).unwrap();s.status=Status::Running;
+        let now=crate::domain::now_ms();
+        for at in (now-60_000..=now).step_by(1000) {
+            let tx=db.transaction().unwrap();alerts::observe_market(&tx,&s,&[Book::default(),Book::default()],at).unwrap();tx.commit().unwrap();
+        }
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM notification_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        drop(db);
+        let books=Arc::new(RwLock::new([Book::default(),Book::default()]));
+        let handle=NotificationHandle::default();handle.configure(Some(config()));
+        handle.set_market_source({let books=books.clone();move||alerts::MarketObservation{context:alerts::MarketContext::from_snapshot(&s),books:books.read().unwrap().clone()}});
+        let work=tokio::spawn({let path=path.clone();let handle=handle.clone();async move{
+            let mut sender=FeishuSender::new().unwrap();sender.base=format!("http://{address}");handle.deliver_once(&path,&mut sender).await.unwrap();
+        }});
+        tokio::time::timeout(Duration::from_secs(2),entered.notified()).await.unwrap();
+        if recover {
+            let good=Book{bids:vec![Level{price:2000.into(),units:1000}],asks:vec![Level{price:2001.into(),units:1000}],received_ms:crate::domain::now_ms(),connected:true};
+            *books.write().unwrap()=[good.clone(),good];
+        }
+        // No actor commit, DB cancellation or sampling tick: the send path must
+        // independently inspect the newly arrived books just before posting.
+        release.notify_one();work.await.unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst),usize::from(!recover));
+        assert_eq!(handle.status().last_sent_ms.is_some(),!recover);
+        server.abort();std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn rc15_monitor_samples_live_books_without_actor_or_http_progress() {
+    use crate::openai_inventory::{Book,InventoryConfig,Level,Snapshot,Status};
+    let dir=directory();std::fs::create_dir_all(&dir).unwrap();let path=dir.join("ledger.sqlite");
+    {let db=rusqlite::Connection::open(&path).unwrap();db.execute_batch(alerts::SCHEMA).unwrap();}
+    let mut s=Snapshot::new(InventoryConfig::default()).unwrap();s.status=Status::Running;
+    let reads=Arc::new(AtomicUsize::new(0));let context=alerts::MarketContext::from_snapshot(&s);
+    let handle=NotificationHandle::default();
+    handle.set_market_source({let reads=reads.clone();move||{
+        reads.fetch_add(1,Ordering::SeqCst);
+        let good=Book{bids:vec![Level{price:2000.into(),units:1000}],asks:vec![Level{price:2001.into(),units:1000}],received_ms:crate::domain::now_ms(),connected:true};
+        alerts::MarketObservation{context:context.clone(),books:[good.clone(),good]}
+    }});
+    let monitor=handle.spawn_market_monitor(path.clone()).unwrap();
+    tokio::time::timeout(Duration::from_secs(4),async {
+        while reads.load(Ordering::SeqCst)<2 {tokio::time::sleep(Duration::from_millis(20)).await;}
+    }).await.unwrap();
+    monitor.abort();let _=monitor.await;
+    {let db=alerts::open_delivery(&path).unwrap();
+     let raw:String=db.query_row("SELECT body FROM market_notification_state",[],|r|r.get(0)).unwrap();
+     let state:Value=serde_json::from_str(&raw).unwrap();assert_eq!(state["evidence"]["current_bad"],json!([false,false]));
+     assert_eq!(db.query_row("SELECT COUNT(*) FROM notification_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);}
+    std::fs::remove_dir_all(dir).unwrap();
+}

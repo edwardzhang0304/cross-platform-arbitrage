@@ -232,6 +232,14 @@ impl InventoryService {
             submission_enabled:false,transient_warning:String::new(),order_lookup_note:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:if config.mode==Mode::Paper {"虚拟成交；手续费按配置扣除；资金费为模拟估算，并非真实账户结算".into()} else {"Settled funding synchronized from venue history; pending payments are not yet realized".into()}}));
         let (commands, mut rx) = mpsc::channel::<Command>(16);
         let notifications=crate::notifications::NotificationHandle::default();
+        notifications.set_market_source({
+            let view = view.clone(); let books = books.clone();
+            move || alerts::MarketObservation {
+                context: alerts::MarketContext::from_snapshot(&view.read().unwrap().snapshot),
+                books: books.read().unwrap().clone(),
+            }
+        });
+        let market_notice_task=notifications.spawn_market_monitor(path.to_path_buf())?;
         let delivery_task=notifications.spawn(path.to_path_buf());
         let risk_notifications=notifications.clone();
         let output = view.clone();
@@ -248,7 +256,6 @@ impl InventoryService {
             let mut order_lookup_note = String::new();
             let mut last_repair_check = 0;
             let mut last_emergency_poll = 0;
-            let mut last_market_notice_check = 0;
             loop {
                 tokio::select! {
                     biased;
@@ -297,13 +304,6 @@ impl InventoryService {
                     },
                     _=timer.tick()=>{
                         let now=crate::domain::now_ms();let current=books.read().unwrap().clone();
-                        if now.saturating_sub(last_market_notice_check) >= 1_000 {
-                            last_market_notice_check = now;
-                            // Notification failures never stop account/order recovery.
-                            if let Err(error) = store.observe_market(&state, &current, now) {
-                                tracing::warn!(%error, "market notification state unavailable");
-                            }
-                        }
                         let result=async {
                             if super::emergency_exit::active(&state) {
                                 if now.saturating_sub(last_emergency_poll)<1000 {return Ok::<(),anyhow::Error>(());}
@@ -466,6 +466,7 @@ impl InventoryService {
                 task.abort();
             }
             delivery_task.abort();
+            market_notice_task.abort();
         });
         Ok(Self { view, commands, notifications })
     }

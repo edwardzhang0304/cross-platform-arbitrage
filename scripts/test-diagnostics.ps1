@@ -16,6 +16,7 @@ try {
   if ($Text -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key|vault-secret|profile-secret') { throw 'Diagnostic leaked synthetic private content' }
   foreach ($Market in @('openai','anth')) {
     $Ledger=$Report.ledgers.$Market
+    if ($Ledger.market_alerts.schema -ne 2 -or $Ledger.market_alerts.evidence.unavailable_ms[0] -ne 50000 -or $Ledger.market_alerts.history[0].kind -ne 'delivered') { throw 'Market alert evidence/history missing' }
     if (!$Ledger.readonly -or !$Ledger.available -or $Ledger.snapshot.held_groups -ne 7 -or $Ledger.snapshot.pending.first_filled -ne 700) { throw 'Offline snapshot extraction failed' }
     if ($Ledger.snapshot.ledger[0].venue -ne 'lighter' -or $Ledger.snapshot.ledger[1].venue -ne 'entropy') { throw 'Ledger venue mapping is incorrect' }
     if ($Ledger.snapshot.pending.recovery_slippage_bps -ne 3 -or $Ledger.snapshot.pending.recovery_wait_reason -notmatch 'depth exceeds protected execution price') { throw 'Recovery price diagnostics were lost' }

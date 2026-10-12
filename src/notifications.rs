@@ -42,10 +42,41 @@ pub struct NotificationHandle {
     status:Arc<RwLock<DeliveryStatus>>,
     emergency:Arc<RwLock<Option<MemoryAlert>>>,
     persistence_reported:Arc<AtomicBool>,
+    market_source:Arc<RwLock<Option<Arc<dyn Fn() -> alerts::MarketObservation + Send + Sync>>>>,
 }
 #[derive(Clone)]
 struct MemoryAlert {id:String,body:String,attempt:u32,next_ms:u64}
 impl NotificationHandle {
+    pub fn set_market_source(&self, source: impl Fn() -> alerts::MarketObservation + Send + Sync + 'static) {
+        *self.market_source.write().unwrap() = Some(Arc::new(source));
+    }
+    fn refresh_market(&self, path: &Path) -> Result<()> {
+        let source = self.market_source.read().unwrap().clone();
+        let Some(source) = source else { return Ok(()); };
+        let observation = source();
+        let at = crate::domain::now_ms();
+        let mut db = alerts::open_delivery(path)?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        alerts::observe_market_context(&tx, &observation.context, &observation.books, at)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// Quote sampling must not wait for private account I/O or Feishu HTTP.
+    pub fn spawn_market_monitor(&self, path: PathBuf) -> Result<tokio::task::JoinHandle<()>> {
+        { let mut db = alerts::open_delivery(&path)?;
+          let tx = db.transaction()?; alerts::reset_market(&tx, crate::domain::now_ms())?; tx.commit()?; }
+        let handle = self.clone();
+        Ok(tokio::spawn(async move {
+            let mut timer = tokio::time::interval(Duration::from_secs(1));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                timer.tick().await;
+                if let Err(error) = handle.refresh_market(&path) {
+                    tracing::warn!(%error, "market notification observation unavailable");
+                }
+            }
+        }))
+    }
     /// A full disk may also prevent writing the outbox. Retain one in-memory
     /// alarm and try delivery independently; no disk write or HTTP on this path.
     pub fn report_persistence_failure(&self,market:crate::openai_inventory::MarketPair,mode:crate::openai_inventory::Mode) {
@@ -111,13 +142,21 @@ impl NotificationHandle {
         let body=if dropped>0 {format!("{body}\n通知队列曾超限，已丢弃最旧 {dropped} 条通知；详情请检查本机账本。")}else{body};
         // Token acquisition may be slow. Recheck cancellation immediately before
         // the message POST, with no SQL lock held over the network request.
-        let result=sender.send_checked(&settings,&id,&body,||alerts::queued(path,&id)).await;
+        let result=sender.send_checked(&settings,&id,&body,|| {
+            // Consult the live feed again after token acquisition, not the
+            // trading actor's possibly delayed view. Recovery retracts a queue
+            // entry even if the sampling task has not run yet this second.
+            if body.starts_with("【多平台套利 · 行情持续异常】") { self.refresh_market(path)?; }
+            alerts::queued(path,&id)
+        }).await;
         let mut db=alerts::open_delivery(path)?;
         match result {
             Ok(true)=>{
                 let tx=db.transaction()?;
                 tx.execute("DELETE FROM notification_outbox WHERE id=?1",[&id])?;
-                alerts::delivered(&tx,&id,crate::domain::now_ms())?;
+                if body.starts_with("【多平台套利 · 行情持续异常】") {
+                    alerts::market_send_confirmed(&tx,crate::domain::now_ms())?;
+                } else { alerts::delivered(&tx,&id,crate::domain::now_ms())?; }
                 tx.commit()?;
                 let mut status=self.status.write().unwrap();status.last_sent_ms=Some(crate::domain::now_ms());status.error=None;status.pending=count.saturating_sub(1);
             }

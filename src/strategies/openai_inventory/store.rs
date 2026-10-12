@@ -22,7 +22,7 @@ mod market_notice_tests {
         state.status = Status::Running;
         let original: String = store.db.query_row("SELECT body FROM state", [], |r| r.get(0)).unwrap();
         let events: i64 = store.db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
-        for at in [10_000, 70_000] {
+        for at in (10_000..=70_000).step_by(1000) {
             store.observe_market(&state, &[Book::default(), Book::default()], at).unwrap();
         }
         let after: String = store.db.query_row("SELECT body FROM state", [], |r| r.get(0)).unwrap();
