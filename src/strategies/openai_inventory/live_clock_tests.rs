@@ -38,6 +38,24 @@ fn rh_close_with_95_second_fast_local_clock_binds_full_exchange_identity() {
     assert!(bound_lighter_order(&json!({"orders":[row.clone(),row]}), &config, 7, &request).is_err());
 }
 
+#[test]
+fn authenticated_zero_fill_cancel_keeps_exchange_cause_for_diagnostics() {
+    let (config,request)=fixture(MarketPair::Openai,Venue::Lighter,false);
+    for status in ["canceled-ioc", "canceled-not-enough-margin", "canceled-too-much-slippage"] {
+        let row=json!({"client_order_index":client_id(&request),"order_index":12345,
+            "owner_account_index":7,"market_index":42,"is_ask":false,"reduce_only":false,
+            "initial_base_amount":"0.0490","price":"2100.00","filled_base_amount":"0",
+            "remaining_base_amount":"0.0490","status":status,"transaction_time":1790000000500u64,
+            "created_at":1790000000u64});
+        let bound=bound_lighter_order(&json!({"orders":[row]}),&config,7,&request).unwrap().unwrap();
+        assert_eq!(bound.observation.state,LighterRemoteOrderState::Cancelled);
+        let summary=lighter_order_summary(&bound,&request);
+        assert!(summary.contains(&status.replace('-'," ")));
+        assert!(summary.contains("filled_units=0"));assert!(summary.contains("requested_units=490"));
+        assert!(!summary.contains("12345"));
+    }
+}
+
 fn entropy_fixture() -> (InventoryConfig, OrderRequest, hyperliquid::OrderStatusInfo, hyperliquid::UserFill) {
     let (config, request) = fixture(MarketPair::Anth, Venue::Entropy, false);
     let order = serde_json::from_value(json!({"status":"filled","statusTimestamp":1790000000500u64,

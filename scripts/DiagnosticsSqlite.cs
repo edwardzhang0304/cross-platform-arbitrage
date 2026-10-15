@@ -48,6 +48,10 @@ public static class CpaDiagnosticsSqlite {
         }
     }
     public static string[] State(string path) { return Query(path,"SELECT body FROM state WHERE id=1",1,16*1024*1024); }
+    public static string[] MarketTransport(string path) {
+        if(Query(path,"SELECT name FROM sqlite_master WHERE type='table' AND name='market_transport_state'",1,128).Length==0) return new string[0];
+        return Query(path,"SELECT body FROM market_transport_state WHERE id=1",1,128*1024);
+    }
     public static string[] MarketState(string path) {
         if(Query(path,"SELECT name FROM sqlite_master WHERE type='table' AND name='market_notification_state'",1,128).Length==0) return new string[0];
         return Query(path,"SELECT body FROM market_notification_state WHERE id=1",1,128*1024);

@@ -26,6 +26,7 @@ pub struct InventoryView {
     pub close_first_venue: Venue,
     pub snapshot: Snapshot,
     pub books: [Book; 2],
+    pub market_transport: [crate::crossvenue_a::MarketStreamHealth; 2],
     /// Read-only four-hour quote history for the same chart used by paper.
     pub chart_points: VecDeque<charts::QuotePoint>,
     pub marks: [liquidation::Mark;2],
@@ -74,6 +75,7 @@ pub struct InventoryService {
     view: Arc<RwLock<InventoryView>>,
     commands: mpsc::Sender<Command>,
     pub notifications: crate::notifications::NotificationHandle,
+    transport: Arc<RwLock<[crate::crossvenue_a::MarketStreamHealth; 2]>>,
 }
 impl InventoryService {
     pub async fn launch(
@@ -145,13 +147,30 @@ impl InventoryService {
                 MarketStreamConfig::default(),
             )?,
         ];
+        let mut prior_transport=store.load_transport()?;
+        for h in &mut prior_transport {
+            let mut fresh=crate::crossvenue_a::MarketStreamHealth::default();
+            fresh.preserve_history(h);*h=fresh;
+        }
+        let transport = Arc::new(RwLock::new(prior_transport));
         let mut feed_tasks = vec![];
         for mut rx in receivers {
             let shared = books.clone();
             let shared_marks=marks.clone();
+            let transport = transport.clone();
             feed_tasks.push(tokio::spawn(async move {
                 while let Some(event) = rx.recv().await {
                     match event {
+                        MarketDataEvent::Connected {venue,..} => {
+                            let i=if venue==MarketVenue::Lighter{0}else{1};
+                            transport.write().unwrap()[i].ws_connected=true;
+                        }
+                        MarketDataEvent::Transport { venue, mut health } => {
+                            let i=if venue==MarketVenue::Lighter{0}else{1};
+                            if !health.ws_connected { shared_marks.write().unwrap()[i].connected=false; }
+                            let mut stats=transport.write().unwrap();
+                            health.preserve_history(&stats[i]); stats[i]=health;
+                        }
                         MarketDataEvent::Context {venue,context} => {
                             let i=if venue==MarketVenue::Lighter{0}else{1};
                             shared_marks.write().unwrap()[i]=liquidation::Mark {
@@ -172,6 +191,11 @@ impl InventoryService {
                                         .collect()
                                 };
                             let idx = if venue == MarketVenue::Lighter { 0 } else { 1 };
+                            if venue==MarketVenue::Lighter {
+                                // This adapter may also publish REST recovery;
+                                // do not mislabel those books as websocket reads.
+                                transport.write().unwrap()[idx].source="venue_feed".into();
+                            }
                             if let (Ok(bids), Ok(asks)) = (levels(book.bids), levels(book.asks)) {
                                 shared.write().unwrap()[idx] = Book {
                                     bids,
@@ -183,8 +207,12 @@ impl InventoryService {
                                 shared.write().unwrap()[idx].connected = false;
                             }
                         }
-                        MarketDataEvent::Gap { venue, .. }
-                        | MarketDataEvent::Disconnected { venue, .. } => {
+                        MarketDataEvent::Gap { venue, detail, received_at_ms }
+                        | MarketDataEvent::Disconnected { venue, detail, received_at_ms } => {
+                            let i=if venue==MarketVenue::Lighter{0}else{1};
+                            let mut stats=transport.write().unwrap();
+                            stats[i].ws_connected=false; stats[i].reconnect_count+=1;
+                            stats[i].incident(received_at_ms,"ws_reconnect",&detail);
                             shared_marks.write().unwrap()[if venue==MarketVenue::Lighter{0}else{1}].connected=false;
                             shared.write().unwrap()
                                 [if venue == MarketVenue::Lighter { 0 } else { 1 }]
@@ -228,7 +256,7 @@ impl InventoryService {
         store.commit(&state, crate::domain::now_ms(), "service_started")?;
         let mut accounting_cache=accounting::AccountingCache::default();
         let profit_accounting=accounting_cache.report(&state,&books.read().unwrap(),crate::domain::now_ms());
-        let view=Arc::new(RwLock::new(InventoryView{entry_first_venue:Venue::Entropy,close_first_venue:Venue::Lighter,snapshot:state.clone(),books:books.read().unwrap().clone(),chart_points:state.entry_mean.points.clone(),marks:marks.read().unwrap().clone(),accounts:None,mean:None,directional_means:[None,None],net_pnl:None,estimated_exit_net:None,profit_accounting,cumulative_fees:state.cumulative_fees(),cumulative_execution_cost:state.execution_cost,execution_cost_started_ms:state.execution_cost_started_ms,execution_cost_tracked_fills:state.execution_cost_tracked_fills,execution_cost_untracked_fills:state.untracked_execution_fills(),
+        let view=Arc::new(RwLock::new(InventoryView{entry_first_venue:Venue::Entropy,close_first_venue:Venue::Lighter,snapshot:state.clone(),books:books.read().unwrap().clone(),market_transport:transport.read().unwrap().clone(),chart_points:state.entry_mean.points.clone(),marks:marks.read().unwrap().clone(),accounts:None,mean:None,directional_means:[None,None],net_pnl:None,estimated_exit_net:None,profit_accounting,cumulative_fees:state.cumulative_fees(),cumulative_execution_cost:state.execution_cost,execution_cost_started_ms:state.execution_cost_started_ms,execution_cost_tracked_fills:state.execution_cost_tracked_fills,execution_cost_untracked_fills:state.untracked_execution_fills(),
             submission_enabled:false,transient_warning:String::new(),order_lookup_note:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:if config.mode==Mode::Paper {"虚拟成交；手续费按配置扣除；资金费为模拟估算，并非真实账户结算".into()} else {"Settled funding synchronized from venue history; pending payments are not yet realized".into()}}));
         let (commands, mut rx) = mpsc::channel::<Command>(16);
         let notifications=crate::notifications::NotificationHandle::default();
@@ -243,11 +271,13 @@ impl InventoryService {
         let delivery_task=notifications.spawn(path.to_path_buf());
         let risk_notifications=notifications.clone();
         let output = view.clone();
+        let transport_output = transport.clone();
         tokio::spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_millis(250));
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut accounts: Option<[AccountEvidence; 2]> = None;
             let mut last_accounts = 0;
+            let mut last_transport_save = 0;
             let mut last_funding_attempt = 0;
             let mut last_funding_backfill = 0;
             let mut funding_warning = String::new();
@@ -304,6 +334,12 @@ impl InventoryService {
                     },
                     _=timer.tick()=>{
                         let now=crate::domain::now_ms();let current=books.read().unwrap().clone();
+                        if now.saturating_sub(last_transport_save) >= 5_000 {
+                            let health=transport_output.read().unwrap().clone();
+                            // Diagnostic persistence is independent of strategy state and orders.
+                            if let Err(error)=store.save_transport(&health) { tracing::warn!(%error,"market diagnostic persistence failed"); }
+                            last_transport_save=now;
+                        }
                         let result=async {
                             if super::emergency_exit::active(&state) {
                                 if now.saturating_sub(last_emergency_poll)<1000 {return Ok::<(),anyhow::Error>(());}
@@ -462,16 +498,19 @@ impl InventoryService {
                     }
                 }
             }
+            let _=store.save_transport(&transport_output.read().unwrap());
             for task in feed_tasks {
                 task.abort();
             }
             delivery_task.abort();
             market_notice_task.abort();
         });
-        Ok(Self { view, commands, notifications })
+        Ok(Self { view, commands, notifications, transport })
     }
     pub fn status(&self) -> InventoryView {
-        self.view.read().unwrap().clone()
+        let mut view=self.view.read().unwrap().clone();
+        view.market_transport=self.transport.read().unwrap().clone();
+        view
     }
     pub async fn control(&self, id: String, control: Control) -> Result<()> {
         let (tx, rx) = oneshot::channel();

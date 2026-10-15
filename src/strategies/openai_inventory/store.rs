@@ -16,6 +16,20 @@ mod market_notice_tests {
     use super::*;
 
     #[test]
+    fn transport_history_persists_without_mutating_strategy_state_or_events() {
+        let mut config=InventoryConfig::default();config.mode=Mode::Paper;
+        let (store,_)=Store::offline_replay(&config).unwrap();
+        let before:String=store.db.query_row("SELECT body FROM state",[],|r|r.get(0)).unwrap();
+        let count:i64=store.db.query_row("SELECT COUNT(*) FROM events",[],|r|r.get(0)).unwrap();
+        assert!(store.load_transport().unwrap()[1].history.is_empty());
+        let mut health:[crate::crossvenue_a::MarketStreamHealth;2]=Default::default();
+        health[1].incident(123,"ws_reconnect","websocket connect/TLS failed");
+        store.save_transport(&health).unwrap();assert_eq!(store.load_transport().unwrap(),health);
+        let after:String=store.db.query_row("SELECT body FROM state",[],|r|r.get(0)).unwrap();
+        assert_eq!(before,after);
+        assert_eq!(count,store.db.query_row("SELECT COUNT(*) FROM events",[],|r|r.get::<_,i64>(0)).unwrap());
+    }
+    #[test]
     fn observing_stale_quotes_only_updates_notification_tables() {
         let mut config = InventoryConfig::default(); config.mode = Mode::Paper;
         let (mut store, mut state) = Store::offline_replay(&config).unwrap();
@@ -156,6 +170,17 @@ impl Store {
         }
         alerts::observe(&tx,s,at)?;
         tx.commit()?;
+        Ok(())
+    }
+    pub fn load_transport(&self) -> Result<[crate::crossvenue_a::MarketStreamHealth;2]> {
+        self.db.execute_batch("CREATE TABLE IF NOT EXISTS market_transport_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);")?;
+        let body: Option<String>=self.db.query_row("SELECT body FROM market_transport_state WHERE id=1",[],|r|r.get(0)).optional()?;
+        // Previous-session timing is diagnostic history, never live quote evidence.
+        Ok(body.and_then(|b|serde_json::from_str(&b).ok()).unwrap_or_default())
+    }
+    pub fn save_transport(&self, health: &[crate::crossvenue_a::MarketStreamHealth;2]) -> Result<()> {
+        self.db.execute_batch("CREATE TABLE IF NOT EXISTS market_transport_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);")?;
+        self.db.execute("INSERT INTO market_transport_state(id,body) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET body=excluded.body",[serde_json::to_string(health)?])?;
         Ok(())
     }
     pub fn command_seen(&self, id: &str, command: &str) -> Result<bool> {

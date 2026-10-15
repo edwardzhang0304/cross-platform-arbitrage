@@ -19,11 +19,12 @@ if len(sys.argv)>2 and sys.argv[2]=='--serve':
                 path=root/('profiles/anth-live/runtime/inventory.sqlite' if market=='anth' else 'runtime/openai-inventory/live.sqlite')
                 with sqlite3.connect(path) as db:
                     state=json.loads(db.execute('SELECT body FROM state').fetchone()[0])
+                    transport=json.loads(db.execute('SELECT body FROM market_transport_state').fetchone()[0])
                 stamp=int(time.time()*1000)
                 state['config'].update(account_max_age_ms=3000,book_max_age_ms=3000)
                 accounts=[dict(venue=v,position_units=n,open_orders=0,authenticated=True,observed_ms=stamp,account='synthetic-credential-NOT-FOR-EXPORT') for v,n in [('lighter',-4900),('entropy',5600)]]
                 books=[dict(connected=True,received_ms=stamp,bids=[dict(price='2100')],asks=[dict(price='2100.1')]) for _ in range(2)]
-                value=dict(ok=True,data=dict(csrf='synthetic-credential-NOT-FOR-EXPORT',view=dict(snapshot=state,accounts=accounts,books=books,profit_accounting=dict(funding_complete=False)),notifications=dict(saved=True,unlocked=True,delivery=dict(enabled=True,pending=0,error=None))))
+                value=dict(ok=True,data=dict(csrf='synthetic-credential-NOT-FOR-EXPORT',view=dict(snapshot=state,accounts=accounts,books=books,market_transport=transport,profit_accounting=dict(funding_complete=False)),notifications=dict(saved=True,unlocked=True,delivery=dict(enabled=True,pending=0,error=None))))
             data=json.dumps(value).encode()
             self.send_response(200)
             self.send_header('Content-Type','application/json')
@@ -80,6 +81,13 @@ for market, path in [
     with sqlite3.connect(path) as db:
         db.executescript("CREATE TABLE state(id INTEGER PRIMARY KEY,body TEXT); CREATE TABLE events(seq INTEGER PRIMARY KEY,at_ms INTEGER,kind TEXT,body TEXT);")
         db.execute("INSERT INTO state VALUES(1,?)", (json.dumps(state),))
+        db.execute("CREATE TABLE market_transport_state(id INTEGER PRIMARY KEY,body TEXT)")
+        transport=[dict(source='rest',ws_connected=False,reconnect_count=9,ws_books=2,rest_books=60,rest_failures=1,
+            last_ws_book_ms=now-9000,last_rest_book_ms=now,last_error_ms=now-1000,
+            last_error=f'websocket connect/TLS failed https://private.invalid/?key={secret} Bearer {secret}',
+            history=[dict(at_ms=now,kind='ws_reconnect',detail=f'websocket L2 silent for 3000ms Bearer {secret}',unexpected_secret=secret)],
+            unexpected_secret=secret) for _ in range(2)]
+        db.execute("INSERT INTO market_transport_state VALUES(1,?)",(json.dumps(transport),))
         db.executescript("CREATE TABLE market_notification_state(id INTEGER PRIMARY KEY,body TEXT); CREATE TABLE market_notification_history(seq INTEGER PRIMARY KEY,body TEXT);")
         evidence=dict(at_ms=now,window_ms=60000,observed_ms=60000,unavailable_ms=[50000,0],current_bad=[True,False],eligible=[True,False],received_ms=[now-2000,now],reasons=['stale','healthy'],unexpected_secret=secret)
         db.execute("INSERT INTO market_notification_state VALUES(1,?)", (json.dumps(dict(schema=2,last_sent_ms=now,outbox_id=None,evidence=evidence,unexpected_secret=secret)),))

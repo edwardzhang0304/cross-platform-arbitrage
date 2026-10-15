@@ -30,7 +30,17 @@ fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
     if super::emergency_exit::active(s) {return Some(("紧急全部平仓仍未完成，请查看两平台剩余持仓和订单核对进度",false));}
     if s.live_orphan.is_some() {return Some(("出现未归属或不一致仓位，需要人工核对",true));}
     if s.loss_stop.is_some() && !s.lots.is_empty() {return Some(("已触发总亏损保护，正在受控平仓",true));}
-    if s.status==Status::NeedsAttention && !(s.pending.is_none() && s.reason.starts_with("execution recovered;")) {
+    if s.status==Status::NeedsAttention && s.pending.is_none() && s.reason.starts_with("execution recovered;") {
+        // Balanced exposure is not the same as a resumed strategy. Only an
+        // eligible automatic cooldown gets the usual grace period; a permanent
+        // operator halt (including the third rollback) must never be silenced.
+        let automatic=s.recovery_after_ms.is_some() && s.consecutive_rollbacks<3 && s.loss_stop.is_none()
+            && !s.paused && !s.stop_requested && !s.stop_after_close && !s.close_requested;
+        return Some((if automatic {"双腿已配平，但交易尚未恢复，正在等待自动核验"}
+            else if s.consecutive_rollbacks>=3 {"连续回滚已达到保护上限，双腿已配平，策略已停止自动交易，需要人工检查后恢复"}
+            else {"双腿已配平，策略仍需人工检查后恢复，尚未恢复自动交易"}, !automatic));
+    }
+    if s.status==Status::NeedsAttention {
         return Some(("执行或持仓核对异常，需要处理",s.pending.is_none()));
     }
     let p=s.pending.as_ref()?;

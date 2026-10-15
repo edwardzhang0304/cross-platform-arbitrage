@@ -30,6 +30,10 @@ use super::{
     AggressorSide, OrderBook, PriceLevel, PriceSource, ShadowTradePrint, automatic_trade_clock,
 };
 
+#[path = "resilient_feed.rs"]
+mod resilient_feed;
+pub use resilient_feed::{MarketStreamHealth, TransportIncident, safe_transport_error};
+
 const PUBLIC_RECOVERY_CHECK_MS: u64 = 1_000;
 const PUBLIC_BOOK_RECOVERY_AFTER_MS: u64 = 10_000;
 const PUBLIC_CONTEXT_RECOVERY_AFTER_MS: u64 = 10_000;
@@ -58,6 +62,10 @@ pub struct VenueMarketContext {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MarketDataEvent {
+    Transport {
+        venue: MarketVenue,
+        health: MarketStreamHealth,
+    },
     Connected {
         venue: MarketVenue,
         received_at_ms: u64,
@@ -457,7 +465,7 @@ pub fn spawn_trade_fast_market_stream(
     configured_source: PriceSource,
     config: MarketStreamConfig,
 ) -> Result<mpsc::Receiver<MarketDataEvent>> {
-    spawn_trade_market_stream_with_mode(environment, coin, configured_source, config, TradeBookMode::Fast)
+    resilient_feed::spawn(environment, coin, configured_source, config)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1251,7 +1259,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Public read-only network probe; does not launch any strategy or account worker"]
     async fn fast_entropy_public_feed_smoke() {
-        let mut rx = spawn_trade_fast_market_stream("mainnet", "io:OAI".into(), PriceSource::Unknown,
+        for coin in ["io:OAI","io:ANTH"] {
+        let mut rx = spawn_trade_fast_market_stream("mainnet", coin.into(), PriceSource::Unknown,
             MarketStreamConfig::default()).unwrap();
         let deadline = tokio::time::Instant::now()+Duration::from_secs(45);
         let mut arrivals = vec![];
@@ -1267,6 +1276,7 @@ mod tests {
                 },
                 MarketDataEvent::Context {..} => contexts+=1,
                 MarketDataEvent::Disconnected {..} => reconnects+=1,
+                MarketDataEvent::Transport {health,..} => reconnects=health.reconnect_count,
                 _=>{},
             }
         }
@@ -1274,11 +1284,12 @@ mod tests {
         assert!(arrivals.len()>=20,"too few fast snapshots: {}",arrivals.len());
         let mut gaps:Vec<_>=arrivals.windows(2).map(|w|w[1].duration_since(w[0]).as_millis()).collect();
         gaps.sort();
-        println!("FAST_FEED_PROBE {}",json!({"read_only":true,"strategy_started":false,
+        println!("FAST_FEED_PROBE {}",json!({"coin":coin,"read_only":true,"strategy_started":false,
             "book_messages":arrivals.len(),"median_ms":gaps[gaps.len()/2],
             "p90_ms":gaps[gaps.len()*9/10],"max_ms":gaps.last(),"contexts":contexts,"disconnects":reconnects}));
         assert!(contexts>0,"mark-price/context subscription must still work");
         assert!(gaps[gaps.len()/2]<1500,"fast book cadence not observed");
+        }
     }
 
     #[derive(Debug, Deserialize)]

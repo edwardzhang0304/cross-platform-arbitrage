@@ -230,11 +230,11 @@ fn rapid_recovery_new_operation_and_legacy_queue_do_not_leak_stale_notifications
     let mut db=db();let mut s=Snapshot::new(InventoryConfig::default()).unwrap();pending(&mut s);
     s.pending.as_mut().unwrap().failed=true;
     record(&mut db,&s,1000);
-    s.pending=None;s.status=Status::NeedsAttention;s.reason="execution recovered; review before resume".into();
+    s.pending=None;s.status=Status::Warming;s.reason.clear();
     record(&mut db,&s,60_999);
     {let tx=db.transaction().unwrap();tick(&tx,100_000).unwrap();tx.commit().unwrap();}
     assert!(rows(&db).is_empty());
-    pending(&mut s);s.pending.as_mut().unwrap().id="new-operation".into();
+    pending(&mut s);s.pending.as_mut().unwrap().id="new-operation".into();s.status=Status::RecoveringExposure;
     record(&mut db,&s,200_000);record(&mut db,&s,259_999);assert!(rows(&db).is_empty());
     record(&mut db,&s,260_000);assert_eq!(rows(&db).len(),1);
     // Simulate an old release's immediate alert followed by recovery while offline.
@@ -243,7 +243,7 @@ fn rapid_recovery_new_operation_and_legacy_queue_do_not_leak_stale_notifications
     let old=r#"{"key":"old","action":"开仓","started_ms":1000,"notice_ms":1000,"urgent":true}"#;
     db.execute("UPDATE notification_state SET body=?1",[old]).unwrap();
     {let tx=db.transaction().unwrap();enqueue(&tx,1,"【多平台套利 · 交易异常】\nold").unwrap();enqueue(&tx,2,"【多平台套利 · 账本配平结果】\nold recovery").unwrap();tx.commit().unwrap();}
-    s.pending=None;record(&mut db,&s,300_000);assert!(rows(&db).is_empty());
+    s.pending=None;s.status=Status::Stopped;record(&mut db,&s,300_000);assert!(rows(&db).is_empty());
 }
 
 #[test]
@@ -255,6 +255,48 @@ fn emergency_account_fault_still_alerts_immediately_and_transaction_rollback_pre
     {let tx=db.transaction().unwrap();observe(&tx,&s,2000).unwrap();}
     assert_eq!(rows(&db)[0].0,id);
     record(&mut db,&s,2000);assert!(rows(&db).is_empty());
+}
+
+#[test]
+fn balanced_manual_review_alerts_on_upgrade_and_reminds_until_operator_resumes() {
+    for market in [MarketPair::Openai,MarketPair::Anth] {
+        for failures in [1,3] {
+            let mut db=db();let mut c=InventoryConfig::default();c.market=market;
+            let mut s=Snapshot::new(c).unwrap();
+            s.status=Status::NeedsAttention;s.positions[0].units=-700;s.positions[1].units=700;
+            s.consecutive_rollbacks=failures;
+            s.reason="execution recovered; review before resume (repeated failure or non-entry recovery)".into();
+            // The old policy already initialized its cursor to null. Loading
+            // the same halted snapshot on upgrade must still enqueue a notice.
+            db.execute("UPDATE notification_policy SET version=2",[]).unwrap();
+            record(&mut db,&s,1000);
+            let (id,body)=rows(&db).pop().unwrap();
+            assert!(body.contains("需要处理"));assert!(body.contains("人工检查后恢复"));
+            assert!(body.contains(&market.id().to_uppercase()));
+            if failures==3 {assert!(body.contains("连续回滚"));}
+            record(&mut db,&s,2000);assert_eq!(rows(&db).len(),1);
+            {let tx=db.transaction().unwrap();tx.execute("DELETE FROM notification_outbox WHERE id=?1",[&id]).unwrap();delivered(&tx,&id,2000).unwrap();tx.commit().unwrap();}
+            record(&mut db,&s,301_999);assert!(rows(&db).is_empty());
+            {let tx=db.transaction().unwrap();tick(&tx,302_000).unwrap();tx.commit().unwrap();}
+            assert_eq!(rows(&db).len(),1);
+            s.status=Status::Warming;s.reason.clear();s.consecutive_rollbacks=0;
+            record(&mut db,&s,302_001);assert!(rows(&db).is_empty());
+        }
+    }
+}
+
+#[test]
+fn automatic_rollback_cooldown_is_quiet_only_if_it_actually_recovers() {
+    for resumes in [true,false] {
+        let mut db=db();let mut s=Snapshot::new(InventoryConfig::default()).unwrap();
+        s.status=Status::NeedsAttention;s.reason="execution recovered; cooling down before verified resume".into();
+        s.consecutive_rollbacks=1;s.recovery_after_ms=Some(31_000);
+        record(&mut db,&s,1000);assert!(rows(&db).is_empty());
+        if resumes {s.status=Status::Warming;s.recovery_after_ms=None;s.reason.clear();}
+        record(&mut db,&s,31_000);assert!(rows(&db).is_empty());
+        {let tx=db.transaction().unwrap();tick(&tx,61_000).unwrap();tx.commit().unwrap();}
+        assert_eq!(rows(&db).len(),usize::from(!resumes));
+    }
 }
 #[test]
 fn alerts_roll_back_with_trade_state_and_queue_is_bounded() {

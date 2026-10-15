@@ -181,6 +181,12 @@ fn bound_lighter_order(page: &Value, config: &InventoryConfig, account: i64,
     Ok(Some(BoundLighterOrder { observation, order_index, created_ms, filled_units }))
 }
 
+fn lighter_order_summary(order: &BoundLighterOrder, r: &OrderRequest) -> String {
+    format!("authenticated RH order; status: {}; requested_units={}; filled_units={}; limit={}; reduce_only={}",
+        crate::crossvenue_a::safe_transport_error(&order.observation.venue_status).replace(['-', '_'], " "),
+        r.units, order.filled_units, r.limit, r.reduce_only)
+}
+
 fn lighter_exact_request(config: &InventoryConfig, r: &OrderRequest) -> LighterExactBaseOrderRequest {
     LighterExactBaseOrderRequest {
         symbol: config.market.lighter_symbol().into(),
@@ -569,11 +575,11 @@ impl LighterLive {
                 ),
             fills,
             reason: if complete {
-                "authenticated RH order and fills"
+                lighter_order_summary(&order, r)
             } else {
-                "fill history incomplete"
-            }
-            .into(),
+                format!("RH fill history incomplete; status={}; reported_units={reported}",
+                    crate::crossvenue_a::safe_transport_error(&order.observation.venue_status))
+            },
         })
     }
 }

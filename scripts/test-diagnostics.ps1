@@ -16,6 +16,7 @@ try {
   if ($Text -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key|vault-secret|profile-secret') { throw 'Diagnostic leaked synthetic private content' }
   foreach ($Market in @('openai','anth')) {
     $Ledger=$Report.ledgers.$Market
+    if ($Ledger.market_transport.Count -ne 2 -or $Ledger.market_transport[1].reconnect_count -ne 9 -or $Ledger.market_transport[1].history[0].detail -notmatch 'L2 silent') { throw 'Offline transport diagnosis missing' }
     if ($Ledger.market_alerts.schema -ne 2 -or $Ledger.market_alerts.evidence.unavailable_ms[0] -ne 50000 -or $Ledger.market_alerts.history[0].kind -ne 'delivered') { throw 'Market alert evidence/history missing' }
     if (!$Ledger.readonly -or !$Ledger.available -or $Ledger.snapshot.held_groups -ne 7 -or $Ledger.snapshot.pending.first_filled -ne 700) { throw 'Offline snapshot extraction failed' }
     if ($Ledger.snapshot.ledger[0].venue -ne 'lighter' -or $Ledger.snapshot.ledger[1].venue -ne 'entropy') { throw 'Ledger venue mapping is incorrect' }
@@ -48,6 +49,7 @@ try {
     $OnlineReport=$OnlineText | ConvertFrom-Json
     if ($OnlineReport.health.entropy_info.limit -ne 900 -or $OnlineReport.health.entropy_info.local_deferrals -ne 7) { throw 'Info limiter diagnostics were lost' }
     foreach ($Observation in $OnlineReport.observations) {
+      if ($Observation.market_transport[1].source -ne 'rest' -or $Observation.market_transport[1].rest_books -ne 60 -or $Observation.market_transport[1].last_error -notmatch 'connect/TLS failed') { throw 'Online transport diagnosis missing' }
       if (!$Observation.available -or !$Observation.loaded -or $Observation.snapshot.held_groups -ne 7 -or $Observation.accounts.Count -ne 2) { throw 'Loaded-account API extraction failed' }
       if ($Observation.flags -notcontains 'PENDING_OPERATION' -or $Observation.flags -match 'LEDGER_MISMATCH') { throw 'Pending ledger attribution is incorrect' }
       if ($Observation.snapshot.pending.requests.first.order_ref -ne $Observation.snapshot.fills_in_operation_window[0].order_ref) { throw 'Live API order linkage was lost' }
