@@ -134,11 +134,19 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
     if matches!(r.command.as_str(),"save_notifications"|"test_notifications"|"disable_notifications") {
         return notification_action(app,r).await;
     }
-    if matches!(r.command.as_str(),"pause"|"stop"|"close_all") {
-        let command=match r.command.as_str(){"pause"=>Control::Pause,"stop"=>Control::Stop,_=>{
+    if matches!(r.command.as_str(),"pause"|"stop"|"close_all"|"confirm_rollback_recovery") {
+        let command=match r.command.as_str(){"pause"=>Control::Pause,"stop"=>Control::Stop,
+            "confirm_rollback_recovery"=>{
+                ensure!(r.confirmation==format!("CONFIRM_{}_ROLLBACK_RECOVERY",app.paths.market.id().to_uppercase()),
+                    "请明确确认本标的人工恢复；核对通过后仍需单独启动策略");
+                Control::ConfirmRollbackRecovery
+            },_=>{
             ensure!(r.confirmation=="CLOSE_ALL_POSITIONS","请确认平掉全部持仓");Control::CloseAll}};
         let service=app.inner.lock().await.service.clone().context("账户尚未加载")?;
         service.control(r.id.clone(),command).await?;
+        if r.command=="confirm_rollback_recovery" {
+            return Ok(json!({"accepted":true,"message":"人工确认已记录；请核对连续回滚次数为 0、策略仍为已停止，再单独启动实盘策略。"}));
+        }
         return Ok(json!({"accepted":true}));
     }
     let _catalog=app.catalog.lock().await;
@@ -301,9 +309,29 @@ mod tests {
         assert!(html.contains("fetch('/api/anth-portable'"));
         assert!(!html.contains("fetch('/api/openai-inventory'"));
         assert!(html.contains("START_ANTH_LIVE_STRATEGY"));
+        assert!(html.contains("CONFIRM_ANTH_ROLLBACK_RECOVERY"));
+        assert!(!html.contains("CONFIRM_OPENAI_ROLLBACK_RECOVERY"));
         assert!(html.contains("/100000"));
         let monitor=crate::monitor::page(MarketPair::Anth,Mode::Live);
         assert!(monitor.contains("ANTH 实盘监控"));assert!(monitor.contains("\"quantityDecimals\":5"));
+    }
+
+    #[tokio::test]
+    async fn manual_recovery_requires_profile_confirmation_token_and_loaded_service() {
+        for market in [MarketPair::Openai,MarketPair::Anth] {
+            let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None})),token:Arc::new("synthetic-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),market),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(vec![])};
+            let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
+            let mut r=Request::default();r.command="confirm_rollback_recovery".into();r.id="manual-ack".into();
+            assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("刷新页面"));
+            h.insert("x-inventory-token","synthetic-token".parse().unwrap());
+            for wrong in ["", "CONFIRM_OTHER_ROLLBACK_RECOVERY", if market==MarketPair::Openai {"CONFIRM_ANTH_ROLLBACK_RECOVERY"}else{"CONFIRM_OPENAI_ROLLBACK_RECOVERY"}] {
+                r.confirmation=wrong.into();
+                assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("明确确认"));
+            }
+            r.confirmation=format!("CONFIRM_{}_ROLLBACK_RECOVERY",market.id().to_uppercase());
+            assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("尚未加载"));
+            assert!(!app.lease.load(Ordering::SeqCst));
+        }
     }
 
 }

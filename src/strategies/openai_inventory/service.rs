@@ -54,6 +54,7 @@ pub enum Control {
     Start,
     StartOneEntry,
     StartLiveStrategy,
+    ConfirmRollbackRecovery,
     Pause,
     Stop,
     CloseAll,
@@ -297,7 +298,11 @@ impl InventoryService {
                                 Err(e)=>Err(e),
                             }
                         } else { Ok(()) };
-                        let outcome=(||->Result<()>{
+                        let outcome=if matches!(command.control, Control::ConfirmRollbackRecovery) {
+                            super::manual_recovery::confirm(&mut state,&mut store,&workers,&command.id).await.map(|fresh| {
+                                if let Some(a)=fresh {accounts=Some(a);last_accounts=crate::domain::now_ms();}
+                            })
+                        } else {(||->Result<()>{
                             repair_evidence?;
                             ensure!(!command.id.is_empty() && command.id.len()<=128,"invalid command id");
                             if store.command_seen(&command.id,&name)?{return Ok(());}
@@ -310,6 +315,7 @@ impl InventoryService {
                                 Control::Start=>{start_continuous(&mut next)?;},
                                 Control::StartOneEntry=>{start_one_entry(&mut next, accounts.as_ref(), &books.read().unwrap().clone(), crate::domain::now_ms())?;},
                                 Control::StartLiveStrategy=>{start_live_strategy(&mut next, accounts.as_ref(), &books.read().unwrap().clone(), crate::domain::now_ms())?;},
+                                Control::ConfirmRollbackRecovery=>unreachable!("handled by authenticated reconciliation"),
                                 Control::Pause=>{next.paused=true;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::PausedEntries;}},
                                 Control::Stop=>{next.stop_requested=true;next.paused=true;next.resume_after_recovery=false;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::Stopped;}else if next.status!=Status::NeedsAttention {next.reason="finishing active paired operation before stopping".into();}},
                                 Control::CloseAll=>{super::emergency_exit::latch(&mut next,crate::domain::now_ms())?;last_emergency_poll=0;},
@@ -322,12 +328,12 @@ impl InventoryService {
                                 Control::Shutdown=>{ensure!(next.status==Status::Stopped && next.pending.is_none() && next.live_orphan.is_none(),"stop and resolve all paired orders before shutdown");next.paused=true;next.stop_requested=true;next.reason="worker shut down; reconcile before restarting".into();},
                             }
                             store.command(&next,&command.id,&name,crate::domain::now_ms())?;state=next;Ok(())
-                        })();
+                        })()};
                         if outcome.as_ref().err().is_some_and(|e|e.to_string().contains("persistence failure")) {state.status=Status::NeedsAttention;state.reason="inventory persistence failure; dispatch disabled".into();risk_notifications.report_persistence_failure(config.market,config.mode);}
                         let shutdown=matches!(command.control,Control::Shutdown) && outcome.is_ok();
                         // Acknowledgement must describe the actor's committed state,
                         // including when a control arrives between market-data ticks.
-                        {let mut v=output.write().unwrap();v.snapshot=state.clone();v.submission_enabled=false;}
+                        {let mut v=output.write().unwrap();v.snapshot=state.clone();v.accounts=accounts.clone();v.submission_enabled=false;}
                         let _=command.reply.send(outcome);
                         if shutdown {let mut v=output.write().unwrap();v.snapshot=state.clone();v.submission_enabled=false;break;}
 

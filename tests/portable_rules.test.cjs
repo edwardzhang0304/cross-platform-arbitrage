@@ -44,6 +44,27 @@ test('parameter text describes the loaded rules, including unchanged legacy acco
   assert.equal(ctx.entryRulesText(null),'请先配置或导入账户');
 });
 
+test('manual rollback acknowledgement is explicit, market-bound and never starts trading',async()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../frontend/portable.html'),'utf8');
+  const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)};
+  const posts=[];let accept=false;
+  const snapshot={status:'stopped',stop_requested:true,paused:true,consecutive_rollbacks:3,lots:[],closed_groups:0};
+  const ctx=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},
+    crypto:{randomUUID:()=>`manual-${posts.length}`},confirm:()=>accept,setInterval(){},
+    fetch:async(url,opts)=>opts?.method==='POST'?(posts.push({url,body:JSON.parse(opts.body)}),{json:async()=>({ok:true,data:{message:'verified; still stopped'}})}):
+      {json:async()=>({ok:true,data:{csrf:'synthetic',view:{snapshot}}})}});
+  vm.runInContext(html.match(/<script>\s*([\s\S]*?)<\/script>/)[1],ctx);
+  await ctx.refresh();assert.equal(element('rollback-recovery').hidden,false);
+  const call=html.match(/onclick="(act\('confirm_rollback_recovery'[^\"]+)"/)[1];
+  await vm.runInContext(call,ctx);assert.equal(posts.length,0,'cancelled confirmation sends nothing');
+  accept=true;await vm.runInContext(call,ctx);
+  assert.equal(posts.length,1);assert.equal(posts[0].body.command,'confirm_rollback_recovery');
+  assert.equal(posts[0].body.confirmation,'CONFIRM_OPENAI_ROLLBACK_RECOVERY');
+  assert.match(element('notice').textContent,/still stopped/);
+  snapshot.consecutive_rollbacks=0;await ctx.refresh();assert.equal(element('rollback-recovery').hidden,true);
+  assert.equal(posts.length,1,'success must not send start or any order');
+});
+
 test('paper console renders both core identities without shadowing response data',async()=>{
   const html=fs.readFileSync(path.join(__dirname,'../frontend/paper.html'),'utf8');
   const elements=new Map();

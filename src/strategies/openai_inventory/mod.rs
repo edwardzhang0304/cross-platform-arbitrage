@@ -22,6 +22,7 @@ pub mod live_orphan;
 pub mod model;
 pub mod rules_upgrade;
 pub mod service;
+mod manual_recovery;
 pub mod store;
 pub mod strategy;
 pub mod venue;

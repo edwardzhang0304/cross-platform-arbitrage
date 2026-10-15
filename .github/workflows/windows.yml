@@ -1,4 +1,4 @@
-name: Shared core - Mac and Windows
+name: Windows release - shared live and paper core
 on:
   push:
     branches: [main, windows-portable, feature/anth-paper]
@@ -26,9 +26,6 @@ jobs:
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             platform: windows
-          - os: macos-15
-            target: aarch64-apple-darwin
-            platform: macos
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -77,11 +74,6 @@ jobs:
         run: |
           ./scripts/package-windows.ps1 -Exe target/x86_64-pc-windows-msvc/release/cross-platform-arbitrage.exe
           ./scripts/smoke-windows.ps1 -Exe dist/Cross-Platform-Arbitrage-Windows-x64/Cross-Platform-Arbitrage.exe
-      - name: Build and package Mac paper binary without starting it
-        if: matrix.platform == 'macos'
-        run: |
-          cargo build --locked --release --no-default-features --features paper-runtime --target ${{ matrix.target }} --bin paired-paper
-          bash scripts/package-macos.sh target/aarch64-apple-darwin/release/paired-paper
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: candidate-${{ matrix.platform }}
@@ -111,11 +103,11 @@ jobs:
         with:
           pattern: candidate-*
           path: artifacts
-      - name: Require identical core, rules and decision traces on both operating systems
-        run: node scripts/verify-core-parity.cjs artifacts
+      - name: Require identical live and paper core, rules and decision traces on Windows
+        run: node scripts/verify-core-parity.cjs artifacts windows
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: verified-mac-windows
+          name: verified-windows
           path: |
             artifacts/shared-core-verification.json
             artifacts/candidate-*/dist/*.zip

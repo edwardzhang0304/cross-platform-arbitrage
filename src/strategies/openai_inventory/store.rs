@@ -205,10 +205,14 @@ impl Store {
         Ok(())
     }
     pub fn command(&mut self, s: &Snapshot, id: &str, command: &str, at: u64) -> Result<()> {
-        self.command_inner(s, id, command, at)
+        self.command_inner(s, id, command, at, None)
             .context("inventory persistence failure")
     }
-    fn command_inner(&mut self, s: &Snapshot, id: &str, command: &str, at: u64) -> Result<()> {
+    pub(super) fn command_with_evidence(&mut self, s: &Snapshot, id: &str, command: &str, at: u64, evidence: serde_json::Value) -> Result<()> {
+        self.command_inner(s, id, command, at, Some(evidence))
+            .context("inventory persistence failure")
+    }
+    fn command_inner(&mut self, s: &Snapshot, id: &str, command: &str, at: u64, evidence: Option<serde_json::Value>) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute(
             "INSERT INTO commands VALUES(?1,?2,'accepted')",
@@ -222,7 +226,7 @@ impl Store {
             "INSERT INTO events(at_ms,kind,body) VALUES(?1,'command',?2)",
             params![
                 at,
-                serde_json::json!({"id":id,"command":command}).to_string()
+                serde_json::json!({"id":id,"command":command,"evidence":evidence}).to_string()
             ],
         )?;
         alerts::observe(&tx,s,at)?;

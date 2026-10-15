@@ -20,4 +20,13 @@ test('release gate rejects mismatched decisions, parameters, source and packaged
   }
   const old=structuredClone(binaries);old[0].strategy_core_sha256='old';
   assert.throws(()=>verify(reports,old,'commit',base.strategy_core_sha256));
+  const windows=reports.filter(r=>r.target==='x86_64-pc-windows-msvc');
+  const live=binaries.filter(r=>r.target==='x86_64-pc-windows-msvc');
+  const verified=verify(windows,live,'commit',base.strategy_core_sha256,true);
+  assert.deepEqual(verified.targets,['x86_64-pc-windows-msvc']);
+  assert.throws(()=>verify(windows,live,'commit',base.strategy_core_sha256), 'partial Windows-only results cannot claim dual-platform validation');
+  assert.throws(()=>verify(windows.slice(0,1),live,'commit',base.strategy_core_sha256,true));
+  const wrong=structuredClone(windows);wrong[1].trace_sha256='c'.repeat(64);
+  assert.throws(()=>verify(wrong,live,'commit',base.strategy_core_sha256,true));
+  assert.throws(()=>verify(windows,[{...live[0],source_commit:'old'}],'commit',base.strategy_core_sha256,true));
 });

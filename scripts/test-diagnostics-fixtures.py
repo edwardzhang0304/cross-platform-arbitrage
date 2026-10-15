@@ -94,5 +94,8 @@ for market, path in [
         db.execute("INSERT INTO market_notification_history VALUES(1,?)", (json.dumps(dict(kind='delivered',at_ms=now,evidence=evidence,unexpected_secret=secret)),))
         for seq, at, kind in [(1,start,"operation_reserved"),(2,start+1000,"order_observed"),(3,now,"reconciliation_blocked")]:
             db.execute("INSERT INTO events VALUES(?,?,?,?)",(seq,at,kind,json.dumps(dict(status=state['status'],reason=state['reason'],pending=pending,private_key=secret,groups=7))))
+        recovery=dict(command='"confirm_rollback_recovery"',id=secret,evidence=dict(previous_rollbacks=3,unexpected_secret=secret,
+            accounts=[dict(venue=v,position_units=n,open_orders=0,authenticated=True,observed_ms=now,account=secret) for v,n in [('lighter',-4900),('entropy',4900)]]))
+        db.execute("INSERT INTO events VALUES(?,?,?,?)",(4,now+1,'command',json.dumps(recovery)))
 (root / "vault-secret-MUST-NOT-BE-READ.txt").write_text(secret)
 (root / "profile-secret-MUST-NOT-BE-READ.json").write_text(json.dumps(dict(private_key=secret)))

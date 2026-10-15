@@ -45,6 +45,23 @@ try {
   $AnthPage=(Invoke-WebRequest "$Base/anth").Content
   if ($AnthPage -notmatch 'Cross-Platform Arbitrage' -or $AnthPage -notmatch 'ANTH 实盘配置') { throw 'ANTH product/market title is incorrect' }
   if ($AnthPage -notmatch '/api/anth-portable' -or $AnthPage -notmatch 'START_ANTH_LIVE_STRATEGY') { throw 'ANTH control routing is incorrect' }
+  if ($AnthPage -notmatch 'CONFIRM_ANTH_ROLLBACK_RECOVERY' -or $AnthPage -match 'CONFIRM_OPENAI_ROLLBACK_RECOVERY') { throw 'Manual recovery targets wrong market' }
+  foreach ($Pair in @(@('openai',$Status,'/api/portable'),@('anth',$Anth,'/api/anth-portable'))) {
+    $Label=$Pair[0].ToUpperInvariant()
+    $RecoveryHeaders=@{'X-Inventory-Token'=$Pair[1].csrf}
+    $Missing=Invoke-RestMethod "$Base$($Pair[2])" -Method Post -ContentType 'application/json' -Headers $RecoveryHeaders -Body '{"command":"confirm_rollback_recovery","id":"missing-confirmation"}'
+    if ($Missing.ok) { throw 'Missing recovery confirmation accepted' }
+    $Request=@{command='confirm_rollback_recovery';id='empty-recovery';confirmation="CONFIRM_${Label}_ROLLBACK_RECOVERY"} | ConvertTo-Json -Compress
+    $Empty=Invoke-RestMethod "$Base$($Pair[2])" -Method Post -ContentType 'application/json' -Headers $RecoveryHeaders -Body $Request
+    if ($Empty.ok) { throw 'Unloaded account recovered' }
+  }
+  $RecoveryScript=Join-Path (Split-Path $Exe) 'Confirm-Rollback-Recovery.ps1'
+  $ParseErrors=$null; $Tokens=$null
+  [System.Management.Automation.Language.Parser]::ParseFile($RecoveryScript,[ref]$Tokens,[ref]$ParseErrors) | Out-Null
+  if ($ParseErrors.Count) { throw 'Packaged recovery script does not parse' }
+  $RecoveryProbe=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f $RecoveryScript),'-Market','openai','-Port',"$Port") -RedirectStandardOutput (Join-Path $Root 'recovery-probe.out') -RedirectStandardError (Join-Path $Root 'recovery-probe.err') -Wait -PassThru
+  if ($RecoveryProbe.ExitCode -eq 0) { throw 'PowerShell 5.1 recovery script accepted an unloaded account' }
+  if ((Get-Content (Join-Path $Root 'recovery-probe.err') -Raw) -notmatch 'Load the account and original ledger first') { throw 'PowerShell 5.1 recovery script failed before its account guard' }
   if ((Invoke-WebRequest "$Base/anth-inventory").Content -notmatch 'quantityDecimals":5') { throw 'ANTH quantity scale missing' }
   $Monitor = (Invoke-WebRequest "$Base/openai-inventory").Content
   if ($Monitor -notmatch '/assets/openai-market-visuals.js') { throw 'Chart asset missing' }

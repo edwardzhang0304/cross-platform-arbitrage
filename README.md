@@ -6,7 +6,7 @@
 
 ## 怎么用
 
-1. 从本仓库成功的 GitHub Actions 运行中下载 `verified-mac-windows`，使用其中的 `Cross-Platform-Arbitrage-Windows-x64.zip`。仅通过双系统验证的产物用于交付。
+1. 从本仓库成功的 GitHub Actions 运行中下载 `verified-windows`，使用其中的 `Cross-Platform-Arbitrage-Windows-x64.zip`。目前只交付 Windows 包；发布前验证 Windows live/paper 的同一核心、参数和决策轨迹。
 2. **解压整个文件夹**到本机，例如 `D:\Cross-Platform-Arbitrage`。不要在压缩包内直接运行。
 3. 双击 `Cross-Platform-Arbitrage.exe`，会打开 `http://127.0.0.1:18794`。
 4. 首次使用填两个平台的公开账户信息和**交易 API 私钥**，设定密钥库密码。已有 Mac 持仓请先按下面的迁移说明转移完整账本。
@@ -124,3 +124,5 @@ cargo run --locked --no-default-features --features paper-runtime --bin paired-p
 跨平台源码与安装包一致性要求见 [同一核心与版本核对](docs/同一核心与版本核对.md)。Mac/Windows 构建必须通过同一批策略决策对比后才提供成对验证包。
 
 手动“平掉全部持仓”用于当前标的紧急止损：使用最大 5% 滑点的只减仓市价 IOC，两个平台按实际持仓独立退出，不等待原配平流程、均线或盈利条件。页面显示剩余数量；全部实际持仓与成交记录核对完成后保持停止。日常策略滑点不变，网络或平台无法成交时仍会显示阻塞原因。详见 [紧急平仓说明](docs/rc12紧急全部平仓.md)。
+
+2026-10-16（rc.17）：[人工确认解除连续回滚保护及升级步骤](docs/rc17人工确认恢复.md)。先停止交易，再重新核对两平台持仓、账本及未完成订单，通过后才能解除连续回滚保护；成功后仍保持停止，需另点启动。网页和包内 `Confirm-Rollback-Recovery.ps1` 使用同一后台检查。仅交付 Windows 包。

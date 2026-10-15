@@ -11,6 +11,7 @@
     "src/strategies/openai_inventory/entry_mean.rs",
     "src/strategies/openai_inventory/charts.rs",
     "src/strategies/openai_inventory/store.rs",
+    "src/strategies/openai_inventory/manual_recovery.rs",
     "src/strategies/openai_inventory/rules_upgrade.rs",
     "src/strategies/openai_inventory/alerts.rs",
     "src/strategies/openai_inventory/market_alerts.rs",

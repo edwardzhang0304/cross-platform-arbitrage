@@ -21,12 +21,14 @@ try {
     if (!$Ledger.readonly -or !$Ledger.available -or $Ledger.snapshot.held_groups -ne 7 -or $Ledger.snapshot.pending.first_filled -ne 700) { throw 'Offline snapshot extraction failed' }
     if ($Ledger.snapshot.ledger[0].venue -ne 'lighter' -or $Ledger.snapshot.ledger[1].venue -ne 'entropy') { throw 'Ledger venue mapping is incorrect' }
     if ($Ledger.snapshot.pending.recovery_slippage_bps -ne 3 -or $Ledger.snapshot.pending.recovery_wait_reason -notmatch 'depth exceeds protected execution price') { throw 'Recovery price diagnostics were lost' }
-    if ($Ledger.operation_events.events.Count -ne 2 -or $Ledger.recent_events.events.Count -ne 3) {
+    if ($Ledger.operation_events.events.Count -ne 2 -or $Ledger.recent_events.events.Count -ne 4) {
       # Only synthetic, already redaction-checked evidence is printed on CI failure.
       Write-Output ($Ledger | ConvertTo-Json -Depth 16)
       Write-Output ($Report.collection_problems | ConvertTo-Json)
       throw 'Historical pending event window failed'
     }
+    $Recovery=$Ledger.recent_events.events[0].manual_recovery
+    if ($Recovery.previous_rollbacks -ne 3 -or $Recovery.accounts.Count -ne 2 -or $Recovery.accounts[0].position_units -ne -4900 -or $Recovery.accounts[1].open_orders -ne 0) { throw 'Manual recovery audit evidence missing' }
     if ($Ledger.snapshot.emergency_exit.order_count -ne 1 -or $Ledger.snapshot.emergency_exit.buffered_fill_count -ne 1) { throw 'Emergency progress missing from diagnostics' }
     if ($Ledger.snapshot.emergency_exit.orders[0].request.order_ref -ne $Ledger.snapshot.emergency_exit.buffered_fills[0].order_ref) { throw 'Emergency order/fill linkage lost' }
     if ($Ledger.snapshot.reason -notmatch 'account worker request deadline exceeded') { throw 'Useful diagnostic cause was lost' }

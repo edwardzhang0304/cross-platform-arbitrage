@@ -152,7 +152,11 @@ function Read-Events([string]$Path,[long]$From=-1,[long]$To=-1) {
   $events=@(foreach ($row in $rows) {
     $part=$row -split "`t",3
     $e=$part[2] | ConvertFrom-Json
-    [ordered]@{at_ms=[long]$part[0]; kind=(SafeText $part[1]); status=$e.status; reason=(SafeText $e.reason); reason_ref=(Ref $e.reason); pending=(Pending-View $e.pending); groups=$e.groups}
+    $recovery=$null
+    if ($e.command -eq '"confirm_rollback_recovery"' -and $null -ne $e.evidence) {
+      $recovery=[ordered]@{previous_rollbacks=$e.evidence.previous_rollbacks; accounts=@($e.evidence.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms)}
+    }
+    [ordered]@{at_ms=[long]$part[0]; kind=(SafeText $part[1]); status=$e.status; reason=(SafeText $e.reason); reason_ref=(Ref $e.reason); pending=(Pending-View $e.pending); groups=$e.groups; manual_recovery=$recovery}
   })
   return [ordered]@{limit=120; capped=($rows.Count -eq 120); events=$events}
 }
@@ -251,7 +255,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc16'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc17'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'
