@@ -35,7 +35,16 @@ impl FeedPool {
 }
 fn pool()->&'static FeedPool {static POOL:OnceLock<FeedPool>=OnceLock::new();POOL.get_or_init(FeedPool::default)}
 pub async fn acquire(pair:MarketPair,prior_transport:[crate::crossvenue_a::MarketStreamHealth;2])->Result<Arc<PublicMarketFeed>> {
-    pool().get_or_create(pair,||connect(pair,prior_transport)).await
+    let history=prior_transport.clone();
+    let feed=pool().get_or_create(pair,||connect(pair,prior_transport)).await?;
+    merge_transport_history(&feed,&history);
+    Ok(feed)
+}
+fn merge_transport_history(feed:&PublicMarketFeed,history:&[crate::crossvenue_a::MarketStreamHealth;2]) {
+    // A second subscriber can have newer persisted incident evidence. Merge
+    // it before saving the shared feed back into either ledger; never import
+    // its old connection flags, books or marks into the live public source.
+    for (current,old) in feed.transport.write().unwrap().iter_mut().zip(history) {current.preserve_history(old);}
 }
 pub async fn diagnostics()->serde_json::Value {
     let feeds=pool().feeds.read().unwrap();
@@ -169,6 +178,17 @@ mod tests {
     fn fake(pair:MarketPair)->PublicMarketFeed {PublicMarketFeed{market:pair,
         books:Arc::new(RwLock::new(Default::default())),marks:Arc::new(RwLock::new(Default::default())),transport:Arc::new(RwLock::new(Default::default())),
         maintenance_rates:[Decimal::ZERO;2],max_leverage:3,tasks:vec![]}}
+    #[test]
+    fn later_subscriber_preserves_its_incidents_without_replacing_live_health() {
+        let feed=fake(MarketPair::Openai);
+        feed.transport.write().unwrap()[0].ws_connected=true;
+        feed.transport.write().unwrap()[0].incident(100,"ws_reconnect","first saved cause");
+        let mut prior:[crate::crossvenue_a::MarketStreamHealth;2]=Default::default();
+        prior[0].incident(200,"ws_reconnect","second saved cause");
+        merge_transport_history(&feed,&prior);merge_transport_history(&feed,&prior);
+        let health=feed.transport.read().unwrap();assert!(health[0].ws_connected);assert_eq!(health[0].history.len(),2);
+        assert_eq!(health[0].history.back().unwrap().at_ms,200);
+    }
     #[tokio::test]
     async fn concurrent_same_instrument_loads_connect_once_and_share_book_health() {
         let pool=FeedPool::default();let calls=std::sync::atomic::AtomicUsize::new(0);
