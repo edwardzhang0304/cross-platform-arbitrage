@@ -14,3 +14,11 @@
 密钥管理保留原加密格式；交付版增加原子写入、解密明文临时缓冲区清零和 Debug 脱敏。源码清单分别记录原始与交付文件哈希；精简的模块清单见 Cargo.toml 与 src/lib.rs。
 
 Windows 回归测试清理 SQLite 临时文件时，需等待异步模拟工作器释放文件句柄；仅调整该测试的清理等待，交易核心不变。
+
+## Multi-account host (rc.19)
+
+`AccountProfile` owns immutable account identity independently of `MarketPair`. The registry retains the original OPENAI/ANTH paths and adds UUID-derived account directories. Each host slot owns its session, submission lease, CSRF token, settings, vault, SQLite ledger and notification state; all private controls resolve the ID before entering the existing execution path. Duplicate real accounts are rejected across same and different instruments. Registry writes are atomic and authenticated, with idempotent creation requests.
+
+`market_feed` pools only public books, marks, metadata and transport health by instrument. Weak references prevent the pool from keeping abandoned subscriptions alive; live service actors hold strong references. Concurrent same-instrument loads share one initialized feed, and separate instrument initialization cannot block public feed diagnostics. Per-account moving-average/strategy recovery state remains durable in its own ledger. No strategy, execution or accounting rules depend on profile IDs.
+
+The account directory/API identity also scopes monitoring, diagnostics and notification labels. Adding an account does not load credentials or start trading. Existing public URL aliases always resolve to the original profiles.

@@ -97,3 +97,30 @@ test('emergency close has explicit 5 percent confirmation and physical progress,
  assert.match(ctx.controlStateText({emergency_exit:{...e,remaining_units:[0,0],flat_confirmed_ms:1}}),/原订单与成交记录仍在核对/);
  assert.match(ctx.controlStateText({status:'stopped',emergency_exit:{...e,completed_ms:1}}),/紧急全部平仓完成/);
 });
+
+test('same-market control page rejects a foreign profile payload before accepting its token',async()=>{
+  let script=fs.readFileSync(path.join(__dirname,'../frontend/portable.html'),'utf8').match(/<script>\s*([\s\S]*?)<\/script>/)[1];
+  script=script.replace('/*CONTROL_PROFILE*/','const controlProfile={id:"second",label:"OPENAI second"};');
+  const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)};
+  const ctx=vm.createContext({document:{getElementById:element},setInterval(){},fetch:async()=>({json:async()=>({ok:true,data:{profile:{id:'openai',market:'openai'},csrf:'foreign-token'}})})});
+  vm.runInContext(script,ctx);await ctx.refresh();assert.equal(vm.runInContext('token',ctx),'');
+});
+
+test('account management renders same-market accounts separately and retries creation with the same ID',async()=>{
+  const script=fs.readFileSync(path.join(__dirname,'../frontend/accounts.html'),'utf8').match(/<script>\s*([\s\S]*?)<\/script>/)[1];
+  const element=()=>({children:[],append(...xs){this.children.push(...xs)},replaceChildren(...xs){this.children=xs}});
+  const elements=new Map(['accounts','notice','add','market','label','feed'].map(k=>[k,element()]));
+  elements.get('market').value='openai';elements.get('label').value='OPENAI <second>';
+  const profiles=['openai','second','anth'].map(id=>({profile:{id,label:id==='second'?'OPENAI <second>':id,market:id==='anth'?'anth':'openai',control_path:`/accounts/${id}`,monitor_path:`/accounts/${id}/monitor`},loaded:true,status:'running',held_groups:id==='second'?9:2}));
+  const posts=[];let fail=true;let uuid=0;const location={};
+  const ctx=vm.createContext({document:{getElementById:id=>elements.get(id),createElement:element},location,setInterval(){},crypto:{randomUUID:()=>`request-${++uuid}`},fetch:async(url,opts)=>{
+    if(opts?.method==='POST'){posts.push(JSON.parse(opts.body));if(fail)throw Error('response lost');return {json:async()=>({ok:true,data:{profile:{control_path:'/accounts/second'}}})};}
+    return {json:async()=>({ok:true,data:{csrf:'management-token',profiles,shared_market_feeds:[{market:'openai',consumers:2}]}})};
+  }});
+  vm.runInContext(script,ctx);await ctx.refresh();assert.equal(elements.get('accounts').children.length,3);
+  assert.equal(elements.get('accounts').children[1].children[0].textContent,'OPENAI <second>');
+  assert.match(elements.get('feed').textContent,/2 套账户/);
+  await ctx.addAccount();fail=false;await ctx.addAccount();assert.equal(posts.length,2);assert.equal(posts[0].id,posts[1].id);
+  assert.equal(posts[0].confirmation,'CREATE_ACCOUNT_PROFILE');assert.equal(location.href,'/accounts/second');
+  assert.equal(elements.get('add').disabled,false);assert.ok(posts.every(p=>!p.command),'creating a slot never loads or starts trading');
+});

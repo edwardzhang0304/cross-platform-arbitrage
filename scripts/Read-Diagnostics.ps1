@@ -106,13 +106,21 @@ function Transport-View($items) {
     }
   })
 }
-function Capture-Market([string]$Market) {
+function Capture-Market($Profile) {
+  $Market=[string]$Profile.market; $ProfileId=[string]$Profile.id
+  $Api=if ($ProfileId -in @('openai','anth')) { "/api/$ProfileId-inventory" } else { "/api/accounts/$ProfileId/inventory" }
   $at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   try {
-    $response=Read-Local "/api/$Market-inventory"
+    $response=Read-Local $Api
     if (!$response.ok) { throw 'Local endpoint rejected' }
     $at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $d=$response.data; $v=$d.view; $s=$v.snapshot
+    if ($null -ne $d.profile.id -and $d.profile.id -ne $ProfileId) { throw 'Account profile identity mismatch' }
+    if ($ProfileId -notin @('openai','anth') -and $d.profile.id -ne $ProfileId) { throw 'Missing account profile identity' }
+    if ($null -ne $s) {
+      $ActualMarket=if ($s.config.market) { [string]$s.config.market } else { 'openai' }
+      if ($ActualMarket -ne $Market) { throw 'Account market mismatch' }
+    }
     $flags=New-Object 'System.Collections.Generic.List[string]'
     if ($null -eq $s) { $flags.Add('ACCOUNT_NOT_LOADED') }
     else {
@@ -131,7 +139,7 @@ function Capture-Market([string]$Market) {
       }
     }
     return [ordered]@{
-      market=$Market; captured_ms=$at; available=$true; loaded=($null -ne $s); flags=$flags.ToArray()
+      profile_id=$ProfileId; profile_label=(SafeText $Profile.label); market=$Market; captured_ms=$at; available=$true; loaded=($null -ne $s); flags=$flags.ToArray()
       snapshot=(Snapshot-View $s)
       recovery_policy=($d.recovery_policy | Select-Object retry_interval_ms,initial_slippage_bps,step_slippage_bps,max_slippage_bps,unknown_order_action,@{Name='entry_hedge_retry';Expression={$_.entry_hedge_retry | Select-Object retry_interval_ms,slippage_bps,after_exhaustion,unknown_order_action}})
       accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage)
@@ -144,8 +152,8 @@ function Capture-Market([string]$Market) {
       notifications=[ordered]@{saved=$d.notifications.saved; unlocked=$d.notifications.unlocked; delivery=($d.notifications.delivery | Select-Object enabled,pending,dropped,last_sent_ms,@{Name='error';Expression={SafeText $_.error}})}
     }
   } catch {
-    $script:Problems.Add("API unavailable: $Market ($($_.Exception.GetType().Name))")
-    return [ordered]@{market=$Market; captured_ms=$at; available=$false; loaded=$null}
+    $script:Problems.Add("API unavailable: $ProfileId ($($_.Exception.GetType().Name))")
+    return [ordered]@{profile_id=$ProfileId; profile_label=(SafeText $Profile.label); market=$Market; captured_ms=$at; available=$false; loaded=$null}
   }
 }
 function Read-Events([string]$Path,[long]$From=-1,[long]$To=-1) {
@@ -192,6 +200,19 @@ function Public-Clock([string]$Url) {
   finally { if ($null -ne $res) { $res.Dispose() } }
 }
 
+function Checked-Profiles($Items) {
+  $seen=@{}; $result=@()
+  foreach ($p in $Items) {
+    $id=[string]$p.id; $market=[string]$p.market
+    if ($id -notmatch '^(openai|anth|p-[0-9a-f]{32})$' -or $market -notin @('openai','anth') -or $seen.ContainsKey($id)) { throw 'Invalid public account catalog' }
+    if ($id -in @('openai','anth') -and $id -ne $market) { throw 'Legacy account market changed' }
+    $seen[$id]=$true; $result+=[ordered]@{id=$id; market=$market; label=(SafeText $p.label)}
+  }
+  if ($result.Count -gt 32 -or !$seen.ContainsKey('openai') -or !$seen.ContainsKey('anth')) { throw 'Incomplete public account catalog' }
+  return $result
+}
+$profiles=@([ordered]@{id='openai';market='openai';label='OPENAI 账号1'},[ordered]@{id='anth';market='anth';label='ANTH 账号1'})
+$catalogFromApi=$false
 $captured=New-Object 'System.Collections.Generic.List[object]'
 $health=$null; $root=$DataDirectory
 try {
@@ -199,9 +220,23 @@ try {
   if ($h.application -ne 'openai-paired-trader') { throw 'Unexpected application' }
   $health=[ordered]@{version=$h.version; build=($h.build | Select-Object source_commit,strategy_core_sha256,version,runtime,target,dirty); data_dir=$h.data_dir; sleep_prevention=$h.sleep_prevention; entropy_info=($h.entropy_info | Select-Object available,limit,routine_limit,used_weight,routine_weight,local_deferrals,server_cooldown_remaining_ms)}
   $root=[string]$h.data_dir
+  if ($null -ne $h.profiles) { $profiles=@(Checked-Profiles $h.profiles); $catalogFromApi=$true }
+  $health.profiles=$profiles
+  $health.shared_market_feeds=@($h.shared_market_feeds | Select-Object market,consumers,public_connections,received_ms)
 } catch { $script:Problems.Add('Backend health unavailable; will also attempt readonly disk diagnostics') }
 if ($root.StartsWith('\\?\')) { $root=$root.Substring(4) }
 if ($root -notmatch '^[A-Za-z]:\\') { throw 'A local absolute Windows data directory is required. Use -DataDirectory.' }
+if (!$catalogFromApi) {
+  $catalogPath=Join-Path $root 'profiles\accounts.json'
+  if (Test-Path -LiteralPath $catalogPath -PathType Leaf) {
+    try {
+      if ((Get-Item -LiteralPath $catalogPath).Length -gt 131072) { throw 'Public catalog exceeds limit' }
+      $catalog=Get-Content -LiteralPath $catalogPath -Raw -Encoding utf8 | ConvertFrom-Json
+      if ($catalog.schema -ne 1) { throw 'Unknown public catalog schema' }
+      $profiles=@(Checked-Profiles $catalog.profiles)
+    } catch { $script:Problems.Add('Account catalog unavailable; additional accounts may be missing') }
+  }
+}
 $processes=@()
 try {
   $processes=@(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
@@ -211,17 +246,18 @@ try {
 } catch { $script:Problems.Add('Listening process unavailable (backend stopped or access restricted)') }
 for ($i=0; $i -lt $Samples; $i++) {
   Write-Host "Collecting read-only snapshot $($i+1)/$Samples ..."
-  foreach ($market in @('openai','anth')) { $captured.Add((Capture-Market $market)) }
+  foreach ($profile in $profiles) { $captured.Add((Capture-Market $profile)) }
   if ($i -lt $Samples-1) { Start-Sleep -Seconds $IntervalSeconds }
 }
 $disk=@{}
 try {
   if (-not ('CpaDiagnosticsSqlite' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'DiagnosticsSqlite.cs') }
-  foreach ($market in @('openai','anth')) {
-    $relative=if ($market -eq 'openai') { 'runtime\openai-inventory\live.sqlite' } else { 'profiles\anth-live\runtime\inventory.sqlite' }
+  foreach ($profile in $profiles) {
+    $market=[string]$profile.id
+    $relative=if ($market -eq 'openai') { 'runtime\openai-inventory\live.sqlite' } else { "profiles\$market-live\runtime\inventory.sqlite" }
     $path=Join-Path $root $relative
     if (!(Test-Path -LiteralPath $path -PathType Leaf)) { $disk[$market]=@{available=$false; reason='ledger not found'}; continue }
-    $entry=[ordered]@{available=$true; readonly=$true; bytes=(Get-Item -LiteralPath $path).Length}
+    $entry=[ordered]@{profile_id=$market; market=$profile.market; profile_label=(SafeText $profile.label); available=$true; readonly=$true; bytes=(Get-Item -LiteralPath $path).Length}
     try {
       $raw=@([CpaDiagnosticsSqlite]::State($path)); $state=if ($raw.Count) { $raw[0] | ConvertFrom-Json } else { $null }
       $entry.snapshot=Snapshot-View $state
@@ -256,9 +292,9 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc17'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc19'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
-  observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
+  profiles=$profiles; observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'
 }
 $name='CPA-Diagnostics-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'-'+[guid]::NewGuid().ToString('N').Substring(0,6)
@@ -270,7 +306,7 @@ try {
   if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 8388608) { throw 'Diagnostic bundle exceeds 8 MiB limit' }
   [IO.File]::WriteAllText((Join-Path $tmp 'report.json'),$json,(New-Object Text.UTF8Encoding($false)))
   $lines=@('多平台套利：只读诊断包','将整个 ZIP 发给排查人员，不需要再发送 data 或密钥。',"生成时间：$($report.generated_utc)","版本：$($health.version)","数据目录：$root",'')
-  foreach ($o in $captured) { $lines+="$($o.market): available=$($o.available), loaded=$($o.loaded), status=$($o.snapshot.status), flags=$($o.flags -join ',')" }
+  foreach ($o in $captured) { $lines+="$($o.profile_label) [$($o.profile_id)] $($o.market): available=$($o.available), loaded=$($o.loaded), status=$($o.snapshot.status), flags=$($o.flags -join ',')" }
   $lines+=@('','采集问题：')+$script:Problems.ToArray()+@('','此脚本没有执行启动、停止、平仓、重试、校时或修改账本。缺失数据会标记，不能把空值当作零仓位。')
   [IO.File]::WriteAllLines((Join-Path $tmp '说明.txt'),[string[]]$lines,(New-Object Text.UTF8Encoding($true)))
   Compress-Archive -LiteralPath (Join-Path $tmp 'report.json'),(Join-Path $tmp '说明.txt') -DestinationPath $zip

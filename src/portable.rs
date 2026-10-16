@@ -11,30 +11,33 @@ pub const STRATEGY: &str = "config/strategy.json";
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings { pub accounts: AppConfig, pub strategy: InventoryConfig }
 #[derive(Clone)]
-pub struct ProfilePaths { pub accounts:PathBuf, pub strategy:PathBuf, pub vault:PathBuf, pub database:PathBuf, pub market:crate::openai_inventory::MarketPair }
+pub struct ProfilePaths { pub accounts:PathBuf, pub strategy:PathBuf, pub vault:PathBuf, pub database:PathBuf, pub market:crate::openai_inventory::MarketPair, pub profile:crate::account_profiles::AccountProfile }
 #[derive(Serialize,Deserialize,PartialEq)]
 #[serde(deny_unknown_fields)]
 struct PublicBinding { market:crate::openai_inventory::MarketPair, lighter_alias:String, lighter_index:i64, lighter_address:String, entropy_alias:String, entropy_address:String }
 impl ProfilePaths {
     pub fn new(root:&Path,market:crate::openai_inventory::MarketPair)->Self {
-        use crate::openai_inventory::{MarketPair,Mode};
-        if market==MarketPair::Openai {return Self {accounts:root.join(SETTINGS),strategy:root.join(STRATEGY),vault:root.join(VAULT),database:root.join(DATABASE),market};}
-        let id=crate::profiles::ProfileId::new(market,Mode::Live);let folder=id.directory(root);
-        Self {accounts:folder.join("config/profile.json"),strategy:folder.join("config/profile.json"),vault:id.vault(root).unwrap(),database:id.ledger(root),market}
+        Self::for_profile(root,crate::account_profiles::AccountProfile::legacy(market))
+    }
+    pub fn for_profile(root:&Path,profile:crate::account_profiles::AccountProfile)->Self {
+        let market=profile.market;
+        if profile.is_legacy() && market==crate::openai_inventory::MarketPair::Openai {return Self {accounts:root.join(SETTINGS),strategy:root.join(STRATEGY),vault:root.join(VAULT),database:root.join(DATABASE),market,profile};}
+        let folder=root.join("profiles").join(format!("{}-live",profile.id));
+        Self {accounts:folder.join("config/profile.json"),strategy:folder.join("config/profile.json"),vault:folder.join("keys/trading.vault"),database:folder.join("runtime/inventory.sqlite"),market,profile}
     }
     pub fn load(&self)->Result<Option<Settings>> {
-        use crate::openai_inventory::{MarketPair,Mode};
+        self.profile.validate()?;
         if !self.accounts.exists() && !self.strategy.exists() {return Ok(None);}
-        let mut s:Settings=if self.market==MarketPair::Openai {
+        let mut s:Settings=if self.profile.is_legacy() && self.market==crate::openai_inventory::MarketPair::Openai {
             Settings {accounts:serde_json::from_slice(&fs::read(&self.accounts)?)?,strategy:serde_json::from_slice(&fs::read(&self.strategy)?)?}
         } else {serde_json::from_slice(&fs::read(&self.accounts)?)?};
-        crate::profiles::ProfileId::new(self.market,Mode::Live).validate(&s.strategy)?;
+        self.profile.validate_config(&s.strategy)?;
         s.accounts.secrets.vault_path=self.vault.to_string_lossy().into_owned();s.accounts.secrets.allow_env_fallback=false;
         Ok(Some(s))
     }
     pub fn save(&self,s:&Settings)->Result<()> {
-        crate::profiles::ProfileId::new(self.market,crate::openai_inventory::Mode::Live).validate(&s.strategy)?;
-        if self.market==crate::openai_inventory::MarketPair::Openai {
+        self.profile.validate_config(&s.strategy)?;
+        if self.profile.is_legacy() && self.market==crate::openai_inventory::MarketPair::Openai {
             atomic_json(&self.accounts,&s.accounts)?;atomic_json(&self.strategy,&s.strategy)
         } else {atomic_json(&self.accounts,s)}
     }
@@ -54,7 +57,7 @@ impl ProfilePaths {
     pub fn bind_public_address(&self,c:&InventoryConfig,lighter_address:&str)->Result<()> {self.check_or_bind_public_address(c,lighter_address,true)}
     pub fn check_public_address(&self,c:&InventoryConfig,lighter_address:&str)->Result<()> {self.check_or_bind_public_address(c,lighter_address,false)}
     fn check_or_bind_public_address(&self,c:&InventoryConfig,lighter_address:&str,persist:bool)->Result<()> {
-        crate::profiles::ProfileId::new(self.market,crate::openai_inventory::Mode::Live).validate(c)?;
+        self.profile.validate_config(c)?;
         ensure!(lighter_address.len()==42 && lighter_address.starts_with("0x") && lighter_address[2..].bytes().all(|b|b.is_ascii_hexdigit()),"invalid public Lighter address");
         if let Some(expected)=&c.lighter_address {ensure!(expected.eq_ignore_ascii_case(lighter_address),"Lighter public binding mismatch");}
         let binding=PublicBinding{market:self.market,lighter_alias:c.lighter_account.clone(),lighter_index:c.lighter_account_index.context("missing account index")?,lighter_address:lighter_address.to_ascii_lowercase(),entropy_alias:c.entropy_account.clone(),entropy_address:c.entropy_address.to_ascii_lowercase()};
@@ -64,10 +67,11 @@ impl ProfilePaths {
         Ok(())
     }
     pub fn bound_strategy(&self,c:&InventoryConfig)->Result<InventoryConfig> {
+        self.profile.validate_config(c)?;
         let mut out=c.clone();
         if out.lighter_address.is_none() {
             let path=self.strategy.with_file_name("account-bindings.json");
-            let b:PublicBinding=serde_json::from_slice(&fs::read(path).context("请先解锁 OPENAI，核对原 Lighter 地址后再配置另一标的")?)?;
+            let b:PublicBinding=serde_json::from_slice(&fs::read(path).context("请先解锁原 OPENAI 账户，核对原 Lighter 地址后再配置其他账户")?)?;
             self.bind_public_address(c,&b.lighter_address)?;
             out.lighter_address=Some(b.lighter_address);
         }
@@ -252,4 +256,40 @@ mod tests {
         drop(lock);std::fs::remove_dir_all(dir).unwrap();
     }
 
+}
+
+#[cfg(test)]
+mod multi_account_tests {
+    use super::*;
+    use crate::{account_profiles::AccountProfile,openai_inventory::{MarketPair,Status,store::Store}};
+    #[test]
+    fn same_market_settings_ledger_commands_and_notifications_remain_separate_after_restart() {
+        let root=std::env::temp_dir().join(format!("cpa-isolation-{}",uuid::Uuid::new_v4()));
+        let p1=AccountProfile::legacy(MarketPair::Openai);
+        let p2=AccountProfile::new(MarketPair::Openai,"second".into(),&uuid::Uuid::new_v4().to_string()).unwrap();
+        let paths=[ProfilePaths::for_profile(&root,p1),ProfilePaths::for_profile(&root,p2)];
+        let mut configs=vec![];
+        for (i,p) in paths.iter().enumerate() {
+            let mut c:InventoryConfig=serde_json::from_str(include_str!("../tests/fixtures/inventory/live-strategy.json")).unwrap();
+            c.lighter_account=p.profile.alias("lighter");c.entropy_account=p.profile.alias("entropy");
+            c.lighter_account_index=Some(100+i as i64);c.lighter_address=Some(format!("0x{:040x}",11+i));c.entropy_address=format!("0x{:040x}",21+i);
+            let settings=Settings{accounts:AppConfig::default(),strategy:c.clone()};p.save(&settings).unwrap();
+            p.bind_public_address(&c,c.lighter_address.as_ref().unwrap()).unwrap();
+            let (mut store,mut state)=Store::open(&p.database,&c).unwrap();state.status=Status::Stopped;state.closed_groups=17+i as u64;
+            store.commit(&state,100,"synthetic-multi-account").unwrap();drop(store);configs.push(c);
+        }
+        crate::profiles::reject_shared_live_accounts(&configs[0],&configs[1..]).unwrap();
+        for (i,p) in paths.iter().enumerate() {
+            let settings=p.load().unwrap().unwrap();assert_eq!(settings.strategy,configs[i]);
+            assert_eq!(settings.accounts.secrets.vault_path,p.vault.to_string_lossy());assert!(!settings.accounts.secrets.allow_env_fallback);
+            let (store,state)=Store::open(&p.database,&settings.strategy).unwrap();assert_eq!(state.closed_groups,17+i as u64);drop(store);
+            assert!(Store::open(&p.database,&configs[1-i]).is_err(),"cannot adopt a peer's ledger");
+        }
+        assert!(paths[1].save(&Settings{accounts:AppConfig::default(),strategy:configs[0].clone()}).is_err());
+        for change in 0..4 {
+            let mut c=configs[1].clone();match change {0=>c.lighter_account_index=configs[0].lighter_account_index,1=>c.entropy_address=configs[0].entropy_address.clone(),2=>c.lighter_address=configs[0].lighter_address.clone(),_=>c.entropy_account=configs[0].entropy_account.clone()}
+            assert!(crate::profiles::reject_shared_live_accounts(&c,&configs[..1]).is_err(),"same-market duplicate identity must be rejected");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

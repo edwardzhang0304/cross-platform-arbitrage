@@ -3,18 +3,12 @@ use super::{
     venue::{AccountWorker, VenueBackend},
     *,
 };
-use crate::crossvenue_a::{
-    MarketDataEvent, MarketStreamConfig, MarketVenue, PriceSource, spawn_lighter_market_stream,
-    spawn_trade_fast_market_stream,
-};
-use crate::lighter::{LighterClient, LighterEnvironment};
 use anyhow::{Context, Result, ensure};
 use rust_decimal::{Decimal};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     path::Path,
-    str::FromStr,
     sync::{Arc, RwLock},
     time::Duration,
 };
@@ -112,118 +106,9 @@ impl InventoryService {
         let (mut store, mut state) = if upgrade { Store::open_with_live_limit_upgrade(path, &config)? }
             else { Store::open(path, &config)? };
         quarantine_live_start(&mut state);
-        let client = LighterClient::official(LighterEnvironment::Robinhood)?;
-        let market = client.market_by_symbol(pair.lighter_symbol()).await?;
-        pair.validate_lighter(&market)?;
-        ensure!(
-            market.is_active_perp() && market.market_id == pair.lighter_market_id() && market.effective_size_decimals() == pair.quantity_decimals(),
-            "Lighter OPENAI metadata drift"
-        );
-        let meta = crate::hyperliquid::fetch_xyz_market_snapshot_cached("mainnet", "io", 0).await?;
-        let asset = meta
-            .meta
-            .universe
-            .iter()
-            .find(|x| x.name == pair.entropy_symbol())
-            .context("Entropy OAI missing")?;
-        ensure!(
-            asset.sz_decimals == 3
-                && asset.margin_mode.as_deref() == Some(pair.entropy_margin_mode())
-                && asset.max_leverage.is_some_and(|v| v >= config.leverage),
-            "Entropy OAI precision/margin metadata drift"
-        );
-        let books = Arc::new(RwLock::new([Book::default(), Book::default()]));
-        let marks=Arc::new(RwLock::new([liquidation::Mark::default(),liquidation::Mark::default()]));
-        let receivers = [
-            spawn_lighter_market_stream(
-                client.endpoints().clone(),
-                market.market_id,
-                PriceSource::Unknown,
-                MarketStreamConfig::default(),
-            )?,
-            spawn_trade_fast_market_stream(
-                "mainnet",
-                pair.entropy_symbol().into(),
-                PriceSource::Unknown,
-                MarketStreamConfig::default(),
-            )?,
-        ];
-        let mut prior_transport=store.load_transport()?;
-        for h in &mut prior_transport {
-            let mut fresh=crate::crossvenue_a::MarketStreamHealth::default();
-            fresh.preserve_history(h);*h=fresh;
-        }
-        let transport = Arc::new(RwLock::new(prior_transport));
-        let mut feed_tasks = vec![];
-        for mut rx in receivers {
-            let shared = books.clone();
-            let shared_marks=marks.clone();
-            let transport = transport.clone();
-            feed_tasks.push(tokio::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        MarketDataEvent::Connected {venue,..} => {
-                            let i=if venue==MarketVenue::Lighter{0}else{1};
-                            transport.write().unwrap()[i].ws_connected=true;
-                        }
-                        MarketDataEvent::Transport { venue, mut health } => {
-                            let i=if venue==MarketVenue::Lighter{0}else{1};
-                            if !health.ws_connected { shared_marks.write().unwrap()[i].connected=false; }
-                            let mut stats=transport.write().unwrap();
-                            health.preserve_history(&stats[i]); stats[i]=health;
-                        }
-                        MarketDataEvent::Context {venue,context} => {
-                            let i=if venue==MarketVenue::Lighter{0}else{1};
-                            shared_marks.write().unwrap()[i]=liquidation::Mark {
-                                price:context.mark_price.and_then(|p|Decimal::from_str(&p.to_string()).ok()).filter(|p|*p>Decimal::ZERO),
-                                received_ms:context.received_timestamp_ms,connected:true,
-                            };
-                        }
-                        MarketDataEvent::Book { venue, book } => {
-                            let levels =
-                                |a: Vec<crate::crossvenue_a::PriceLevel>| -> Result<Vec<Level>> {
-                                    a.into_iter()
-                                        .map(|l| {
-                                            let price = Decimal::from_str(&l.price.to_string())?;
-                                            let units = pair.depth_units(Decimal::from_str(&l.size.to_string())?)?;
-                                            Ok(Level { price, units })
-                                        })
-                                        .filter(|x| !matches!(x,Ok(l) if l.units==0))
-                                        .collect()
-                                };
-                            let idx = if venue == MarketVenue::Lighter { 0 } else { 1 };
-                            if venue==MarketVenue::Lighter {
-                                // This adapter may also publish REST recovery;
-                                // do not mislabel those books as websocket reads.
-                                transport.write().unwrap()[idx].source="venue_feed".into();
-                            }
-                            if let (Ok(bids), Ok(asks)) = (levels(book.bids), levels(book.asks)) {
-                                shared.write().unwrap()[idx] = Book {
-                                    bids,
-                                    asks,
-                                    received_ms: book.received_timestamp_ms,
-                                    connected: book.sequence_valid,
-                                };
-                            } else {
-                                shared.write().unwrap()[idx].connected = false;
-                            }
-                        }
-                        MarketDataEvent::Gap { venue, detail, received_at_ms }
-                        | MarketDataEvent::Disconnected { venue, detail, received_at_ms } => {
-                            let i=if venue==MarketVenue::Lighter{0}else{1};
-                            let mut stats=transport.write().unwrap();
-                            stats[i].ws_connected=false; stats[i].reconnect_count+=1;
-                            stats[i].incident(received_at_ms,"ws_reconnect",&detail);
-                            shared_marks.write().unwrap()[if venue==MarketVenue::Lighter{0}else{1}].connected=false;
-                            shared.write().unwrap()
-                                [if venue == MarketVenue::Lighter { 0 } else { 1 }]
-                            .connected = false
-                        }
-                        _ => {}
-                    }
-                }
-            }));
-        }
+        let feed=crate::market_feed::acquire(pair,store.load_transport()?).await?;
+        ensure!(feed.max_leverage>=config.leverage,"market leverage limit changed");
+        let books=feed.books.clone();let marks=feed.marks.clone();let transport=feed.transport.clone();
         let backends = match config.mode {
             Mode::Live => live.context("live workers unavailable")?,
             Mode::Paper => {
@@ -233,8 +118,7 @@ impl InventoryService {
                     let make = |venue: Venue| -> Result<Box<dyn VenueBackend>> {
                         let backend = venue::PaperBackend::durable(venue,config.clone(),Position::default(),books.clone(),
                             &parent.join(format!("virtual-{:?}.sqlite",venue)))?.with_orderbook_matching().with_isolation(liquidation::IsolationSpec {
-                            maintenance_rates:[Decimal::from(market.maintenance_margin_fraction)/Decimal::from(10_000),
-                                Decimal::ONE/Decimal::from(asset.max_leverage.context("missing maximum leverage")?*2)],
+                            maintenance_rates:feed.maintenance_rates,
                             liquidation_fee_rates:[Decimal::new(5,3);2],mark_max_age_ms:5000,
                         },marks.clone())?;
                         Ok(Box::new(backend))
@@ -274,6 +158,7 @@ impl InventoryService {
         let output = view.clone();
         let transport_output = transport.clone();
         tokio::spawn(async move {
+            let _feed=feed; // Dropping one account must not disconnect other subscribers.
             let mut timer = tokio::time::interval(Duration::from_millis(250));
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut accounts: Option<[AccountEvidence; 2]> = None;
@@ -520,9 +405,6 @@ impl InventoryService {
                 }
             }
             let _=store.save_transport(&transport_output.read().unwrap());
-            for task in feed_tasks {
-                task.abort();
-            }
             delivery_task.abort();
             market_notice_task.abort();
         });

@@ -6,6 +6,10 @@ import sys
 import time
 
 root = pathlib.Path(sys.argv[1])
+extra_id = 'p-'+'1'*32
+profiles = [dict(id='openai',market='openai',label='OPENAI first'), dict(id='anth',market='anth',label='ANTH first'), dict(id=extra_id,market='openai',label='OPENAI second')]
+def ledger_path(profile):
+    return root/('runtime/openai-inventory/live.sqlite' if profile['id']=='openai' else f"profiles/{profile['id']}-live/runtime/inventory.sqlite")
 if len(sys.argv)>2 and sys.argv[2]=='--serve':
     from http.server import BaseHTTPRequestHandler, HTTPServer
     class Handler(BaseHTTPRequestHandler):
@@ -13,18 +17,18 @@ if len(sys.argv)>2 and sys.argv[2]=='--serve':
             pass
         def do_GET(self):
             if self.path=='/health':
-                value=dict(application='openai-paired-trader',version='synthetic',data_dir=str(root),build=dict(source_commit='synthetic'),entropy_info=dict(available=True,limit=900,routine_limit=300,used_weight=432,routine_weight=300,local_deferrals=7,server_cooldown_remaining_ms=0,unexpected_secret='synthetic-credential-NOT-FOR-EXPORT'))
+                value=dict(application='openai-paired-trader',version='synthetic',data_dir=str(root),build=dict(source_commit='synthetic'),profiles=profiles,shared_market_feeds=[dict(market='openai',consumers=2,public_connections=2,received_ms=[1,1])],entropy_info=dict(available=True,limit=900,routine_limit=300,used_weight=432,routine_weight=300,local_deferrals=7,server_cooldown_remaining_ms=0,unexpected_secret='synthetic-credential-NOT-FOR-EXPORT'))
             else:
-                market='anth' if 'anth' in self.path else 'openai'
-                path=root/('profiles/anth-live/runtime/inventory.sqlite' if market=='anth' else 'runtime/openai-inventory/live.sqlite')
+                profile=next(p for p in profiles if self.path == (f"/api/accounts/{p['id']}/inventory" if p['id']==extra_id else f"/api/{p['id']}-inventory"))
+                path=ledger_path(profile)
                 with sqlite3.connect(path) as db:
                     state=json.loads(db.execute('SELECT body FROM state').fetchone()[0])
                     transport=json.loads(db.execute('SELECT body FROM market_transport_state').fetchone()[0])
                 stamp=int(time.time()*1000)
                 state['config'].update(account_max_age_ms=3000,book_max_age_ms=3000)
-                accounts=[dict(venue=v,position_units=n,open_orders=0,authenticated=True,observed_ms=stamp,account='synthetic-credential-NOT-FOR-EXPORT') for v,n in [('lighter',-4900),('entropy',5600)]]
+                accounts=[dict(venue=v,position_units=n,open_orders=0,authenticated=True,observed_ms=stamp,account='synthetic-credential-NOT-FOR-EXPORT') for v,n in zip(['lighter','entropy'],[p['units'] for p in state['positions']])]
                 books=[dict(connected=True,received_ms=stamp,bids=[dict(price='2100')],asks=[dict(price='2100.1')]) for _ in range(2)]
-                value=dict(ok=True,data=dict(csrf='synthetic-credential-NOT-FOR-EXPORT',view=dict(snapshot=state,accounts=accounts,books=books,market_transport=transport,profit_accounting=dict(funding_complete=False)),notifications=dict(saved=True,unlocked=True,delivery=dict(enabled=True,pending=0,error=None))))
+                value=dict(ok=True,data=dict(profile=profile,csrf='synthetic-credential-NOT-FOR-EXPORT',view=dict(snapshot=state,accounts=accounts,books=books,market_transport=transport,profit_accounting=dict(funding_complete=False)),notifications=dict(saved=True,unlocked=True,delivery=dict(enabled=True,pending=0,error=None))))
             data=json.dumps(value).encode()
             self.send_response(200)
             self.send_header('Content-Type','application/json')
@@ -51,10 +55,11 @@ if len(sys.argv)>2 and sys.argv[2]=='--hold-lock':
     sys.exit(0)
 now = int(time.time() * 1000)
 secret = "synthetic-credential-MUST-NOT-BE-EXPORTED-0123456789"
-for market, path in [
-    ("openai", root / "runtime/openai-inventory/live.sqlite"),
-    ("anth", root / "profiles/anth-live/runtime/inventory.sqlite"),
-]:
+(root/'profiles').mkdir(exist_ok=True,parents=True)
+(root/'profiles/accounts.json').write_text(json.dumps(dict(schema=1,profiles=profiles)))
+for profile in profiles:
+    market=profile['market']
+    path=ledger_path(profile)
     path.parent.mkdir(parents=True, exist_ok=True)
     start = now - 4 * 3600_000
     request = dict(id="synthetic-order", venue="entropy", side="buy", units=700,
@@ -79,6 +84,9 @@ for market, path in [
         warnings=[f'query failed https://private.invalid/?key={secret}', ''],accounting_error='',
         prior=[dict(request=request,terminal=False)],orders=[dict(request=request,terminal=False)],
         fills=state['fills'],unexpected_secret=secret)
+    if profile['id']==extra_id:
+        state['closed_groups']=99
+        state['anchor']='41'
     with sqlite3.connect(path) as db:
         db.executescript("CREATE TABLE state(id INTEGER PRIMARY KEY,body TEXT); CREATE TABLE events(seq INTEGER PRIMARY KEY,at_ms INTEGER,kind TEXT,body TEXT);")
         db.execute("INSERT INTO state VALUES(1,?)", (json.dumps(state),))

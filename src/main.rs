@@ -51,7 +51,7 @@ async fn run() -> Result<()> {
     if let Ok(response) = client.get(format!("{url}/health")).send().await {
         let v: serde_json::Value = response.json().await.context("端口已被其他程序占用")?;
         ensure!(v["application"] == "openai-paired-trader" && v["data_dir"] == root.to_string_lossy().as_ref(), "端口已被其他程序或不同数据目录占用");
-        if !cli.no_browser { open_browser(&url)?; }
+        if !cli.no_browser { open_browser(&format!("{url}/accounts"))?; }
         return Ok(());
     }
     let (root, _lock) = portable::prepare(&root)?;
@@ -61,7 +61,7 @@ async fn run() -> Result<()> {
     let app = server::router(root, cli.port)?;
     // A missing default browser must not tear down the background service.
     // The same local address remains available for manual navigation.
-    if !cli.no_browser { let _ = open_browser(&url); }
+    if !cli.no_browser { let _ = open_browser(&format!("{url}/accounts")); }
     axum::serve(listener, app).await?;
     Ok(())
 }

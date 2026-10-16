@@ -1,53 +1,117 @@
 use anyhow::{Context, Result, ensure};
-use axum::{Router, Json, extract::{State, DefaultBodyLimit}, http::HeaderMap, response::Html, routing::{get, post}};
+use axum::{Router, Json, extract::{State, Path as RoutePath, DefaultBodyLimit}, http::HeaderMap, response::{Html,IntoResponse,Response}, routing::{get, post}};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use tokio::sync::Mutex;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
-use crate::{config::AppConfig, openai_inventory::{self as inventory, *}, portable::{Settings, ProfilePaths}, secrets};
+use crate::{config::AppConfig, openai_inventory::{self as inventory, *}, portable::{Settings, ProfilePaths}, account_profiles::{self,AccountProfile}, secrets};
 
 #[derive(Clone)]
-pub struct App { inner: Arc<Mutex<Session>>, token: Arc<String>, lease: Arc<AtomicBool>, root: Arc<PathBuf>, port: u16, paths:ProfilePaths, catalog:Arc<Mutex<()>>, notification_serial:Arc<Mutex<()>>, sessions:Arc<Vec<Arc<Mutex<Session>>>> }
+pub struct App { inner: Arc<Mutex<Session>>, token: Arc<String>, lease: Arc<AtomicBool>, root: Arc<PathBuf>, port: u16, paths:ProfilePaths, catalog:Arc<Mutex<()>>, notification_serial:Arc<Mutex<()>>, sessions:Arc<std::sync::RwLock<Vec<ProfileSession>>> }
 struct Session { settings: Option<Settings>, password: Option<Zeroizing<String>>, service: Option<InventoryService>, notification:Option<crate::notifications::FeishuSettings> }
-
-pub fn router(root: PathBuf, port: u16) -> Result<Router> {
-    let pairs=[MarketPair::Openai,MarketPair::Anth];
-    let paths=pairs.map(|m|ProfilePaths::new(&root,m));
-    let configs=paths.iter().map(ProfilePaths::load).collect::<Result<Vec<_>>>()?;
-    let strategies:Vec<_>=configs.iter().flatten().map(|s|s.strategy.clone()).collect();
-    for c in &strategies {crate::profiles::reject_shared_live_accounts(c,&strategies)?;}
-    let sessions=Arc::new(configs.into_iter().map(|settings|Arc::new(Mutex::new(Session{settings,password:None,service:None,notification:None}))).collect::<Vec<_>>());
-    let catalog=Arc::new(Mutex::new(()));
-    let mut router=Router::new();
-    for (i,paths) in paths.into_iter().enumerate() {
-        let market=paths.market;
-        let app = App {inner:sessions[i].clone(),token:Arc::new(uuid::Uuid::new_v4().to_string()),
-            lease:Arc::new(AtomicBool::new(false)),root:Arc::new(root.clone()),port,paths,catalog:catalog.clone(),notification_serial:Arc::new(Mutex::new(())),sessions:sessions.clone()};
-        let base=if market==MarketPair::Openai {"/"}else{"/anth"};
-        let api=format!("/api/{}-inventory",market.id());
-        let control=if market==MarketPair::Openai {"/api/portable"}else{"/api/anth-portable"};
-        let app_router=Router::new().route(base,get(move||async move{Html(control_page(market))}))
-            .route(&format!("/{}-inventory",market.id()),get(move||async move{Html(crate::monitor::page(market,Mode::Live))}))
-            .route(&api,get(status)).route(control,post(action));
-        let app_router=if i==0 {app_router.route("/health",get(health))}else{app_router};
-        router=router.merge(app_router.with_state(app));
+#[derive(Clone)]
+struct ProfileSession { paths:ProfilePaths, inner:Arc<Mutex<Session>>, token:Arc<String>, lease:Arc<AtomicBool>, notification_serial:Arc<Mutex<()>> }
+impl ProfileSession {
+    fn new(paths:ProfilePaths,settings:Option<Settings>)->Self {Self {paths,inner:Arc::new(Mutex::new(Session{settings,password:None,service:None,notification:None})),
+        token:Arc::new(uuid::Uuid::new_v4().to_string()),lease:Arc::new(AtomicBool::new(false)),notification_serial:Arc::new(Mutex::new(()))}}
+}
+#[derive(Clone)]
+struct Host {root:Arc<PathBuf>,port:u16,catalog:Arc<Mutex<()>>,sessions:Arc<std::sync::RwLock<Vec<ProfileSession>>>,token:Arc<String>}
+impl Host {
+    fn app(&self,id:&str)->Result<App> {
+        let slot=self.sessions.read().unwrap().iter().find(|s|s.paths.profile.id==id).cloned().context("账户不存在")?;
+        Ok(App{inner:slot.inner,token:slot.token,lease:slot.lease,root:self.root.clone(),port:self.port,paths:slot.paths,
+            catalog:self.catalog.clone(),notification_serial:slot.notification_serial,sessions:self.sessions.clone()})
     }
-    Ok(router.route("/assets/openai-market-visuals.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/openai-market-visuals.js"))}))
+    fn profiles(&self)->Vec<AccountProfile> {self.sessions.read().unwrap().iter().map(|s|s.paths.profile.clone()).collect()}
+}
+pub fn router(root: PathBuf, port: u16) -> Result<Router> {
+    let profiles=account_profiles::load(&root)?;
+    let paths=profiles.into_iter().map(|p|ProfilePaths::for_profile(&root,p)).collect::<Vec<_>>();
+    let configs=paths.iter().map(ProfilePaths::load).collect::<Result<Vec<_>>>()?;
+    for (i,c) in configs.iter().enumerate() {if let Some(c)=c {
+        let others=configs.iter().enumerate().filter(|(j,_)|*j!=i).filter_map(|(_,s)|s.as_ref().map(|s|s.strategy.clone())).collect::<Vec<_>>();
+        crate::profiles::reject_shared_live_accounts(&c.strategy,&others)?;
+    }}
+    let sessions=Arc::new(std::sync::RwLock::new(paths.into_iter().zip(configs).map(|(p,c)|ProfileSession::new(p,c)).collect()));
+    let host=Host{root:Arc::new(root),port,catalog:Arc::new(Mutex::new(())),sessions,token:Arc::new(uuid::Uuid::new_v4().to_string())};
+    let mut router=Router::new();
+    // Stable legacy URLs continue to refer to the original accounts only.
+    for market in [MarketPair::Openai,MarketPair::Anth] {
+        let app=host.app(market.id())?;let profile=app.paths.profile.clone();
+        let control_host=host.clone();let monitor_host=host.clone();
+        let p=profile.clone();let m=profile.clone();
+        let r=Router::new().route(&profile.control_path(),get(move||async move{Html(control_page(&p,&control_host.profiles()))}))
+            .route(&profile.monitor_path(),get(move||async move{Html(crate::monitor::account_page(&m,&monitor_host.profiles()))}))
+            .route(&profile.inventory_api(),get(status)).route(&profile.control_api(),post(action)).with_state(app);
+        router=router.merge(r);
+    }
+    let host_routes=Router::new().route("/health",get(health)).route("/accounts",get(||async{Html(include_str!("../frontend/accounts.html"))}))
+        .route("/api/accounts",get(account_list).post(add_account))
+        .route("/accounts/{profile}",get(account_control_page)).route("/accounts/{profile}/monitor",get(account_monitor_page))
+        .route("/api/accounts/{profile}/inventory",get(account_status)).route("/api/accounts/{profile}/control",post(account_action))
+        .with_state(host);
+    Ok(router.merge(host_routes).route("/assets/openai-market-visuals.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/openai-market-visuals.js"))}))
         .route("/assets/inventory-components.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/inventory-components.js"))}))
         .layer(DefaultBodyLimit::max(64*1024))
         .layer(axum::middleware::map_response(|mut r:axum::response::Response|async{
             for (k,v) in [("cache-control","no-store"),("x-frame-options","DENY"),("x-content-type-options","nosniff")] {r.headers_mut().insert(k,v.parse().unwrap());} r
         })))
 }
-fn control_page(market:MarketPair)->String {
-    let nav="<nav style=\"display:flex;gap:24px;margin-bottom:18px\"><a href=\"/\">OPENAI 实盘配置</a><a href=\"/anth\">ANTH 实盘配置</a></nav>";
-    let html=include_str!("../frontend/portable.html");
-    let html=if market==MarketPair::Openai {html.to_owned()}else{
-        html.replace("OPENAI", "ANTH").replace("/openai-inventory","/anth-inventory")
-            .replace("/api/portable","/api/anth-portable").replace("/10000","/100000")
-    };
-    html.replace("<main>",&format!("<main>{nav}"))
+fn control_page(profile:&AccountProfile,profiles:&[AccountProfile])->String {
+    let mut html=include_str!("../frontend/portable.html")
+        .replace("fetch('/api/openai-inventory'",&format!("fetch('{}'",profile.inventory_api()))
+        .replace("/openai-inventory",&profile.monitor_path())
+        .replace("/api/portable",&profile.control_api())
+        .replace("START_OPENAI_LIVE_STRATEGY",&profile.start_confirmation())
+        .replace("CONFIRM_OPENAI_ROLLBACK_RECOVERY",&profile.recovery_confirmation())
+        .replace("OPENAI 实盘",&format!("{} 实盘",account_profiles::html_escape(&profile.label)))
+        .replace("当前 OPENAI 标的",&format!("当前 {} 账户",account_profiles::html_escape(&profile.label)))
+        .replace("/*CONTROL_PROFILE*/",&format!("const controlProfile={};",account_profiles::script_json(&profile.descriptor())));
+    if profile.market==MarketPair::Anth {html=html.replace("/10000","/100000");}
+    html.replace("<main>",&format!("<main>{}",account_profiles::navigation(profile,profiles,false)))
+}
+async fn account_control_page(State(host):State<Host>,RoutePath(id):RoutePath<String>)->Response {
+    match host.app(&id) {Ok(app)=>Html(control_page(&app.paths.profile,&host.profiles())).into_response(),Err(_)=>(axum::http::StatusCode::NOT_FOUND,"账户不存在").into_response()}
+}
+async fn account_monitor_page(State(host):State<Host>,RoutePath(id):RoutePath<String>)->Response {
+    match host.app(&id) {Ok(app)=>Html(crate::monitor::account_page(&app.paths.profile,&host.profiles())).into_response(),Err(_)=>(axum::http::StatusCode::NOT_FOUND,"账户不存在").into_response()}
+}
+async fn account_status(State(host):State<Host>,RoutePath(id):RoutePath<String>,h:HeaderMap)->Json<Value> {
+    match host.app(&id) {Ok(app)=>status(State(app),h).await,Err(_)=>Json(json!({"ok":false,"error":"账户不存在"}))}
+}
+async fn account_action(State(host):State<Host>,RoutePath(id):RoutePath<String>,h:HeaderMap,r:Json<Request>)->Json<Value> {
+    match host.app(&id) {Ok(app)=>action(State(app),h,r).await,Err(_)=>Json(json!({"ok":false,"error":"账户不存在"}))}
+}
+async fn account_list(State(host):State<Host>,h:HeaderMap)->Json<Value> {
+    if local(&h,host.port).is_err(){return Json(json!({"ok":false}));}
+    let slots=host.sessions.read().unwrap().clone();let mut profiles=vec![];
+    for slot in slots {let s=slot.inner.lock().await;let view=s.service.as_ref().map(InventoryService::status);
+        profiles.push(json!({"profile":slot.paths.profile.descriptor(),"configured":s.settings.is_some(),"loaded":s.service.is_some(),"unlocked":s.password.is_some(),
+            "status":view.as_ref().map(|v|v.snapshot.status),"held_groups":view.as_ref().map(|v|v.snapshot.lots.len()),"notification_enabled":s.service.as_ref().map(|v|v.notifications.status().enabled)}));}
+    Json(json!({"ok":true,"data":{"csrf":host.token.as_str(),"profiles":profiles,"supported_markets":[MarketPair::Openai,MarketPair::Anth],"shared_market_feeds":crate::market_feed::diagnostics().await}}))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddAccount {id:String,confirmation:String,market:MarketPair,label:String}
+async fn add_account(State(host):State<Host>,h:HeaderMap,Json(r):Json<AddAccount>)->Json<Value> {
+    let result=async {
+        local(&h,host.port)?;
+        ensure!(h.get("x-inventory-token").and_then(|v|v.to_str().ok())==Some(host.token.as_str()),"请刷新账户管理页面后重试");
+        ensure!(r.confirmation=="CREATE_ACCOUNT_PROFILE","请确认新增独立账户");
+        let profile=AccountProfile::new(r.market,r.label,&r.id)?;
+        let _catalog=host.catalog.lock().await;
+        let mut profiles=host.profiles();
+        if let Some(existing)=profiles.iter().find(|p|p.id==profile.id) {ensure!(existing==&profile,"重复请求的账户信息不一致");return Ok(profile.descriptor());}
+        let paths=ProfilePaths::for_profile(&host.root,profile.clone());
+        ensure!(!paths.accounts.exists() && !paths.vault.exists() && !paths.database.exists(),"新账户目录已存在数据，拒绝覆盖");
+        profiles.push(profile.clone());
+        account_profiles::save(&host.root,&profiles)?;
+        host.sessions.write().unwrap().push(ProfileSession::new(paths,None));
+        Ok::<_,anyhow::Error>(profile.descriptor())
+    }.await;
+    match result {Ok(profile)=>Json(json!({"ok":true,"data":{"profile":profile}})),Err(e)=>Json(json!({"ok":false,"error":e.to_string()}))}
 }
 fn local(headers: &HeaderMap, port: u16) -> Result<()> {
     let host = headers.get("host").and_then(|v|v.to_str().ok()).context("缺少本机地址")?;
@@ -57,9 +121,10 @@ fn local(headers: &HeaderMap, port: u16) -> Result<()> {
     }
     Ok(())
 }
-async fn health(State(app): State<App>, h: HeaderMap) -> Json<Value> {
-    if local(&h, app.port).is_err() { return Json(json!({"ok":false})); }
-    Json(json!({"application":"openai-paired-trader","version":env!("CARGO_PKG_VERSION"),"build":crate::build_info::current(),"data_dir":app.root.to_string_lossy(),"sleep_prevention":cfg!(windows),"entropy_info":crate::hyperliquid::info_rate_diagnostics()}))
+async fn health(State(host): State<Host>, h: HeaderMap) -> Json<Value> {
+    if local(&h, host.port).is_err() { return Json(json!({"ok":false})); }
+    Json(json!({"application":"openai-paired-trader","version":env!("CARGO_PKG_VERSION"),"build":crate::build_info::current(),"data_dir":host.root.to_string_lossy(),"sleep_prevention":cfg!(windows),"entropy_info":crate::hyperliquid::info_rate_diagnostics(),
+        "profiles":host.profiles().iter().map(AccountProfile::descriptor).collect::<Vec<_>>(),"shared_market_feeds":crate::market_feed::diagnostics().await}))
 }
 async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
     if local(&h, app.port).is_err() { return Json(json!({"ok":false,"error":"只允许本机访问"})); }
@@ -75,7 +140,7 @@ async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
         "notifications":{"saved":notification_path(&app).exists(),"unlocked":s.notification.is_some(),"config":s.notification.as_ref().map(|c|c.public()),"execution_grace_ms":inventory::alerts::EXECUTION_GRACE_MS,"delivery":s.service.as_ref().map(|v|v.notifications.status())},
         "residual_recovery_version":inventory::execution::RESIDUAL_RECOVERY_VERSION,
         "recovery_policy":inventory::execution::recovery_policy(),
-        "profile":{"market":app.paths.market,"mode":"live"},
+        "profile":app.paths.profile.descriptor(),
         "strategy":s.settings.as_ref().map(|x|&x.strategy),"sleep_prevention":cfg!(windows),
         "data_dir":app.root.to_string_lossy()
     }}))
@@ -113,15 +178,10 @@ async fn action(State(app): State<App>, h: HeaderMap, Json(request): Json<Reques
 }
 async fn other_strategies(app:&App)->Result<Vec<InventoryConfig>> {
     let mut out=Vec::new();
-    for market in [MarketPair::Openai,MarketPair::Anth].into_iter().filter(|m|*m!=app.paths.market) {
-        let paths=ProfilePaths::new(&app.root,market);
-        if let Some(s)=paths.load()? {out.push(paths.bound_strategy(&s.strategy)?);}
-    }
-    for other in app.sessions.iter().filter(|x|!Arc::ptr_eq(x,&app.inner)) {
-        if let Some(s)=&other.lock().await.settings {
-            let paths=ProfilePaths::new(&app.root,s.strategy.market);
-            out.push(paths.bound_strategy(&s.strategy)?);
-        }
+    let slots=app.sessions.read().unwrap().clone();
+    for other in slots.iter().filter(|x|!Arc::ptr_eq(&x.inner,&app.inner)) {
+        if let Some(s)=other.paths.load()? {out.push(other.paths.bound_strategy(&s.strategy)?);}
+        if let Some(s)=&other.inner.lock().await.settings {out.push(other.paths.bound_strategy(&s.strategy)?);}
     }
     Ok(out)
 }
@@ -137,8 +197,8 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
     if matches!(r.command.as_str(),"pause"|"stop"|"close_all"|"confirm_rollback_recovery") {
         let command=match r.command.as_str(){"pause"=>Control::Pause,"stop"=>Control::Stop,
             "confirm_rollback_recovery"=>{
-                ensure!(r.confirmation==format!("CONFIRM_{}_ROLLBACK_RECOVERY",app.paths.market.id().to_uppercase()),
-                    "请明确确认本标的人工恢复；核对通过后仍需单独启动策略");
+                ensure!(r.confirmation==app.paths.profile.recovery_confirmation(),
+                    "请明确确认当前账户人工恢复；核对通过后仍需单独启动策略");
                 Control::ConfirmRollbackRecovery
             },_=>{
             ensure!(r.confirmation=="CLOSE_ALL_POSITIONS","请确认平掉全部持仓");Control::CloseAll}};
@@ -163,12 +223,12 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
             crate::lighter_runtime::LighterApiCredential::from_hex(index,key_index,&r.lighter_key).context("Lighter API 私钥格式错误")?;
             let mut strategy: InventoryConfig = serde_json::from_str(include_str!("../config/strategy.example.json"))?;
             strategy.market=app.paths.market;
-            if strategy.market==MarketPair::Anth {strategy.lighter_account="anth:live:lighter".into();strategy.entropy_account="anth:live:entropy".into();}
+            if !app.paths.profile.is_legacy() || strategy.market==MarketPair::Anth {strategy.lighter_account=app.paths.profile.alias("lighter");strategy.entropy_account=app.paths.profile.alias("entropy");}
             strategy.entropy_address=r.entropy_address.clone(); strategy.lighter_account_index=Some(index);strategy.lighter_address=Some(r.lighter_address.clone());
             let others=other_strategies(app).await?;
             crate::profiles::reject_shared_live_accounts(&strategy,&others)?;
-            let entropy_secret=if strategy.market==MarketPair::Anth {"anth:live:entropy:trading"}else{"entropy_trading"};
-            let lighter_secret=if strategy.market==MarketPair::Anth {"anth:live:lighter:trading"}else{"lighter_trading"};
+            let entropy_secret=if app.paths.profile.is_legacy() && strategy.market==MarketPair::Openai {"entropy_trading".into()}else{format!("{}:trading",app.paths.profile.alias("entropy"))};
+            let lighter_secret=if app.paths.profile.is_legacy() && strategy.market==MarketPair::Openai {"lighter_trading".into()}else{format!("{}:trading",app.paths.profile.alias("lighter"))};
             let mut accounts=AppConfig::default(); accounts.secrets.vault_path=app.paths.vault.to_string_lossy().into_owned();accounts.secrets.allow_env_fallback=false;
             accounts.accounts=vec![serde_json::from_value(json!({"account_id":strategy.entropy_account,"address":strategy.entropy_address,"secret_id":entropy_secret}))?];
             let settings=Settings{accounts,strategy}; settings.strategy.validate()?; settings.strategy.validate_live_identity()?;
@@ -192,7 +252,7 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
         "preflight" | "launch" => {
             ensure!(s.service.is_none(), "账户已加载，请查看当前状态");
             let mut cfg=s.settings.clone().context("请先配置账户或导入迁移数据")?;
-            crate::profiles::ProfileId::new(app.paths.market,Mode::Live).validate(&cfg.strategy)?;
+            app.paths.profile.validate_config(&cfg.strategy)?;
             ensure!(app.paths.load()?.is_some_and(|disk|serde_json::to_value(disk).ok()==serde_json::to_value(&cfg).ok()),"配置文件已改变；请重新加载并核对绑定");
             let bound_strategy=app.paths.bound_strategy(&cfg.strategy)?;
             let others=other_strategies(app).await?;
@@ -216,32 +276,30 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
             let lease=app.lease.clone();let check: Arc<dyn Fn()->bool+Send+Sync>=Arc::new(move||lease.load(Ordering::SeqCst));
             let workers=workers.map(|inner|Box::new(inventory::venue::GuardedBackend{inner,lease:check.clone()}) as Box<dyn inventory::venue::VenueBackend>);
             let result=InventoryService::launch(cfg.strategy,app.paths.database.as_path(),false,Some(workers)).await;
-            match result {Ok(service)=>{service.notifications.configure(s.notification.clone());s.service=Some(service)},Err(error)=>{app.lease.store(false,Ordering::SeqCst);return Err(error.context("账本加载失败，请检查迁移文件是否完整"));}}
+            match result {Ok(service)=>{service.notifications.set_account_profile(app.paths.profile.clone());service.notifications.configure(s.notification.clone());s.service=Some(service)},Err(error)=>{app.lease.store(false,Ordering::SeqCst);return Err(error.context("账本加载失败，请检查迁移文件是否完整"));}}
         }
         "start" => {
-            ensure!(r.confirmation==if app.paths.market==MarketPair::Openai {inventory::config::LIVE_STRATEGY_CONFIRMATION}else{"START_ANTH_LIVE_STRATEGY"},"请明确确认启动实盘策略");
+            ensure!(r.confirmation==app.paths.profile.start_confirmation(),"请明确确认启动实盘策略");
             s.service.as_ref().context("请先加载账户")?.control(r.id.clone(),Control::StartLiveStrategy).await?;
         }
         "lock" | "quit" => {
+            let slots=app.sessions.read().unwrap().clone();
+            // Validate ALL accounts before stopping any service; one busy account blocks the exit.
             if r.command=="quit" {
                 ensure!(r.confirmation=="QUIT_PROGRAM","请确认退出后台程序");
-                for other in app.sessions.iter().filter(|x|!Arc::ptr_eq(x,&app.inner)) {
-                    let mut other=other.lock().await;
-                    if let Some(service)=&other.service {
-                        let state=service.status().snapshot;
-                        ensure!(state.pending.is_none()&&state.live_orphan.is_none()&&state.status==Status::Stopped,
-                            "另一标的仍在运行；请分别停止两个策略并等待双腿操作结束");
-                        service.control(format!("{}-other",r.id),Control::Shutdown).await?;
-                        other.service=None;other.password=None;other.notification=None;
-                    }
+                for other in slots.iter().filter(|x|!Arc::ptr_eq(&x.inner,&app.inner)) {
+                    if let Some(service)=&other.inner.lock().await.service {ensure_stopped_for_exit(&service.status().snapshot)?;}
                 }
             }
-            if let Some(service)=&s.service {
-                let state=service.status().snapshot;
-                ensure!(state.pending.is_none()&&state.live_orphan.is_none()&&state.status==Status::Stopped,
-                    "请先停止交易并等待未完成的双腿处理结束，再锁定或退出");
-                service.control(r.id.clone(),Control::Shutdown).await?;
+            if let Some(service)=&s.service {ensure_stopped_for_exit(&service.status().snapshot)?;}
+            if r.command=="quit" {
+                for other in slots.iter().filter(|x|!Arc::ptr_eq(&x.inner,&app.inner)) {
+                    let mut session=other.inner.lock().await;
+                    if let Some(service)=&session.service {service.control(format!("{}-{}",r.id,other.paths.profile.id),Control::Shutdown).await?;}
+                    other.lease.store(false,Ordering::SeqCst);session.service=None;session.password=None;session.notification=None;
+                }
             }
+            if let Some(service)=&s.service {service.control(r.id.clone(),Control::Shutdown).await?;}
             app.lease.store(false,Ordering::SeqCst);s.service=None;s.password=None;s.notification=None;
             if r.command=="quit" {
                 tokio::spawn(async {tokio::time::sleep(std::time::Duration::from_millis(300)).await;std::process::exit(0);});
@@ -251,15 +309,19 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
     }
     Ok(json!({"accepted":true}))
 }
+fn ensure_stopped_for_exit(state:&Snapshot)->Result<()> {
+    ensure!(state.pending.is_none() && state.live_orphan.is_none() && state.status==Status::Stopped,
+        "请先停止所有已加载账户的策略并等待双腿操作结束，再锁定或退出后台程序");Ok(())
+}
 fn notification_path(app:&App)->PathBuf {app.paths.vault.with_file_name("feishu.vault")}
 async fn notification_action(app:&App,r:&Request)->Result<Value> {
     if r.command=="test_notifications" {
         let cfg=app.inner.lock().await.notification.clone().context("请先解锁并保存飞书通知配置")?;
-        crate::notifications::test_message(&cfg,app.paths.market).await?;
+        crate::notifications::test_profile_message(&cfg,&app.paths.profile).await?;
         return Ok(json!({"accepted":true,"message":"飞书已接受测试消息，请确认手机收到；本次没有下单"}));
     }
     let _serial=app.notification_serial.lock().await;
-    let password=app.inner.lock().await.password.clone().context("请先解锁本标的密钥库")?;
+    let password=app.inner.lock().await.password.clone().context("请先解锁当前账户密钥库")?;
     let path=notification_path(app);
     let setting=if r.command=="save_notifications" {
         let cfg=crate::notifications::FeishuSettings{app_id:r.feishu_app_id.trim().into(),app_secret:r.feishu_app_secret.trim().into(),receive_id_type:r.feishu_receive_id_type.clone(),receive_id:r.feishu_receive_id.trim().into()};
@@ -272,17 +334,17 @@ async fn notification_action(app:&App,r:&Request)->Result<Value> {
             Ok::<_,anyhow::Error>(cfg)
         }).await.context("飞书配置保存任务失败")??)
     } else {
-        ensure!(r.confirmation=="DISABLE_NOTIFICATIONS","请确认关闭本标的飞书通知");
+        ensure!(r.confirmation=="DISABLE_NOTIFICATIONS","请确认关闭当前账户飞书通知");
         if path.exists(){std::fs::remove_file(path).context("关闭飞书通知失败")?;}
         None
     };
     let mut s=app.inner.lock().await;
     if !s.password.as_ref().is_some_and(|p|p.as_str()==password.as_str()) {
-        return Ok(json!({"accepted":true,"message":"通知已保存；本标的已锁定，请重新解锁启用"}));
+        return Ok(json!({"accepted":true,"message":"通知已保存；当前账户已锁定，请重新解锁启用"}));
     }
     s.notification=setting;
     if let Some(service)=&s.service {service.notifications.configure(s.notification.clone());}
-    Ok(json!({"accepted":true,"message":"本标的通知配置已更新；保存后请发送测试通知，并在手机确认收到"}))
+    Ok(json!({"accepted":true,"message":"当前账户通知配置已更新；保存后请发送测试通知，并在手机确认收到"}))
 }
 #[cfg(test)]
 mod tests {
@@ -296,7 +358,7 @@ mod tests {
     }
     #[tokio::test]
     async fn control_without_session_token_cannot_create_files_or_launch() {
-        let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None})),token:Arc::new("secret-test-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),MarketPair::Openai),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(vec![])};
+        let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None})),token:Arc::new("secret-test-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),MarketPair::Openai),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(vec![]))};
         let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
         let mut r=Request::default();r.command="launch".into();r.id="test".into();
         assert!(handle(&app,&h,&r).await.is_err());assert!(!app.lease.load(Ordering::SeqCst));
@@ -304,7 +366,7 @@ mod tests {
     }
     #[test]
     fn anth_control_page_and_monitor_target_only_anth() {
-        let html=control_page(MarketPair::Anth);
+        let html=control_page(&AccountProfile::legacy(MarketPair::Anth),&[]);
         assert!(html.contains("fetch('/api/anth-inventory'"));
         assert!(html.contains("fetch('/api/anth-portable'"));
         assert!(!html.contains("fetch('/api/openai-inventory'"));
@@ -319,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn manual_recovery_requires_profile_confirmation_token_and_loaded_service() {
         for market in [MarketPair::Openai,MarketPair::Anth] {
-            let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None})),token:Arc::new("synthetic-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),market),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(vec![])};
+            let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None})),token:Arc::new("synthetic-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),market),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(vec![]))};
             let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
             let mut r=Request::default();r.command="confirm_rollback_recovery".into();r.id="manual-ack".into();
             assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("刷新页面"));
@@ -334,4 +396,62 @@ mod tests {
         }
     }
 
+}
+
+#[cfg(test)]
+mod account_host_tests {
+    use super::*;
+    fn host()->Host {
+        let root=Arc::new(std::env::temp_dir().join(format!("cpa-host-{}",uuid::Uuid::new_v4())));
+        let sessions=account_profiles::load(&root).unwrap().into_iter().map(|p|ProfileSession::new(ProfilePaths::for_profile(&root,p),None)).collect();
+        Host{root,port:18794,catalog:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(sessions)),token:Arc::new("synthetic-management".into())}
+    }
+    fn headers(token:&str)->HeaderMap {let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());h.insert("x-inventory-token",token.parse().unwrap());h}
+    fn request(id:&str,label:&str)->AddAccount {AddAccount{id:id.into(),label:label.into(),market:MarketPair::Openai,confirmation:"CREATE_ACCOUNT_PROFILE".into()}}
+    #[tokio::test]
+    async fn create_is_authenticated_atomic_idempotent_and_survives_host_restart() {
+        let host=host();let id=uuid::Uuid::new_v4().to_string();
+        for token in ["",host.app("openai").unwrap().token.as_str()] {
+            assert_eq!(add_account(State(host.clone()),headers(token),Json(request(&id,"second"))).await.0["ok"],false);assert!(!host.root.exists());
+        }
+        let h=headers(&host.token);let result=add_account(State(host.clone()),h.clone(),Json(request(&id,"second"))).await.0;
+        assert_eq!(result["ok"],true);let pid=result["data"]["profile"]["id"].as_str().unwrap();
+        assert_eq!(host.profiles().len(),3);assert!(host.app(pid).unwrap().paths.load().unwrap().is_none());
+        assert_eq!(add_account(State(host.clone()),h.clone(),Json(request(&id,"second"))).await.0,result);
+        assert_eq!(add_account(State(host.clone()),h.clone(),Json(request(&id,"different"))).await.0["ok"],false);
+        assert_eq!(add_account(State(host.clone()),h.clone(),Json(request(&uuid::Uuid::new_v4().to_string(),"second"))).await.0["ok"],false);
+        let mut cross=h;cross.insert("origin","https://evil.example".parse().unwrap());
+        assert_eq!(account_list(State(host.clone()),cross.clone()).await.0["ok"],false);
+        assert_eq!(add_account(State(host.clone()),cross,Json(request(&uuid::Uuid::new_v4().to_string(),"third"))).await.0["ok"],false);
+        assert_eq!(account_profiles::load(&host.root).unwrap(),host.profiles());
+        assert!(router(host.root.as_ref().clone(),18794).is_ok());
+        assert!(host.app("../openai").is_err());std::fs::remove_dir_all(host.root.as_ref()).unwrap();
+    }
+    #[tokio::test]
+    async fn same_market_controls_tokens_vaults_confirmations_and_views_are_account_scoped() {
+        let host=host();let id=uuid::Uuid::new_v4().to_string();
+        let result=add_account(State(host.clone()),headers(&host.token),Json(request(&id,"second"))).await.0;
+        let first=host.app("openai").unwrap();let second=host.app(result["data"]["profile"]["id"].as_str().unwrap()).unwrap();
+        assert!(!Arc::ptr_eq(&first.inner,&second.inner));assert!(!Arc::ptr_eq(&first.lease,&second.lease));assert_ne!(notification_path(&first),notification_path(&second));
+        first.inner.lock().await.password=Some(Zeroizing::new("synthetic-private-password".into()));
+        for (target,source) in [(&first,&second),(&second,&first)] {
+            for command in ["start","stop","close_all","launch","lock","quit","save_credentials","save_notifications","confirm_rollback_recovery"] {
+                let mut r=Request::default();r.command=command.into();r.id="test".into();
+                assert!(handle(target,&headers(&source.token),&r).await.unwrap_err().to_string().contains("刷新页面"));
+            }
+            let mut r=Request::default();r.command="start".into();r.id="test".into();r.confirmation=source.paths.profile.start_confirmation();
+            assert!(handle(target,&headers(&target.token),&r).await.unwrap_err().to_string().contains("明确确认"));
+        }
+        assert_eq!(status(State(second.clone()),headers("")).await.0["data"]["vault_unlocked"],false);
+        assert_eq!(status(State(first.clone()),headers("")).await.0["data"]["vault_unlocked"],true);
+        let page=control_page(&second.paths.profile,&host.profiles());assert!(!page.contains("fetch('/api/portable'"));assert!(page.contains(&second.paths.profile.start_confirmation()));
+        let monitor=crate::monitor::account_page(&second.paths.profile,&host.profiles());assert!(monitor.contains(&second.paths.profile.inventory_api()));assert!(monitor.contains("\"id\":"));
+        assert!(!page.contains("synthetic-private-password"));std::fs::remove_dir_all(host.root.as_ref()).unwrap();
+    }
+    #[test]
+    fn whole_program_exit_requires_all_profiles_stopped_and_reconciled() {
+        let c=serde_json::from_str(include_str!("../tests/fixtures/inventory/live-strategy.json")).unwrap();
+        let mut state=Snapshot::new(c).unwrap();state.status=Status::Stopped;assert!(ensure_stopped_for_exit(&state).is_ok());
+        for status in [Status::Running,Status::NeedsAttention,Status::Recovering] {state.status=status;assert!(ensure_stopped_for_exit(&state).is_err());}
+    }
 }

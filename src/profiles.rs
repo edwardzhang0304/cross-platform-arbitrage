@@ -45,19 +45,19 @@ impl ProfileId {
 pub fn reject_shared_live_accounts(candidate: &InventoryConfig, others: &[InventoryConfig]) -> Result<()> {
     if candidate.mode != Mode::Live { return Ok(()); }
     candidate.validate_live_identity()?;
-    for other in others.iter().filter(|c| c.mode == Mode::Live && c.market != candidate.market) {
+    for other in others.iter().filter(|c| c.mode == Mode::Live) {
         other.validate_live_identity()?;
         ensure!(candidate.lighter_account_index != other.lighter_account_index,
-            "Lighter account index is already bound to another market");
+            "Lighter account index is already bound to another account profile");
         let addresses = |c: &InventoryConfig| {
             let mut a = vec![c.entropy_address.to_ascii_lowercase()];
             if let Some(l) = &c.lighter_address { a.push(l.to_ascii_lowercase()); }
             a
         };
         let a = addresses(candidate); let b = addresses(other);
-        ensure!(!a.iter().any(|x| b.contains(x)), "wallet is already bound to another market");
+        ensure!(!a.iter().any(|x| b.contains(x)), "wallet is already bound to another account profile");
         ensure!(candidate.lighter_account != other.lighter_account && candidate.entropy_account != other.entropy_account,
-            "account alias is already bound to another market");
+            "account alias is already bound to another account profile");
     }
     Ok(())
 }

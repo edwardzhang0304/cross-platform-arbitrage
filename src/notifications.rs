@@ -39,6 +39,7 @@ pub struct DeliveryStatus {
 #[derive(Clone,Default)]
 pub struct NotificationHandle {
     settings:Arc<RwLock<Option<FeishuSettings>>>,
+    account_profile:Arc<RwLock<Option<crate::account_profiles::AccountProfile>>>,
     status:Arc<RwLock<DeliveryStatus>>,
     emergency:Arc<RwLock<Option<MemoryAlert>>>,
     persistence_reported:Arc<AtomicBool>,
@@ -47,6 +48,13 @@ pub struct NotificationHandle {
 #[derive(Clone)]
 struct MemoryAlert {id:String,body:String,attempt:u32,next_ms:u64}
 impl NotificationHandle {
+    pub fn set_account_profile(&self,profile:crate::account_profiles::AccountProfile) {
+        *self.account_profile.write().unwrap()=Some(profile);
+    }
+    fn scoped_body(&self,body:&str)->String {
+        self.account_profile.read().unwrap().as_ref().map_or_else(||body.to_owned(),|p|format!("{body}\n账户：{}",p.notification_label()))
+    }
+
     pub fn set_market_source(&self, source: impl Fn() -> alerts::MarketObservation + Send + Sync + 'static) {
         *self.market_source.write().unwrap() = Some(Arc::new(source));
     }
@@ -109,7 +117,7 @@ impl NotificationHandle {
         let cfg=self.settings.read().unwrap().clone();
         let (Some(mut alarm),Some(cfg))=(alarm,cfg) else{return};
         if crate::domain::now_ms()<alarm.next_ms{return;}
-        if sender.send(&cfg,&alarm.id,&alarm.body).await.is_ok() {
+        if sender.send(&cfg,&alarm.id,&self.scoped_body(&alarm.body)).await.is_ok() {
             *self.emergency.write().unwrap()=None;
             self.status.write().unwrap().last_sent_ms=Some(crate::domain::now_ms());
         } else {
@@ -142,7 +150,8 @@ impl NotificationHandle {
         let body=if dropped>0 {format!("{body}\n通知队列曾超限，已丢弃最旧 {dropped} 条通知；详情请检查本机账本。")}else{body};
         // Token acquisition may be slow. Recheck cancellation immediately before
         // the message POST, with no SQL lock held over the network request.
-        let result=sender.send_checked(&settings,&id,&body,|| {
+        let wire_body=self.scoped_body(&body);
+        let result=sender.send_checked(&settings,&id,&wire_body,|| {
             // Consult the live feed again after token acquisition, not the
             // trading actor's possibly delayed view. Recovery retracts a queue
             // entry even if the sampling task has not run yet this second.
@@ -239,6 +248,12 @@ pub async fn test_message(settings:&FeishuSettings,market:crate::openai_inventor
     FeishuSender::new()?.send(settings,&uuid::Uuid::new_v4().to_string(),
         &format!("【多平台套利 · 测试通知】\n{} 实盘异常通知测试。此消息不会触发任何交易。",market.id().to_uppercase())).await
         .map_err(|_|anyhow::anyhow!("飞书测试失败；检查网络、机器人是否已发布、接收人可用范围、发送权限及接收 ID"))
+}
+
+pub async fn test_profile_message(settings:&FeishuSettings,profile:&crate::account_profiles::AccountProfile)->Result<()> {
+    FeishuSender::new()?.send(settings,&uuid::Uuid::new_v4().to_string(),
+        &format!("【多平台套利 · 测试通知】\n账户：{}\n此消息不会触发任何交易。",profile.notification_label())).await
+        .map_err(|_|anyhow::anyhow!("飞书测试失败；检查网络、机器人权限和接收 ID"))
 }
 
 #[cfg(test)]

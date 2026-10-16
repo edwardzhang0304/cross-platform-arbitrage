@@ -1,6 +1,6 @@
 # Cross-Platform Arbitrage · 多平台套利
 
-同一套 Rust 策略核心支持 Lighter RH 与 Entropy 的 OPENAI、ANTH 配对交易，Windows 用于实盘，Mac 用于模拟。两个标的分别使用独立账户、配置和账本；安装包只包含程序和公开模板，不含个人账户文件。
+同一套 Rust 策略核心支持 Lighter RH 与 Entropy 的 OPENAI、ANTH 配对交易，Windows 用于实盘，Mac 用于模拟。同一后台支持多套 OPENAI、ANTH 独立账户，同标的共享公共行情，每套账户独立保存配置、密钥和账本；安装包只包含程序和公开模板，不含个人账户文件。
 
 源码仓库：[edwardzhang0304/cross-platform-arbitrage](https://github.com/edwardzhang0304/cross-platform-arbitrage)。原仓库名为 `openai-paired-trader`。
 
@@ -8,11 +8,15 @@
 
 1. 从本仓库成功的 GitHub Actions 运行中下载 `verified-windows`，使用其中的 `Cross-Platform-Arbitrage-Windows-x64.zip`。目前只交付 Windows 包；发布前验证 Windows live/paper 的同一核心、参数和决策轨迹。
 2. **解压整个文件夹**到本机，例如 `D:\Cross-Platform-Arbitrage`。不要在压缩包内直接运行。
-3. 双击 `Cross-Platform-Arbitrage.exe`，会打开 `http://127.0.0.1:18794`。
-4. 首次使用填两个平台的公开账户信息和**交易 API 私钥**，设定密钥库密码。已有 Mac 持仓请先按下面的迁移说明转移完整账本。
+3. 双击 `Cross-Platform-Arbitrage.exe`，会打开 `http://127.0.0.1:18794/accounts` 账户管理页。
+4. 在账户管理选择已有账户，或添加独立账户并选择标的；首次使用填两个平台的公开账户信息和**交易 API 私钥**，设定密钥库密码。已有 Mac 持仓请先按下面的迁移说明转移完整账本。
 5. 解锁 → 只读检查 → 确认旧电脑程序已关闭 → 加载账户和账本 → 查看实盘监控 → 本人点击启动实盘策略。
 
 用户电脑不需要安装 Rust、Python、Node 或 Visual C++ 运行库。目标系统为 Windows 10/11 **x64**（Intel/AMD）；ARM64 不作为本版本的已验证目标。
+
+## 多账户
+
+支持两套 OPENAI 加一套 ANTH，以及继续添加同标的独立账户（最多 32 套）。同标的复用公共行情连接和缓存；私有持仓、成交、资金费、账本及控制权限独立。原账户数据路径和链接保留。新交易标的仍须接入并验证。详见 [rc19 多账户、数据路径与升级步骤](docs/rc19多账户与共享行情.md)。
 
 ## 后台运行和不睡眠
 

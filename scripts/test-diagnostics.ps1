@@ -1,5 +1,7 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 $Root=Join-Path $env:RUNNER_TEMP ('cpa-diagnostic-fixture-'+[guid]::NewGuid().ToString())
+$ExtraId='p-'+('1'*32)
+$ProfileIds=@('openai','anth',$ExtraId)
 $Data=Join-Path $Root '中文路径\原账本数据'
 New-Item -ItemType Directory -Path $Data -Force | Out-Null
 try {
@@ -14,7 +16,7 @@ try {
   $Text=Get-Content (Join-Path $Root 'report/report.json') -Raw -Encoding utf8
   $Report=$Text | ConvertFrom-Json
   if ($Text -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key|vault-secret|profile-secret') { throw 'Diagnostic leaked synthetic private content' }
-  foreach ($Market in @('openai','anth')) {
+  foreach ($Market in $ProfileIds) {
     $Ledger=$Report.ledgers.$Market
     if ($Ledger.market_transport.Count -ne 2 -or $Ledger.market_transport[1].reconnect_count -ne 9 -or $Ledger.market_transport[1].history[0].detail -notmatch 'L2 silent') { throw 'Offline transport diagnosis missing' }
     if ($Ledger.market_alerts.schema -ne 2 -or $Ledger.market_alerts.evidence.unavailable_ms[0] -ne 50000 -or $Ledger.market_alerts.history[0].kind -ne 'delivered') { throw 'Market alert evidence/history missing' }
@@ -35,6 +37,7 @@ try {
     if ($Ledger.snapshot.reason -notmatch 'account worker request deadline exceeded') { throw 'Useful diagnostic cause was lost' }
     if ($Ledger.snapshot.pending.requests.first.order_ref -ne $Ledger.snapshot.fills_in_operation_window[0].order_ref) { throw 'Opaque order linkage was lost' }
   }
+  if ($Report.profiles.Count -ne 3 -or $Report.ledgers.$ExtraId.snapshot.closed_groups -ne 99) { throw 'Offline same-market account discovery or isolation failed' }
   foreach ($Path in $Before.Keys) { if ((Get-FileHash $Path -Algorithm SHA256).Hash -ne $Before[$Path]) { throw 'Read-only collector modified input' } }
   if (@(Get-ChildItem (Join-Path $Root 'report') -File).Count -ne 2) { throw 'Unexpected raw diagnostic attachments' }
   $OnlineOutput=Join-Path $Root 'online-output'
@@ -51,6 +54,9 @@ try {
     if ($OnlineText -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key') { throw 'Live API redaction failed' }
     $OnlineReport=$OnlineText | ConvertFrom-Json
     if ($OnlineReport.health.entropy_info.limit -ne 900 -or $OnlineReport.health.entropy_info.local_deferrals -ne 7) { throw 'Info limiter diagnostics were lost' }
+    if ($OnlineReport.observations.Count -ne 3 -or $OnlineReport.health.shared_market_feeds[0].consumers -ne 2) { throw 'Online multi-account discovery or shared feed diagnostics failed' }
+    $Extra=$OnlineReport.observations | Where-Object { $_.profile_id -eq $ExtraId }
+    if ($Extra.market -ne 'openai' -or $Extra.snapshot.closed_groups -ne 99) { throw 'Same-market account observation mixed up' }
     foreach ($Observation in $OnlineReport.observations) {
       if ($Observation.market_transport[1].source -ne 'rest' -or $Observation.market_transport[1].rest_books -ne 60 -or $Observation.market_transport[1].last_error -notmatch 'connect/TLS failed') { throw 'Online transport diagnosis missing' }
       if (!$Observation.available -or !$Observation.loaded -or $Observation.snapshot.held_groups -ne 7 -or $Observation.accounts.Count -ne 2) { throw 'Loaded-account API extraction failed' }
@@ -70,7 +76,7 @@ try {
     $LockedZip=Get-ChildItem $LockedOutput -Filter '*.zip' | Select-Object -First 1
     Expand-Archive $LockedZip.FullName (Join-Path $LockedOutput 'report')
     $LockedReport=Get-Content (Join-Path $LockedOutput 'report/report.json') -Raw -Encoding utf8 | ConvertFrom-Json
-    foreach ($Market in @('openai','anth')) {
+    foreach ($Market in $ProfileIds) {
       if ($null -ne $LockedReport.ledgers.$Market.snapshot -or !$LockedReport.ledgers.$Market.error) { throw 'Locked ledger was mistaken for a valid snapshot' }
     }
   } finally { if (!$Lock.HasExited) { Stop-Process -Id $Lock.Id -Force } }

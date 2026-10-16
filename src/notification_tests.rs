@@ -86,6 +86,8 @@ async fn failed_delivery_retries_same_uuid_and_recovers_after_reopening_queue() 
     let mut db=rusqlite::Connection::open(&path).unwrap();db.execute_batch(alerts::SCHEMA).unwrap();
     let id={let tx=db.transaction().unwrap();let id=alerts::enqueue(&tx,1,"synthetic exception").unwrap();tx.commit().unwrap();id};drop(db);
     let handle=NotificationHandle::default();handle.configure(Some(config()));
+    let profile=crate::account_profiles::AccountProfile::new(crate::openai_inventory::MarketPair::Openai,"second OPENAI".into(),&uuid::Uuid::new_v4().to_string()).unwrap();
+    handle.set_account_profile(profile.clone());
     handle.deliver_once(&path,&mut sender).await.unwrap();
     assert_eq!(handle.status().pending,1);assert!(handle.status().error.is_some());
     {let db=alerts::open_delivery(&path).unwrap();let attempts:u32=db.query_row("SELECT attempts FROM notification_outbox",[],|r|r.get(0)).unwrap();assert_eq!(attempts,1);db.execute("UPDATE notification_outbox SET next_ms=0",[]).unwrap();}
@@ -95,7 +97,8 @@ async fn failed_delivery_retries_same_uuid_and_recovers_after_reopening_queue() 
     assert_eq!(handle.status().pending,0);assert!(handle.status().last_sent_ms.is_some());assert!(handle.status().error.is_none());
     let records=received.lock().unwrap();assert_eq!(records.len(),2);assert_eq!(records[0]["uuid"],id);assert_eq!(records[1]["uuid"],id);
     assert_eq!(records[1]["receive_id"],"ou_synthetic_person");assert_eq!(records[1]["msg_type"],"text");
-    assert!(records[1]["content"].is_string());drop(records);
+    assert!(records[1]["content"].is_string());
+    let content:Value=serde_json::from_str(records[1]["content"].as_str().unwrap()).unwrap();assert!(content["text"].as_str().unwrap().contains(&profile.notification_label()));drop(records);
     assert_eq!(tokens.load(Ordering::SeqCst),2);
     task.abort();std::fs::remove_dir_all(dir).unwrap();
 }
@@ -227,4 +230,19 @@ async fn rc15_monitor_samples_live_books_without_actor_or_http_progress() {
      let state:Value=serde_json::from_str(&raw).unwrap();assert_eq!(state["evidence"]["current_bad"],json!([false,false]));
      assert_eq!(db.query_row("SELECT COUNT(*) FROM notification_outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);}
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn same_instrument_notification_handles_never_share_configuration_or_account_label() {
+    use crate::{account_profiles::AccountProfile,openai_inventory::MarketPair};
+    let first=NotificationHandle::default();let second=NotificationHandle::default();
+    first.set_account_profile(AccountProfile::legacy(MarketPair::Openai));
+    let p=AccountProfile::new(MarketPair::Openai,"OPENAI second".into(),&uuid::Uuid::new_v4().to_string()).unwrap();
+    second.set_account_profile(p.clone());first.configure(Some(config()));
+    assert!(first.status().enabled);assert!(!second.status().enabled);
+    let body="【多平台套利 · 行情持续异常】\nOPENAI";
+    assert!(first.scoped_body(body).starts_with(body));assert!(second.scoped_body(body).starts_with(body));
+    assert!(!first.scoped_body(body).contains(&p.id));assert!(second.scoped_body(body).contains(&p.id));
+    second.report_persistence_failure(MarketPair::Openai,crate::openai_inventory::Mode::Live);
+    assert!(first.emergency.read().unwrap().is_none());assert!(second.emergency.read().unwrap().is_some());
 }

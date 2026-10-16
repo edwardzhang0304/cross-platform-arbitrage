@@ -1,0 +1,24 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>账户管理 · Cross-Platform Arbitrage</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:16px system-ui;background:#f5f5f7;color:#1d1d1f}main{max-width:1040px;margin:36px auto;padding:0 22px 40px}h1{font-size:28px;margin:0 0 12px}h2{font-size:20px;margin:0 0 14px;overflow-wrap:anywhere}p{line-height:1.65}.muted{color:#666}#accounts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;margin:24px 0}article,section{background:#fff;border:1px solid #e0e0e6;border-radius:16px;padding:24px}article p{margin:9px 0}.links{display:flex;gap:14px;flex-wrap:wrap;margin-top:18px}a{color:#087e8b}button,input,select{font:inherit;border:1px solid #bbb;border-radius:8px;padding:10px 14px}button{background:#087e8b;color:white;border-color:#087e8b;cursor:pointer}button:disabled{opacity:.5}label{display:block;margin:14px 0 7px}input{width:100%;max-width:420px}#notice{min-height:26px;color:#087e8b}#feed{font-size:14px}summary{cursor:pointer;font-weight:600}.badge{display:inline-block;padding:3px 10px;background:#eef5f7;color:#246370;border-radius:20px;font-size:13px}
+</style><main><h1>账户管理</h1><p class="muted">每套账户独立管理 Lighter RH 与 Entropy 的配对仓位。同一标的共用公共行情，账户、订单和账本分别保存。</p>
+<p id="feed" class="muted"></p><div id="accounts" aria-live="polite">正在读取账户…</div>
+<section><details><summary>添加独立账户</summary><p>新账户从空白配置开始。请使用独立的两平台账户，不要把已有账户重复添加，也不要复制其他账户的账本。</p><label for="market">交易标的</label><select id="market"><option value="openai">OPENAI</option><option value="anth">ANTH</option></select><label for="label">账户名称</label><input id="label" maxlength="40" placeholder="例如 OPENAI 账号2" autocomplete="off"><p><button id="add" type="button" onclick="addAccount()">创建并配置</button></p><p class="muted">创建账户不会加载密钥或启动交易。配置、只读检查和启动都需在该账户页面分别完成。</p></details><p id="notice" role="status"></p></section></main>
+<script>
+const $=id=>document.getElementById(id);let token='',creating=false,requestId=null,requestKey='';
+const states={running:'运行中',stopped:'已停止',needs_attention:'需要处理',recovering:'正在核对',recovering_exposure:'正在配平',paused:'已暂停',closing:'正在平仓'};
+function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
+function renderProfiles(data){
+  const cards=[];
+  for(const item of data.profiles||[]){const p=item.profile,card=document.createElement('article');card.append(node('h2',p.label),node('span',p.market.toUpperCase(),'badge'));
+    card.append(node('p',item.loaded?'策略：'+(states[item.status]||item.status):item.configured?'已配置 · 尚未加载':'尚未配置'),node('p','持仓组数：'+(item.held_groups??'—')),node('p','飞书：'+(item.notification_enabled?'已启用':'未启用'),'muted'));
+    const links=node('div','','links');for(const [text,url] of [['配置与控制',p.control_path],['查看监控',p.monitor_path]]){const a=node('a',text);a.href=url;links.append(a);}card.append(links);cards.push(card);
+  }
+  $('accounts').replaceChildren(...cards);
+  $('feed').textContent=(data.shared_market_feeds||[]).map(f=>`${f.market.toUpperCase()}：${f.consumers} 套账户共用一组公共行情`).join('；');
+}
+async function refresh(){try{const r=await(await fetch('/api/accounts',{cache:'no-store'})).json();if(!r.ok)throw Error('读取账户失败');token=r.data.csrf;renderProfiles(r.data);}catch(e){$('notice').textContent=e.message;}}
+async function addAccount(){if(creating)return;const market=$('market').value,label=$('label').value.trim();if(!label){$('notice').textContent='请填写账户名称';return;}const key=JSON.stringify([market,label]);if(!requestId||requestKey!==key){requestId=crypto.randomUUID();requestKey=key;}
+  creating=true;$('add').disabled=true;$('notice').textContent='正在创建…';try{if(!token)await refresh();const r=await(await fetch('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json','X-Inventory-Token':token},body:JSON.stringify({id:requestId,confirmation:'CREATE_ACCOUNT_PROFILE',market,label})})).json();if(!r.ok)throw Error(r.error);location.href=r.data.profile.control_path;}catch(e){$('notice').textContent=e.message;}finally{creating=false;$('add').disabled=false;}}
+refresh();setInterval(refresh,3000);
+</script></html>

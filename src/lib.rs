@@ -19,6 +19,8 @@ pub mod portable;
 #[cfg(feature="openai-inventory-live")]
 pub mod server;
 pub mod profiles;
+pub mod account_profiles;
+pub mod market_feed;
 pub mod monitor;
 #[cfg(feature="paper-runtime")]
 pub mod paper_server;
