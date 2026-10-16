@@ -282,8 +282,19 @@ pub struct CloseAllocation {
     pub lot_id: String,
     pub units: i64,
 }
+/// A bounded second-leg ladder belongs to one operation, never to an account.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntryHedgeRetry {
+    pub attempt: u32,
+    pub after_ms: Option<u64>,
+    pub abandoned: bool,
+    pub reason: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Operation {
+    /// Only new entries opt in. Never reinterpret an older in-flight repair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_hedge_retry: Option<EntryHedgeRetry>,
     /// Frozen logical ownership of a merged reduce-only exit. Empty preserves
     /// legacy single-lot/FIFO operations, including requests already in flight.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

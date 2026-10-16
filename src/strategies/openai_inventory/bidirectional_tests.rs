@@ -179,7 +179,15 @@ async fn reverse_failed_hedge_and_unfillable_repair_keep_residual_for_attention(
     execution::advance(&mut s,&mut db,&workers,&b,now).await.unwrap();
     assert_eq!(s.positions[1].units,qty);
     let mut bad=b.clone();bad[0].bids[0].price=d(113);bad[1].bids[0].units=1;
-    for _ in 0..5 {execution::advance(&mut s,&mut db,&workers,&bad,now).await.unwrap();if s.status==Status::NeedsAttention{break;}}
+    for step in 0..30 {
+        let at=now+step*1000;for book in &mut bad {book.received_ms=at;}
+        if execution::entry_hedge_retry::due(&s,at) {
+            let mut a=accounts(at);for i in 0..2 {a[i].position_units=s.positions[i].units;}
+            execution::advance_with_hedge_evidence(&mut s,&mut db,&workers,&bad,at,Some(&a)).await.unwrap();
+        } else {execution::advance(&mut s,&mut db,&workers,&bad,at).await.unwrap();}
+        if s.status==Status::NeedsAttention {break;}
+    }
+    assert_eq!(s.pending.as_ref().unwrap().entry_hedge_retry.as_ref().unwrap().attempt,4);
     assert_eq!(s.status,Status::NeedsAttention);assert!(s.pending.is_some());
     assert_eq!(s.positions[0].units,0);assert_eq!(s.positions[1].units,qty);
     assert_eq!(remotes[0].lock().unwrap().submissions,0);

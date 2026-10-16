@@ -64,6 +64,7 @@ for market, path in [
                    first_filled=700, hedge_filled=0, repair_filled=0,
                    first_terminal=True, hedge_terminal=True, repair_terminal=False,
                    repair_attempt=2, recovery_slippage_bps=3,
+                   entry_hedge_retry=dict(attempt=2,after_ms=now+3000,abandoned=False,reason=f"hedge retry waiting Bearer {secret}",unexpected_secret=secret),
                    recovery_wait_reason=f"depth exceeds protected execution price Bearer {secret}", failed=True)
     state = dict(status="needs_attention", stop_requested=True, paused=True,
                  reason=f"account worker request deadline exceeded https://private.invalid/?key={secret} Bearer {secret}",

@@ -20,6 +20,7 @@ try {
     if ($Ledger.market_alerts.schema -ne 2 -or $Ledger.market_alerts.evidence.unavailable_ms[0] -ne 50000 -or $Ledger.market_alerts.history[0].kind -ne 'delivered') { throw 'Market alert evidence/history missing' }
     if (!$Ledger.readonly -or !$Ledger.available -or $Ledger.snapshot.held_groups -ne 7 -or $Ledger.snapshot.pending.first_filled -ne 700) { throw 'Offline snapshot extraction failed' }
     if ($Ledger.snapshot.ledger[0].venue -ne 'lighter' -or $Ledger.snapshot.ledger[1].venue -ne 'entropy') { throw 'Ledger venue mapping is incorrect' }
+    if ($Ledger.snapshot.pending.entry_hedge_retry.attempt -ne 2 -or $Ledger.snapshot.pending.entry_hedge_retry.reason -notmatch 'hedge retry waiting') { throw 'Entry hedge retry diagnostics missing' }
     if ($Ledger.snapshot.pending.recovery_slippage_bps -ne 3 -or $Ledger.snapshot.pending.recovery_wait_reason -notmatch 'depth exceeds protected execution price') { throw 'Recovery price diagnostics were lost' }
     if ($Ledger.operation_events.events.Count -ne 2 -or $Ledger.recent_events.events.Count -ne 4) {
       # Only synthetic, already redaction-checked evidence is printed on CI failure.

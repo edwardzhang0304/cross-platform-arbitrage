@@ -645,6 +645,7 @@ fn evaluate_inner(
     clear_entry_confirmation(s);
     let id = format!("openai-{}-{}", s.instance_id, s.sequence);
     Ok(Some(Operation {
+        entry_hedge_retry: (action == Action::Open).then(Default::default),
         close_allocations,
         close_lot_id,
         align_close: None,

@@ -408,6 +408,7 @@ fn ordinary_start_clears_exhausted_bounded_entry_budget() {
     assert_eq!(s.status, Status::Recovering);
 
     s.pending = Some(Operation {
+        entry_hedge_retry: None,
         close_allocations: Vec::new(),
         close_lot_id: None,
         id: "pending".into(),
@@ -844,7 +845,7 @@ async fn expired_unsent_entry_is_discarded_but_unknown_submission_is_queried() {
 }
 
 #[tokio::test]
-async fn entropy_first_restart_partial_hedge_and_spread_budget() {
+async fn legacy_entropy_first_restart_partial_hedge_and_spread_budget() {
     use std::sync::{Arc, Mutex};
     for direction in [Direction::LighterLong, Direction::LighterShort] {
     let sign = direction.sign();
@@ -867,6 +868,8 @@ async fn entropy_first_restart_partial_hedge_and_spread_budget() {
         s.pending = strategy::evaluate(&mut s, &b, &accounts(now), now).unwrap();
         let op = s.pending.as_mut().unwrap();
         assert_eq!(op.first_venue, Venue::Entropy);
+        // Historical in-flight orders retain their original compensation policy.
+        op.entry_hedge_retry = None;
         op.requested_units = 2000;
         let mut repair_recovery = s.clone();
         let p = repair_recovery.pending.as_mut().unwrap();

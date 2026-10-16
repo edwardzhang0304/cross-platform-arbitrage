@@ -3,6 +3,9 @@ use super::{store::Store, venue::AccountWorker, *};
 use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
 
+#[path = "entry_hedge_retry.rs"]
+pub(super) mod entry_hedge_retry;
+
 pub(super) const REPAIR_RETRY_DELAY_MS: u64 = 3_000;
 pub const RECOVERY_INITIAL_SLIPPAGE_BPS: u32 = 2;
 pub const RECOVERY_MAX_SLIPPAGE_BPS: u32 = 5;
@@ -12,7 +15,9 @@ pub fn recovery_policy() -> serde_json::Value {
     serde_json::json!({"retry_interval_ms":REPAIR_RETRY_DELAY_MS,
         "initial_slippage_bps":RECOVERY_INITIAL_SLIPPAGE_BPS,
         "step_slippage_bps":1,"max_slippage_bps":RECOVERY_MAX_SLIPPAGE_BPS,
-        "unknown_order_action":"lookup_only"})
+        "unknown_order_action":"lookup_only",
+        "entry_hedge_retry":{"retry_interval_ms":3000,"slippage_bps":[2,3,4,5],
+            "after_exhaustion":"reduce_unpaired_exposure","unknown_order_action":"lookup_only"}})
 }
 const RESIDUAL_HALT: &str = "residual could not be neutralized within protected execution; manual attention required";
 const ALIGNMENT_HALT: &str = "close precision alignment incomplete; residual review required";
@@ -278,6 +283,9 @@ fn request(
 ) -> Result<OrderRequest> {
     let slippage=if recovery_request(reduce,suffix) {
         Decimal::from(recovery_slippage(s.pending.as_ref().context("missing operation")?))
+    }else if suffix == "hedge" && s.pending.as_ref().is_some_and(|p|p.action==Action::Open) {
+        s.pending.as_ref().and_then(|p|p.entry_hedge_retry.as_ref())
+            .filter(|r|r.attempt>0).map_or(s.config.execution_slippage_bps,|r|Decimal::from(r.attempt+1))
     }else{s.config.execution_slippage_bps};
     request_with_slippage(s,books,venue,side,qty,reduce,suffix,now,slippage)
 }
@@ -307,6 +315,10 @@ fn request_with_slippage(s:&Snapshot,books:&[Book;2],venue:Venue,side:Side,qty:i
         .pending
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing operation"))?;
+    if suffix=="hedge" {
+        ensure!(op.entry_hedge_retry.as_ref().is_none_or(|r|r.attempt<=4),
+            "entry hedge retry exceeds bounded ladder");
+    }
     if suffix == "hedge" && op.action == Action::Open && op.first_venue == Venue::Entropy {
         if let Some(min_spread) = op.min_entry_spread {
             ensure!(
@@ -322,7 +334,9 @@ fn request_with_slippage(s:&Snapshot,books:&[Book;2],venue:Venue,side:Side,qty:i
             );
         }
     }
-    let suffix = if matches!(suffix, "repair" | "align-close" | "unwind-hedge") && op.repair_attempt > 0 {
+    let suffix = if suffix=="hedge" && op.entry_hedge_retry.as_ref().is_some_and(|r|r.attempt>0) {
+        format!("hedge-retry-{}",op.entry_hedge_retry.as_ref().unwrap().attempt)
+    } else if matches!(suffix, "repair" | "align-close" | "unwind-hedge") && op.repair_attempt > 0 {
         format!("{suffix}-{}", op.repair_attempt)
     } else {
         suffix.to_string()
@@ -384,7 +398,7 @@ fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult
     let op = s.pending.as_mut().unwrap();
     let qty = match which {
         0 => op.first_filled,
-        1 => op.hedge_filled,
+        1 => request_filled,
         2 => request_filled,
         4 => request_filled,
         _ => request_filled,
@@ -395,7 +409,8 @@ fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult
     );
     ensure!(op.repair_filled <= op.first_filled - op.paired_filled(),
         "repair exceeds remaining owned exposure");
-    ensure!(op.first_filled <= op.requested_units && op.unwind_hedge_filled <= op.hedge_filled,
+    ensure!(op.first_filled <= op.requested_units && op.hedge_filled <= op.first_filled
+        && op.unwind_hedge_filled <= op.hedge_filled,
         "recovery exceeds original operation quantity");
     match which {
         0 => op.first_terminal = result.terminal,
@@ -460,6 +475,14 @@ pub async fn advance(
     workers: &[AccountWorker; 2],
     books: &[Book; 2],
     now: u64,
+) -> Result<()> {
+    advance_with_hedge_evidence(s,store,workers,books,now,None).await
+}
+
+/// Fresh retry evidence is supplied by the same actor immediately before dispatch.
+pub(super) async fn advance_with_hedge_evidence(
+    s:&mut Snapshot, store:&mut Store, workers:&[AccountWorker;2], books:&[Book;2],
+    now:u64, accounts:Option<&[AccountEvidence;2]>,
 ) -> Result<()> {
     if (s.paused || s.stop_requested || s.close_requested || s.loss_stop.is_some())
         && cancel_unsent_entry(s) {
@@ -543,6 +566,7 @@ pub async fn advance(
             return Ok(());
         }
     }
+    if entry_hedge_retry::prepare(s,store,books,now,accounts)? {return Ok(());}
     let Some(op) = s.pending.clone() else {
         return Ok(());
     };
@@ -615,7 +639,7 @@ pub async fn advance(
         let q = if op.hedge_venue() == Venue::Entropy {
             op.first_filled / s.config.common_step() * s.config.common_step()
         } else {
-            op.first_filled
+            op.first_filled - op.hedge_filled
         };
         (
             1,
@@ -733,7 +757,11 @@ pub async fn advance(
                     }
                 }
                 let p = s.pending.as_mut().unwrap();
-                p.failed = true;
+                // A bounded hedge retry may still complete this entry. Only
+                // reducing compensation marks it as a failed operation.
+                if !(which==1 && p.action==Action::Open && p.entry_hedge_retry.is_some()) {
+                    p.failed = true;
+                }
                 if matches!(which,2|3|4) {
                     p.recovery_slippage_bps=recovery_slippage(p);
                     p.recovery_wait_reason=error.to_string();

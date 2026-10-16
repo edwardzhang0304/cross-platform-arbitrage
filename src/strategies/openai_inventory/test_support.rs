@@ -123,6 +123,12 @@ impl Variant {
             }
             return Ok(());
         }
+        if execution::entry_hedge_retry::due(s,now) {
+            let (l,e)=tokio::join!(self.workers[0].reconcile_account(),self.workers[1].reconcile_account());
+            let verified=[l?,e?];
+            execution::advance_with_hedge_evidence(s,&mut self.store,&self.workers,books,now,Some(&verified)).await?;
+            return Ok(());
+        }
         if s.pending.is_some() {
             execution::advance(s,&mut self.store,&self.workers,books,now).await?;
             return Ok(());

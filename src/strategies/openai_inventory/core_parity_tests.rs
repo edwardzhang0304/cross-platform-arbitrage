@@ -50,7 +50,10 @@ fn paper_and_live_share_the_same_decision_trace() {
                     let mut normalized_live = serde_json::to_value(&live).unwrap();
                     normalized_live["config"]["mode"] = serde_json::json!("paper");
                     assert_eq!(serde_json::to_value(&paper).unwrap(), normalized_live);
-                    if let Ok(Some(op)) = &p { final_action = Some(op.action); }
+                    if let Ok(Some(op)) = &p {
+                        assert_eq!(op.entry_hedge_retry.is_some(),op.action==Action::Open);
+                        final_action = Some(op.action);
+                    }
                     trace.push(serde_json::json!({"market":market,"reverse":reverse,"case":case,
                         "offset":offset,"result":result(&p),"status":paper.status,
                         "time_adds_used":paper.time_adds_used}));

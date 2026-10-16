@@ -54,6 +54,7 @@ function Pending-View($p) {
     close_lot_ref=(Ref $p.close_lot_id); close_allocations=@($p.close_allocations | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{lot_ref=(Ref $_.lot_id); units=$_.units} })
     failed=$p.failed; repair_attempt=$p.repair_attempt; repair_retry_after_ms=$p.repair_retry_after_ms
     recovery_slippage_bps=$p.recovery_slippage_bps; recovery_wait_reason=(SafeText $p.recovery_wait_reason)
+    entry_hedge_retry=$(if ($null -ne $p.entry_hedge_retry) { [ordered]@{attempt=$p.entry_hedge_retry.attempt; after_ms=$p.entry_hedge_retry.after_ms; abandoned=$p.entry_hedge_retry.abandoned; reason=(SafeText $p.entry_hedge_retry.reason)} })
     quote_wait_started_ms=$p.quote_wait_started_ms; requests=$r
   }
 }
@@ -132,7 +133,7 @@ function Capture-Market([string]$Market) {
     return [ordered]@{
       market=$Market; captured_ms=$at; available=$true; loaded=($null -ne $s); flags=$flags.ToArray()
       snapshot=(Snapshot-View $s)
-      recovery_policy=($d.recovery_policy | Select-Object retry_interval_ms,initial_slippage_bps,step_slippage_bps,max_slippage_bps,unknown_order_action)
+      recovery_policy=($d.recovery_policy | Select-Object retry_interval_ms,initial_slippage_bps,step_slippage_bps,max_slippage_bps,unknown_order_action,@{Name='entry_hedge_retry';Expression={$_.entry_hedge_retry | Select-Object retry_interval_ms,slippage_bps,after_exhaustion,unknown_order_action}})
       accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage)
       books=@($v.books | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{connected=$_.connected; received_ms=$_.received_ms; bid=$(if (@($_.bids).Count -gt 0 -and $null -ne $_.bids) { $_.bids[0].price }); ask=$(if (@($_.asks).Count -gt 0 -and $null -ne $_.asks) { $_.asks[0].price })} })
       market_transport=(Transport-View $v.market_transport)

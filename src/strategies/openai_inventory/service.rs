@@ -380,6 +380,21 @@ impl InventoryService {
                                 let lookup = execution::recheck_timed_out(&mut state,&mut store,&workers,now).await;
                                 order_lookup_note = match &lookup {Ok(note)=>note.clone(),Err(e)=>format!("{e:#}")};
                                 lookup?;
+                            } else if execution::entry_hedge_retry::due(&state,now) {
+                                match venue::fresh_reconciled_accounts(&workers,config.account_max_age_ms).await {
+                                    Ok(verified)=>{
+                                        order_lookup_note.clear();
+                                        let checked_at=crate::domain::now_ms();
+                                        let fresh_books=books.read().unwrap().clone();
+                                        execution::advance_with_hedge_evidence(&mut state,&mut store,&workers,
+                                            &fresh_books,checked_at,Some(&verified)).await?;
+                                        accounts=Some(verified);last_accounts=0;
+                                    },
+                                    Err(error)=>{
+                                        execution::entry_hedge_retry::defer_account_read(&mut state,&mut store,crate::domain::now_ms())?;
+                                        order_lookup_note=format!("entry hedge retry account check: {error:#}");
+                                    }
+                                }
                             } else if state.pending.is_some() && state.status!=Status::NeedsAttention {
                                 execution::advance(&mut state,&mut store,&workers,&current,now).await?;
                                 last_accounts=0;

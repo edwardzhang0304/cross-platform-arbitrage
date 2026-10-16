@@ -44,6 +44,9 @@ fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
         return Some(("执行或持仓核对异常，需要处理",s.pending.is_none()));
     }
     let p=s.pending.as_ref()?;
+    if p.entry_hedge_retry.as_ref().is_some_and(|r|r.after_ms.is_some() && !r.abandoned) {
+        return Some(("开仓或加仓配对腿未完成，正在核对后逐档重试",false));
+    }
     if p.failed || p.repair.is_some() || p.unwind_hedge.is_some() || p.align_close.is_some() {
         return Some(("双腿未按原计划成交，正在受控补偿或精度对齐",false));
     }
@@ -51,7 +54,7 @@ fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
         return Some(("订单结果尚未确认，只查询原订单，禁止重复提交",false));
     }
     if (p.first_terminal && p.first.as_ref().is_some_and(|r|p.first_filled!=r.units))
-        || (p.hedge_terminal && p.hedge.as_ref().is_some_and(|r|p.hedge_filled!=r.units)) {
+        || (p.hedge_terminal && p.hedge.is_some() && p.hedge_filled!=p.first_filled) {
         return Some(("订单部分成交或未成交，正在核对实际数量",false));
     }
     if p.quote_wait_started_ms.is_some() && p.first_filled>0 {

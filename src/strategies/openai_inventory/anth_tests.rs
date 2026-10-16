@@ -41,7 +41,7 @@ async fn anth_realistic_virtual_ioc_preserves_five_digit_fill_and_journal_identi
 }
 
 #[tokio::test]
-async fn anth_unknown_entry_restart_repairs_partial_hedge_without_losing_tail() {
+async fn legacy_anth_unknown_entry_restart_repairs_partial_hedge_without_losing_tail() {
     use std::sync::{Arc,Mutex};
     for fraction in [1,2,3] { for reverse in [false,true] {
         let now=crate::domain::now_ms();let mut s=warmed(now);s.config.market=MarketPair::Anth;
@@ -50,6 +50,8 @@ async fn anth_unknown_entry_restart_repairs_partial_hedge_without_losing_tail() 
         else {s.previous_signal=Some((now-15000,d(16),d(10)));}
         let b=bidir_books(now,16,reverse);
         s.pending=strategy::evaluate(&mut s,&b,&accounts(now),now).unwrap();
+        // Reproduce an already in-flight pre-rc18 operation; never re-open its recovery.
+        s.pending.as_mut().unwrap().entry_hedge_retry=None;
         s.pending.as_mut().unwrap().requested_units=20000;
         let path=std::env::temp_dir().join(format!("anth-entry-{}.sqlite",s.instance_id));let cfg=s.config.clone();
         let (mut db,_)=store::Store::open(&path,&cfg).unwrap();
