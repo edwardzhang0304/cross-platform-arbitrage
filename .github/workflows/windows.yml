@@ -31,6 +31,10 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: '0'
+      # Fixtures use real five-second order deadlines. Do not let unrelated
+      # Argon2/SQLite tests starve their worker threads on the Windows runner.
+      # Concurrency inside each scenario (accounts/venues/feed loads) is retained.
+      RUST_TEST_THREADS: '1'
     defaults:
       run:
         shell: bash
