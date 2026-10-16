@@ -89,7 +89,7 @@ function Snapshot-View($s) {
     sequence=$s.sequence; last_sample_ms=$s.last_sample_ms; last_action_ms=$s.last_action_ms; armed=$s.armed; first_armed=$s.first_armed
     direction=$s.direction; anchor=$s.anchor; time_adds_used=$s.time_adds_used; last_open_completed=$s.last_open_completed
     pending=(Pending-View $s.pending)
-    rules=($s.config | Select-Object market,mode,grid,max_groups,group_notional,entry_offset,entry_threshold_cap,entry_confirmation_ms,decision_ms,mean_window_ms,book_max_age_ms,account_max_age_ms,operation_timeout_ms,execution_slippage_bps,max_notional_per_venue,min_free_margin,max_loss_usdc,fee_lighter,fee_entropy,exit_profit_reserve,close_slice_notional,group_take_profit,exit_policy,auto_neutralize,@{Name='accumulation';Expression={$_.accumulation | Select-Object interval_ms,max_time_adds,quota_scope,entry_floor,contraction_ratio}})
+    rules=($s.config | Select-Object market,mode,grid,max_groups,capital_multiplier,group_notional,leverage,entry_offset,entry_threshold_cap,entry_confirmation_ms,decision_ms,mean_window_ms,book_max_age_ms,account_max_age_ms,operation_timeout_ms,execution_slippage_bps,max_notional_per_venue,min_free_margin,max_loss_usdc,fee_lighter,fee_entropy,exit_profit_reserve,close_slice_notional,group_take_profit,exit_policy,auto_neutralize,@{Name='accumulation';Expression={$_.accumulation | Select-Object interval_ms,max_time_adds,quota_scope,entry_floor,contraction_ratio}})
     funding_synced_ms=$s.funding_synced_ms
     fills_in_operation_window=@($selected | ForEach-Object { [ordered]@{fill_ref=(Ref $_.id); order_ref=(Ref $_.order_id); venue=$_.venue; side=$_.side; units=$_.units; price=$_.price; fee=$_.fee; time_ms=$_.time_ms} })
     fills_capped=($selected.Count -eq 120)
@@ -206,7 +206,9 @@ function Checked-Profiles($Items) {
     $id=[string]$p.id; $market=[string]$p.market
     if ($id -notmatch '^(openai|anth|p-[0-9a-f]{32})$' -or $market -notin @('openai','anth') -or $seen.ContainsKey($id)) { throw 'Invalid public account catalog' }
     if ($id -in @('openai','anth') -and $id -ne $market) { throw 'Legacy account market changed' }
-    $seen[$id]=$true; $result+=[ordered]@{id=$id; market=$market; label=(SafeText $p.label)}
+    $scale=if ($null -eq $p.capital_multiplier) { 1 } else { [int]$p.capital_multiplier }
+    if ($scale -notin @(1,10)) { throw 'Unknown account capital tier' }
+    $seen[$id]=$true; $result+=[ordered]@{id=$id; market=$market; label=(SafeText $p.label); capital_multiplier=$scale}
   }
   if ($result.Count -gt 32 -or !$seen.ContainsKey('openai') -or !$seen.ContainsKey('anth')) { throw 'Incomplete public account catalog' }
   return $result

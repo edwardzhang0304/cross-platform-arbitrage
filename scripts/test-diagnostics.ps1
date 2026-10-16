@@ -38,6 +38,9 @@ try {
     if ($Ledger.snapshot.pending.requests.first.order_ref -ne $Ledger.snapshot.fills_in_operation_window[0].order_ref) { throw 'Opaque order linkage was lost' }
   }
   if ($Report.profiles.Count -ne 3 -or $Report.ledgers.$ExtraId.snapshot.closed_groups -ne 99) { throw 'Offline same-market account discovery or isolation failed' }
+  $LargeRules=$Report.ledgers.$ExtraId.snapshot.rules
+  if ($LargeRules.capital_multiplier -ne 10 -or $LargeRules.group_notional -ne '150' -or $LargeRules.leverage -ne 3 -or $LargeRules.max_loss_usdc -ne '300') { throw '50U account capital evidence missing' }
+  if (@($Report.profiles | Where-Object { $_.id -eq $ExtraId })[0].capital_multiplier -ne 10) { throw 'Account capital tier lost from catalog' }
   foreach ($Path in $Before.Keys) { if ((Get-FileHash $Path -Algorithm SHA256).Hash -ne $Before[$Path]) { throw 'Read-only collector modified input' } }
   if (@(Get-ChildItem (Join-Path $Root 'report') -File).Count -ne 2) { throw 'Unexpected raw diagnostic attachments' }
   $OnlineOutput=Join-Path $Root 'online-output'
