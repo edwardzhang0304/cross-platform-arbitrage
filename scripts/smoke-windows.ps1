@@ -25,7 +25,7 @@ try {
   # Add a second OPENAI slot, without credentials or any trading/network bootstrap.
   $List=(Invoke-RestMethod "$Base/api/accounts").data
   if ($List.profiles.Count -ne 2 -or $List.csrf -eq $Status.csrf) { throw 'Management identity is not independent' }
-  $Create=@{id=[guid]::NewGuid().ToString();confirmation='CREATE_ACCOUNT_PROFILE';market='openai';label='OPENAI second'} | ConvertTo-Json -Compress
+  $Create=@{id=[guid]::NewGuid().ToString();confirmation='CREATE_ACCOUNT_PROFILE';market='openai';label='OPENAI second';capital_multiplier=10} | ConvertTo-Json -Compress
   $Denied=Invoke-RestMethod "$Base/api/accounts" -Method Post -ContentType 'application/json' -Headers @{'X-Inventory-Token'=$Status.csrf} -Body $Create
   if ($Denied.ok) { throw 'Trading token created an account' }
   $ManagementHeaders=@{'X-Inventory-Token'=$List.csrf}
@@ -35,7 +35,7 @@ try {
   $Again=Invoke-RestMethod "$Base/api/accounts" -Method Post -ContentType 'application/json' -Headers $ManagementHeaders -Body $Create
   if (!$Again.ok -or $Again.data.profile.id -ne $ExtraProfile.id -or (Invoke-RestMethod "$Base/api/accounts").data.profiles.Count -ne 3) { throw 'Creation is not idempotent' }
   $Extra=(Invoke-RestMethod "$Base$($ExtraProfile.inventory_api)").data
-  if ($Extra.profile.id -ne $ExtraProfile.id -or $Extra.profile.market -ne 'openai' -or $Extra.configured -or $Extra.view -or $Extra.vault_unlocked -or $Extra.csrf -eq $Status.csrf) { throw 'Second OPENAI state is not isolated' }
+  if ($Extra.profile.id -ne $ExtraProfile.id -or $Extra.profile.market -ne 'openai' -or $Extra.profile.capital_multiplier -ne 10 -or $Extra.configured -or $Extra.view -or $Extra.vault_unlocked -or $Extra.csrf -eq $Status.csrf) { throw 'Second OPENAI state is not isolated' }
   foreach ($Pair in @(@($Status,$Extra),@($Extra,$Status))) {
     foreach ($Command in @('start','stop','close_all','lock','quit','confirm_rollback_recovery','save_credentials','save_notifications')) {
       $Body=@{command=$Command;id=[guid]::NewGuid().ToString();confirmation='CLOSE_ALL_POSITIONS'} | ConvertTo-Json -Compress
@@ -117,7 +117,7 @@ try {
   for ($i=0;$i -lt 60;$i++) { Start-Sleep -Milliseconds 250; try { $Restored=(Invoke-RestMethod "$Base/api/accounts").data;break } catch {} }
   if (!$Restored -or $Restored.profiles.Count -ne 3 -or $Restored.csrf -eq $List.csrf) { throw 'Profile catalog restart failed' }
   $RestoredExtra=(Invoke-RestMethod "$Base$($ExtraProfile.inventory_api)").data
-  if ($RestoredExtra.profile.id -ne $ExtraProfile.id -or $RestoredExtra.csrf -eq $Extra.csrf -or $RestoredExtra.configured) { throw 'Restored account lost identity or retained session token' }
+  if ($RestoredExtra.profile.capital_multiplier -ne 10 -or $RestoredExtra.profile.id -ne $ExtraProfile.id -or $RestoredExtra.csrf -eq $Extra.csrf -or $RestoredExtra.configured) { throw 'Restored account lost identity or retained session token' }
   $Quit=Invoke-RestMethod "$Base$($ExtraProfile.control_api)" -Method Post -ContentType 'application/json' -Headers @{'X-Inventory-Token'=$RestoredExtra.csrf} -Body '{"command":"quit","id":"second-quit","confirmation":"QUIT_PROGRAM"}'
   if (!$Quit.ok -or !$Process.WaitForExit(10000)) { throw 'Dynamic profile cannot exit whole backend' }
   Write-Output 'PASS: Windows EXE, power request, pages, CSRF, origin, no trading, single instance and exit.'

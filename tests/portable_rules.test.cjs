@@ -42,6 +42,7 @@ test('parameter text describes the loaded rules, including unchanged legacy acco
   assert.match(ctx.entryRulesText(newer),/双腿成交配平后重置/);
   assert.match(ctx.entryRulesText(legacy),/网格间隔 2U；同价加仓至少 15 分钟，整轮最多 5 次/);
   assert.equal(ctx.entryRulesText(null),'请先配置或导入账户');
+  assert.match(ctx.entryRulesText({...newer,group_notional:'150',max_loss_usdc:'300'}),/每组每边保证金约 50U（持仓金额约 150U），逐仓 3 倍；亏损保护 300U/);
 });
 
 test('manual rollback acknowledgement is explicit, market-bound and never starts trading',async()=>{
@@ -109,8 +110,8 @@ test('same-market control page rejects a foreign profile payload before acceptin
 test('account management renders same-market accounts separately and retries creation with the same ID',async()=>{
   const script=fs.readFileSync(path.join(__dirname,'../frontend/accounts.html'),'utf8').match(/<script>\s*([\s\S]*?)<\/script>/)[1];
   const element=()=>({children:[],append(...xs){this.children.push(...xs)},replaceChildren(...xs){this.children=xs}});
-  const elements=new Map(['accounts','notice','add','market','label','feed'].map(k=>[k,element()]));
-  elements.get('market').value='openai';elements.get('label').value='OPENAI <second>';
+  const elements=new Map(['accounts','notice','add','market','label','feed','capital'].map(k=>[k,element()]));
+  elements.get('market').value='openai';elements.get('label').value='OPENAI <second>';elements.get('capital').value='10';
   const profiles=['openai','second','anth'].map(id=>({profile:{id,label:id==='second'?'OPENAI <second>':id,market:id==='anth'?'anth':'openai',control_path:`/accounts/${id}`,monitor_path:`/accounts/${id}/monitor`},loaded:true,status:'running',held_groups:id==='second'?9:2}));
   const posts=[];let fail=true;let uuid=0;const location={};
   const ctx=vm.createContext({document:{getElementById:id=>elements.get(id),createElement:element},location,setInterval(){},crypto:{randomUUID:()=>`request-${++uuid}`},fetch:async(url,opts)=>{
@@ -121,6 +122,6 @@ test('account management renders same-market accounts separately and retries cre
   assert.equal(elements.get('accounts').children[1].children[0].textContent,'OPENAI <second>');
   assert.match(elements.get('feed').textContent,/2 套账户/);
   await ctx.addAccount();fail=false;await ctx.addAccount();assert.equal(posts.length,2);assert.equal(posts[0].id,posts[1].id);
-  assert.equal(posts[0].confirmation,'CREATE_ACCOUNT_PROFILE');assert.equal(location.href,'/accounts/second');
+  assert.equal(posts[0].capital_multiplier,10);assert.equal(posts[0].confirmation,'CREATE_ACCOUNT_PROFILE');assert.equal(location.href,'/accounts/second');
   assert.equal(elements.get('add').disabled,false);assert.ok(posts.every(p=>!p.command),'creating a slot never loads or starts trading');
 });

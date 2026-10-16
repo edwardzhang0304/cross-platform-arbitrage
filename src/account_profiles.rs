@@ -6,15 +6,18 @@ use std::{collections::BTreeSet,path::Path};
 
 #[derive(Debug,Clone,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AccountProfile { pub id:String, pub label:String, pub market:MarketPair }
+pub struct AccountProfile { pub id:String, pub label:String, pub market:MarketPair,
+    #[serde(default="crate::openai_inventory::config::default_capital_multiplier")]
+    pub capital_multiplier:u32 }
 impl AccountProfile {
-    pub fn legacy(market:MarketPair)->Self {Self {id:market.id().into(),label:format!("{} 账号1",market.label()),market}}
+    pub fn legacy(market:MarketPair)->Self {Self {id:market.id().into(),label:format!("{} 账号1",market.label()),market,capital_multiplier:1}}
     pub fn new(market:MarketPair,label:String,request_id:&str)->Result<Self> {
         let uuid=uuid::Uuid::parse_str(request_id)?;
-        let p=Self{id:format!("p-{}",uuid.simple()),label,market};p.validate()?;Ok(p)
+        let p=Self{id:format!("p-{}",uuid.simple()),label,market,capital_multiplier:1};p.validate()?;Ok(p)
     }
     pub fn is_legacy(&self)->bool {self.id==self.market.id()}
     pub fn validate(&self)->Result<()> {
+        ensure!([1,10].contains(&self.capital_multiplier) && (!self.is_legacy() || self.capital_multiplier==1),"invalid account capital tier");
         let generated=self.id.strip_prefix("p-").is_some_and(|s|s.len()==32 && s.bytes().all(|c|c.is_ascii_digit()||(b'a'..=b'f').contains(&c)));
         ensure!(self.is_legacy()||generated,"invalid immutable account profile ID");
         ensure!(!self.label.trim().is_empty() && self.label==self.label.trim() && self.label.chars().count()<=40
@@ -24,6 +27,11 @@ impl AccountProfile {
     pub fn validate_config(&self,c:&InventoryConfig)->Result<()> {
         self.validate()?;c.validate()?;c.validate_live_identity()?;
         ensure!(c.market==self.market && c.mode==Mode::Live,"account profile market/mode mismatch");
+        ensure!(c.capital_multiplier==self.capital_multiplier,"account capital tier differs from its immutable profile");
+        if !self.is_legacy() {
+            let mut expected=c.clone();expected.set_initial_capital(self.capital_multiplier)?;
+            ensure!(expected==*c,"new account capital settings differ from its approved tier");
+        }
         if !self.is_legacy() || self.market==MarketPair::Anth {
             ensure!(c.lighter_account==self.alias("lighter") && c.entropy_account==self.alias("entropy"),"account profile aliases do not match its ID");
         }
@@ -39,7 +47,7 @@ impl AccountProfile {
     pub fn monitor_path(&self)->String {if self.is_legacy(){format!("/{}-inventory",self.id)}else{format!("/accounts/{}/monitor",self.id)}}
     pub fn start_confirmation(&self)->String {format!("START_{}_LIVE_STRATEGY",self.id.to_uppercase())}
     pub fn recovery_confirmation(&self)->String {format!("CONFIRM_{}_ROLLBACK_RECOVERY",self.id.to_uppercase())}
-    pub fn descriptor(&self)->serde_json::Value {serde_json::json!({"id":self.id,"label":self.label,"market":self.market,"mode":"live",
+    pub fn descriptor(&self)->serde_json::Value {serde_json::json!({"id":self.id,"label":self.label,"market":self.market,"mode":"live","capital_multiplier":self.capital_multiplier,
         "control_path":self.control_path(),"control_api":self.control_api(),"inventory_api":self.inventory_api(),"monitor_path":self.monitor_path()})}
     pub fn notification_label(&self)->String {format!("{} · {} · {}",self.label,self.market.label(),self.id)}
 }
@@ -98,7 +106,7 @@ mod tests {
     fn catalog_rejects_identity_traversal_aliases_duplicate_labels_and_missing_legacy() {
         let legacy=vec![AccountProfile::legacy(MarketPair::Openai),AccountProfile::legacy(MarketPair::Anth)];
         for id in ["../openai","OPENAI","anth","p-../foo","p-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"] {
-            assert!(AccountProfile{id:id.into(),label:"x".into(),market:MarketPair::Openai}.validate().is_err());
+            assert!(AccountProfile{id:id.into(),label:"x".into(),market:MarketPair::Openai,capital_multiplier:1}.validate().is_err());
         }
         for label in ["","  "," ends ","new\naccount"] {
             assert!(AccountProfile::new(MarketPair::Openai,label.into(),&uuid::Uuid::new_v4().to_string()).is_err());

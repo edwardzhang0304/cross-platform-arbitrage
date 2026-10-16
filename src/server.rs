@@ -66,6 +66,7 @@ fn control_page(profile:&AccountProfile,profiles:&[AccountProfile])->String {
         .replace("/api/portable",&profile.control_api())
         .replace("START_OPENAI_LIVE_STRATEGY",&profile.start_confirmation())
         .replace("CONFIRM_OPENAI_ROLLBACK_RECOVERY",&profile.recovery_confirmation())
+        .replace("每平台每组约 15U 名义仓位",&format!("每个平台每组约 {}U 保证金、{}U 持仓金额，亏损保护 {}U",5*profile.capital_multiplier,15*profile.capital_multiplier,30*profile.capital_multiplier))
         .replace("OPENAI 实盘",&format!("{} 实盘",account_profiles::html_escape(&profile.label)))
         .replace("当前 OPENAI 标的",&format!("当前 {} 账户",account_profiles::html_escape(&profile.label)))
         .replace("/*CONTROL_PROFILE*/",&format!("const controlProfile={};",account_profiles::script_json(&profile.descriptor())));
@@ -94,13 +95,16 @@ async fn account_list(State(host):State<Host>,h:HeaderMap)->Json<Value> {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AddAccount {id:String,confirmation:String,market:MarketPair,label:String}
+struct AddAccount {id:String,confirmation:String,market:MarketPair,label:String,
+    #[serde(default="inventory::config::default_capital_multiplier")]
+    capital_multiplier:u32}
 async fn add_account(State(host):State<Host>,h:HeaderMap,Json(r):Json<AddAccount>)->Json<Value> {
     let result=async {
         local(&h,host.port)?;
         ensure!(h.get("x-inventory-token").and_then(|v|v.to_str().ok())==Some(host.token.as_str()),"请刷新账户管理页面后重试");
         ensure!(r.confirmation=="CREATE_ACCOUNT_PROFILE","请确认新增独立账户");
-        let profile=AccountProfile::new(r.market,r.label,&r.id)?;
+        let mut profile=AccountProfile::new(r.market,r.label,&r.id)?;
+        profile.capital_multiplier=r.capital_multiplier;profile.validate()?;
         let _catalog=host.catalog.lock().await;
         let mut profiles=host.profiles();
         if let Some(existing)=profiles.iter().find(|p|p.id==profile.id) {ensure!(existing==&profile,"重复请求的账户信息不一致");return Ok(profile.descriptor());}
@@ -223,6 +227,7 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
             crate::lighter_runtime::LighterApiCredential::from_hex(index,key_index,&r.lighter_key).context("Lighter API 私钥格式错误")?;
             let mut strategy: InventoryConfig = serde_json::from_str(include_str!("../config/strategy.example.json"))?;
             strategy.market=app.paths.market;
+            strategy.set_initial_capital(app.paths.profile.capital_multiplier)?;
             if !app.paths.profile.is_legacy() || strategy.market==MarketPair::Anth {strategy.lighter_account=app.paths.profile.alias("lighter");strategy.entropy_account=app.paths.profile.alias("entropy");}
             strategy.entropy_address=r.entropy_address.clone(); strategy.lighter_account_index=Some(index);strategy.lighter_address=Some(r.lighter_address.clone());
             let others=other_strategies(app).await?;
@@ -401,13 +406,14 @@ mod tests {
 #[cfg(test)]
 mod account_host_tests {
     use super::*;
+    use rust_decimal::Decimal;
     fn host()->Host {
         let root=Arc::new(std::env::temp_dir().join(format!("cpa-host-{}",uuid::Uuid::new_v4())));
         let sessions=account_profiles::load(&root).unwrap().into_iter().map(|p|ProfileSession::new(ProfilePaths::for_profile(&root,p),None)).collect();
         Host{root,port:18794,catalog:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(sessions)),token:Arc::new("synthetic-management".into())}
     }
     fn headers(token:&str)->HeaderMap {let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());h.insert("x-inventory-token",token.parse().unwrap());h}
-    fn request(id:&str,label:&str)->AddAccount {AddAccount{id:id.into(),label:label.into(),market:MarketPair::Openai,confirmation:"CREATE_ACCOUNT_PROFILE".into()}}
+    fn request(id:&str,label:&str)->AddAccount {AddAccount{id:id.into(),label:label.into(),market:MarketPair::Openai,confirmation:"CREATE_ACCOUNT_PROFILE".into(),capital_multiplier:1}}
     #[tokio::test]
     async fn create_is_authenticated_atomic_idempotent_and_survives_host_restart() {
         let host=host();let id=uuid::Uuid::new_v4().to_string();
@@ -419,6 +425,10 @@ mod account_host_tests {
         assert_eq!(host.profiles().len(),3);assert!(host.app(pid).unwrap().paths.load().unwrap().is_none());
         assert_eq!(add_account(State(host.clone()),h.clone(),Json(request(&id,"second"))).await.0,result);
         assert_eq!(add_account(State(host.clone()),h.clone(),Json(request(&id,"different"))).await.0["ok"],false);
+        let mut changed=request(&id,"second");changed.capital_multiplier=10;
+        assert_eq!(add_account(State(host.clone()),h.clone(),Json(changed)).await.0["ok"],false);
+        let mut unapproved=request(&uuid::Uuid::new_v4().to_string(),"unapproved");unapproved.capital_multiplier=100;
+        assert_eq!(add_account(State(host.clone()),h.clone(),Json(unapproved)).await.0["ok"],false);
         assert_eq!(add_account(State(host.clone()),h.clone(),Json(request(&uuid::Uuid::new_v4().to_string(),"second"))).await.0["ok"],false);
         let mut cross=h;cross.insert("origin","https://evil.example".parse().unwrap());
         assert_eq!(account_list(State(host.clone()),cross.clone()).await.0["ok"],false);
@@ -453,6 +463,7 @@ mod account_host_tests {
         let host=host();
         for (i,market) in [MarketPair::Openai,MarketPair::Anth].into_iter().enumerate() {
             let mut add=request(&uuid::Uuid::new_v4().to_string(),&format!("synthetic account {i}"));add.market=market;
+            if market==MarketPair::Openai {add.capital_multiplier=10;}
             let result=add_account(State(host.clone()),headers(&host.token),Json(add)).await.0;
             let app=host.app(result["data"]["profile"]["id"].as_str().unwrap()).unwrap();
             let mut r=Request::default();r.command="save_credentials".into();r.id="synthetic-save".into();r.password=format!("synthetic-vault-password-{i}");
@@ -460,6 +471,13 @@ mod account_host_tests {
             r.lighter_address=format!("0x{:040x}",600+i);r.lighter_account_index=(700+i).to_string();r.lighter_key_index="4".into();r.lighter_key="1".repeat(80);
             handle(&app,&headers(&app.token),&r).await.unwrap();
             let saved=app.paths.load().unwrap().unwrap();assert_eq!(saved.strategy.market,market);
+            let scale=if market==MarketPair::Openai {10}else{1};
+            assert_eq!(saved.strategy.capital_multiplier,scale);
+            assert_eq!(saved.strategy.group_notional,Decimal::from(15*scale));
+            assert_eq!(saved.strategy.max_loss_usdc,Decimal::from(30*scale));
+            assert!(control_page(&app.paths.profile,&host.profiles()).contains(&format!("每个平台每组约 {}U 保证金、{}U 持仓金额，亏损保护 {}U",5*scale,15*scale,30*scale)));
+            let mut wrong=saved.clone();wrong.strategy.set_initial_capital(if scale==10 {1}else{10}).unwrap();
+            assert!(app.paths.save(&wrong).is_err());assert_eq!(app.paths.load().unwrap().unwrap().strategy,saved.strategy);
             assert_eq!(saved.strategy.lighter_account,app.paths.profile.alias("lighter"));
             let vault=std::fs::read_to_string(&app.paths.vault).unwrap();assert!(!vault.contains(&r.entropy_key));assert!(!vault.contains(&r.lighter_key));
             r.command="lock".into();r.id="synthetic-lock".into();handle(&app,&headers(&app.token),&r).await.unwrap();assert!(app.inner.lock().await.password.is_none());
@@ -467,6 +485,7 @@ mod account_host_tests {
             assert!(app.inner.lock().await.password.is_some());assert!(app.inner.lock().await.service.is_none());assert!(!app.paths.database.exists());
         }
         assert!(host.app("openai").unwrap().inner.lock().await.password.is_none());assert!(!host.app("openai").unwrap().paths.vault.exists());
+        assert_eq!(account_profiles::load(&host.root).unwrap(),host.profiles());
         std::fs::remove_dir_all(host.root.as_ref()).unwrap();
     }
     #[test]

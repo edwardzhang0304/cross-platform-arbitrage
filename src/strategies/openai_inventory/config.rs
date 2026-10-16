@@ -8,6 +8,8 @@ pub const LIVE_CONFIRMATION: &str = "START_OPENAI_INVENTORY_LIVE";
 pub const LIVE_STRATEGY_CONFIRMATION: &str = "START_OPENAI_LIVE_STRATEGY";
 pub const LIVE_LIMIT_UPGRADE_CONFIRMATION: &str = "UPGRADE_OPENAI_LIVE_LIMITS";
 pub const CURRENT_TIME_ADD_INTERVAL_MS: u64 = 1_800_000;
+pub fn default_capital_multiplier() -> u32 { 1 }
+fn is_standard_capital(value: &u32) -> bool { *value == 1 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,6 +83,9 @@ pub struct InventoryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry_threshold_cap: Option<Decimal>,
     pub grid: Decimal,
+    /// Explicit account-local capital tier. Missing in existing ledgers means 1x.
+    #[serde(skip_serializing_if = "is_standard_capital")]
+    pub capital_multiplier: u32,
     pub group_notional: Decimal,
     pub max_groups: usize,
     pub leverage: u32,
@@ -121,6 +126,7 @@ impl Default for InventoryConfig {
             entry_offset: Decimal::from(4),
             entry_threshold_cap: None,
             grid: Decimal::from(2),
+            capital_multiplier: 1,
             group_notional: Decimal::from(15),
             max_groups: 20,
             leverage: 3,
@@ -142,6 +148,21 @@ impl Default for InventoryConfig {
     }
 }
 impl InventoryConfig {
+    /// Apply only while creating a new account configuration, never to a held ledger.
+    pub fn set_initial_capital(&mut self, multiplier: u32) -> Result<()> {
+        ensure!([1,10].contains(&multiplier), "unsupported capital multiplier");
+        self.capital_multiplier = multiplier;
+        let scale = Decimal::from(multiplier);
+        self.group_notional = Decimal::from(15) * scale;
+        self.max_notional_per_venue = Decimal::from(300) * scale;
+        self.max_loss_usdc = Decimal::from(30) * scale;
+        self.min_free_margin = Decimal::from(10) * scale;
+        self.paper_capital_per_venue = Decimal::from(100) * scale;
+        self.close_slice_notional = Decimal::from(15) * scale;
+        self.max_groups = 20;
+        self.leverage = 3;
+        Ok(())
+    }
     pub fn quantity(&self, n: i64) -> Decimal { self.market.quantity(n) }
     pub fn units(&self, q: Decimal) -> Result<i64> { self.market.units(q) }
     pub fn common_units(&self, notional: Decimal, price: Decimal) -> Result<i64> { self.market.common_units(notional, price) }
@@ -187,6 +208,14 @@ impl InventoryConfig {
         self.sample_ms * 2
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!([1,10].contains(&self.capital_multiplier), "unsupported capital multiplier");
+        let capital_scale = Decimal::from(self.capital_multiplier);
+        // The 10x tier is the explicitly approved 50U margin / 150U notional
+        // account. Do not turn it into an unrestricted larger-order setting.
+        ensure!(self.capital_multiplier == 1 ||
+            (self.group_notional == Decimal::from(150) && self.max_groups == 20
+                && self.leverage == 3 && self.min_free_margin >= Decimal::from(100)),
+            "10x account requires 150U per leg, 20 groups, 3x and 100U free-margin reserve");
         if let Some(r)=&self.accumulation {
             ensure!(self.shared_exit_conditions
                 && self.entry_confirmation_ms.is_some() && self.entry_threshold_cap.is_none()
@@ -207,8 +236,8 @@ impl InventoryConfig {
             "shared exit comparison requires zero net-profit reserve");
         ensure!(self.group_take_profit > Decimal::ZERO, "invalid per-group take-profit spread");
         ensure!(
-            self.max_loss_usdc > Decimal::ZERO && self.max_loss_usdc <= Decimal::from(30),
-            "strategy loss limit must be positive and at most 30 USDC"
+            self.max_loss_usdc > Decimal::ZERO && self.max_loss_usdc <= Decimal::from(30) * capital_scale,
+            "strategy loss limit exceeds the account capital tier"
         );
         ensure!(
             [&self.lighter_account, &self.entropy_account].into_iter()
@@ -239,7 +268,7 @@ impl InventoryConfig {
             "invalid spread parameters"
         );
         ensure!(
-            self.group_notional >= Decimal::from(10) && self.group_notional <= Decimal::from(100),
+            self.group_notional >= Decimal::from(10) && self.group_notional <= Decimal::from(if self.capital_multiplier == 10 {150}else{100}),
             "invalid group notional"
         );
         ensure!(
@@ -248,7 +277,7 @@ impl InventoryConfig {
         );
         ensure!(
             self.max_notional_per_venue >= self.group_notional
-                && self.max_notional_per_venue <= Decimal::from(300),
+                && self.max_notional_per_venue <= Decimal::from(300) * capital_scale,
             "invalid inventory cap"
         );
         ensure!(

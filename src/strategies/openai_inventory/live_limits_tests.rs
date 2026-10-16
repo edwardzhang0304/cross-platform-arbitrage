@@ -121,6 +121,23 @@ fn activation_cannot_bypass_account_risk_or_clear_loss_latch() {
 }
 
 #[test]
+fn tenfold_live_activation_uses_explicit_account_bounds_and_keeps_reconciliation_guards() {
+    let (_,mut config)=profiles();config.set_initial_capital(10).unwrap();
+    let now=100_000;let mut s=held(config,now);let (a,b)=evidence(&s,now);
+    service::start_live_strategy(&mut s,Some(&a),&b,now).unwrap();
+    assert_eq!(s.status,Status::Running);assert_eq!(s.config.max_loss_usdc,Decimal::from(300));
+    for bad in ["cap","loss","unknown_position","orders","rollback"] {
+        let mut next=s.clone();let mut a=a.clone();match bad {
+            "cap"=>next.config.max_notional_per_venue=Decimal::from(300),
+            "loss"=>next.config.max_loss_usdc=Decimal::from(30),
+            "unknown_position"=>a[0].position_units=0,"orders"=>a[1].open_orders=1,
+            _=>next.consecutive_rollbacks=3,
+        }
+        assert!(service::start_live_strategy(&mut next,Some(&a),&b,now).is_err(),"{bad}");
+    }
+}
+
+#[test]
 fn time_quota_update_preserves_inventory_counters_and_survives_restart() {
     let (_, cfg) = profiles();
     let now = 1_000_000;

@@ -2,6 +2,7 @@
 fn paper_and_live_share_the_same_decision_trace() {
     use sha2::{Digest, Sha256};
     let mut trace = Vec::new();
+    for capital_multiplier in [1,10] {
     for market in [MarketPair::Openai, MarketPair::Anth] {
         for reverse in [false, true] {
             for case in ["first", "grid", "time", "quota_exhausted", "close", "missing_funding",
@@ -9,12 +10,18 @@ fn paper_and_live_share_the_same_decision_trace() {
                 let now = 4_000_000;
                 let (mut paper, mut accounts) = accumulation_fixture(now, reverse);
                 paper.config.market = market;
+                if capital_multiplier == 10 {
+                    paper.config.set_initial_capital(10).unwrap();
+                    for p in &mut paper.positions {p.units *= 10;}
+                    for l in &mut paper.lots {l.units *= 10;}
+                    for a in &mut accounts {a.position_units *= 10;a.free_margin *= d(10);a.equity *= d(10);}
+                }
                 paper.config.grid = d(5); paper.config.entry_offset = Decimal::ZERO;
                 paper.config.entry_confirmation_ms = Some(5000);
                 let rules = paper.config.accumulation.as_mut().unwrap();
                 rules.interval_ms = 1_800_000; rules.max_time_adds = 5;
                 rules.quota_scope = TimeAddQuotaScope::GridStage;
-                paper.instance_id = format!("parity-{}-{reverse}-{case}", market.id());
+                paper.instance_id = format!("parity-{}-{capital_multiplier}-{reverse}-{case}", market.id());
                 paper.last_open_completed = Some((now - 1_800_000, d(10)));
                 paper.funding_synced_ms = match case {
                     "missing_funding" | "emergency" => 0,
@@ -38,6 +45,7 @@ fn paper_and_live_share_the_same_decision_trace() {
                     let t = now + offset;
                     for a in &mut accounts { a.observed_ms = t; }
                     let mut b = bidir_books(t, spread, reverse);
+                    if capital_multiplier==10 {for book in &mut b {for level in book.bids.iter_mut().chain(&mut book.asks) {level.units*=10;}}}
                     if case == "disconnected" { b[0].connected = false; }
                     if case == "stale_book" { b[0].received_ms = t - 10_000; }
                     let p = strategy::evaluate(&mut paper, &b, &accounts, t);
@@ -54,7 +62,7 @@ fn paper_and_live_share_the_same_decision_trace() {
                         assert_eq!(op.entry_hedge_retry.is_some(),op.action==Action::Open);
                         final_action = Some(op.action);
                     }
-                    trace.push(serde_json::json!({"market":market,"reverse":reverse,"case":case,
+                    trace.push(serde_json::json!({"market":market,"capital_multiplier":capital_multiplier,"reverse":reverse,"case":case,
                         "offset":offset,"result":result(&p),"status":paper.status,
                         "time_adds_used":paper.time_adds_used}));
                 }
@@ -66,12 +74,14 @@ fn paper_and_live_share_the_same_decision_trace() {
             }
         }
     }
+    }
     if let Some(path) = std::env::var_os("STRATEGY_PARITY_REPORT") {
         let mut report = crate::build_info::current();
         report["trace_sha256"] = format!("{:x}", Sha256::digest(serde_json::to_vec(&trace).unwrap())).into();
         report["observations"] = trace.len().into();
-        report["parameters"] = serde_json::json!([MarketPair::Openai,MarketPair::Anth].map(|m|
-            crate::build_info::rules_fingerprint(&crate::profiles::paper_config(m).unwrap())));
+        report["parameters"] = serde_json::json!([1,10].into_iter().flat_map(|scale|[MarketPair::Openai,MarketPair::Anth].map(|m| {
+            let mut c=crate::profiles::paper_config(m).unwrap();c.set_initial_capital(scale).unwrap();crate::build_info::rules_fingerprint(&c)
+        })).collect::<Vec<_>>());
         let path = std::path::Path::new(&path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();

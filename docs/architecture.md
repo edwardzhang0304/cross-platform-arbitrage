@@ -22,3 +22,5 @@ Windows 回归测试清理 SQLite 临时文件时，需等待异步模拟工作�
 `market_feed` pools only public books, marks, metadata and transport health by instrument. Weak references prevent the pool from keeping abandoned subscriptions alive; live service actors hold strong references. Concurrent same-instrument loads share one initialized feed, and separate instrument initialization cannot block public feed diagnostics. Per-account moving-average/strategy recovery state remains durable in its own ledger. No strategy, execution or accounting rules depend on profile IDs.
 
 The account directory/API identity also scopes monitoring, diagnostics and notification labels. Adding an account does not load credentials or start trading. Existing public URL aliases always resolve to the original profiles.
+
+账户资金档位：`capital_multiplier` 缺省为1，仅允许1或10。新账户创建时固定档位，50U保证金档对应每边150U持仓金额、3000U持仓上限、300U两边合计亏损保护及100U预留资金。档位是账户配置，不分叉策略代码；旧账本没有该字段时维持原1倍金额，持仓账本禁止自动切换档位。跨模式决策验收覆盖两标的×两档位，共192次观察、4组参数指纹。

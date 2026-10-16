@@ -698,8 +698,8 @@ pub(super) fn start_live_strategy(
 ) -> Result<()> {
     s.config.validate()?;
     ensure!(s.config.mode == Mode::Live && s.config.max_groups == 20
-        && s.config.max_notional_per_venue == Decimal::from(300)
-        && s.config.max_loss_usdc == Decimal::from(30), "approved continuous live bounds required");
+        && s.config.max_notional_per_venue == Decimal::from(300) * Decimal::from(s.config.capital_multiplier)
+        && s.config.max_loss_usdc == Decimal::from(30) * Decimal::from(s.config.capital_multiplier), "approved continuous live bounds required");
     ensure!(matches!(s.status, Status::Stopped | Status::PausedEntries | Status::Running | Status::Warming)
         && s.pending.is_none() && s.live_orphan.is_none() && s.loss_stop.is_none()
         && !s.close_requested && !s.stop_after_close && s.recovery_after_ms.is_none()

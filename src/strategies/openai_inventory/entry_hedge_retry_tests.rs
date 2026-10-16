@@ -67,6 +67,29 @@ fn workers(results:Vec<Option<i64>>)->([AccountWorker;2],Calls) {
 }
 
 #[tokio::test]
+async fn tenfold_partial_hedge_retries_only_unfilled_units_with_the_same_slippage_ladder() {
+    let mut now=crate::domain::now_ms();let (mut s,_,b)=fixture(now,MarketPair::Openai,Direction::LighterShort);
+    s.config.set_initial_capital(10).unwrap();s.config.validate().unwrap();
+    for p in &mut s.positions {p.units*=10;}for l in &mut s.lots {l.units*=10;}
+    for f in s.fills.values_mut() {f.units*=10;}
+    let p=s.pending.as_mut().unwrap();p.requested_units*=10;p.first_filled*=10;p.first_value*=Decimal::from(10);
+    for r in [&mut p.first,&mut p.hedge,&mut p.repair].into_iter().flatten(){r.units*=10;}
+    let requested=p.requested_units;let part=requested/3;let old_lot=s.lots[0].clone();
+    let (w,calls)=workers(vec![Some(part),Some(-1)]);let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+    for attempt in 1..=2 {
+        advance(&mut s,&mut db,&w,&fresh(&b,now),now).await.unwrap();now+=3000;
+        let mut a=evidence(&s,now);for x in &mut a{x.free_margin=Decimal::from(1000);x.equity=Decimal::from(1100);}
+        advance_with_hedge_evidence(&mut s,&mut db,&w,&fresh(&b,now),now,Some(&a)).await.unwrap();
+        let r=calls.lock().unwrap().last().unwrap().1.clone();
+        assert_eq!(r.units,if attempt==1 {requested}else{requested-part});
+        assert_eq!(r.limit,b[0].bids[0].price*(Decimal::ONE-Decimal::from(attempt+1)/Decimal::from(10000)));
+    }
+    advance(&mut s,&mut db,&w,&fresh(&b,now),now).await.unwrap();
+    assert!(s.pending.is_none());assert_eq!(s.positions[0].units,-s.positions[1].units);
+    assert_eq!(s.lots[1].units,requested);assert_eq!(s.lots[0].units,old_lot.units);
+}
+
+#[tokio::test]
 async fn each_step_can_complete_entry_in_both_markets_and_directions() {
     for m in [MarketPair::Openai,MarketPair::Anth] {for d in [Direction::LighterLong,Direction::LighterShort] {
         for success in 1..=4 {

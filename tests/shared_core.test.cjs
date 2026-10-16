@@ -10,11 +10,11 @@ test('architecture guard rejects OS, feature and paper-only decisions',()=>{
   assert.notDeepEqual(strategyParameters({grid:'5'}),strategyParameters({grid:'2'}));
 });
 test('release gate rejects mismatched decisions, parameters, source and packaged binaries',()=>{
-  const base={version:'test',source_commit:'commit',strategy_core_sha256:'a'.repeat(64),dirty:false,trace_sha256:'b'.repeat(64),observations:96,parameters:['openai','anth']};
+  const base={version:'test',source_commit:'commit',strategy_core_sha256:'a'.repeat(64),dirty:false,trace_sha256:'b'.repeat(64),observations:192,parameters:['openai-1','anth-1','openai-10','anth-10']};
   const reports=['aarch64-apple-darwin','x86_64-pc-windows-msvc'].flatMap(target=>['live','paper'].map(runtime=>({...base,target,runtime})));
   const binaries=[reports[1],reports[2]].map(r=>({...r}));
   assert.doesNotThrow(()=>verify(reports,binaries,'commit',base.strategy_core_sha256));
-  for(const [key,value] of Object.entries({trace_sha256:'c'.repeat(64),source_commit:'old',parameters:['different'],dirty:true,observations:95,target:'wrong'})) {
+  for(const [key,value] of Object.entries({trace_sha256:'c'.repeat(64),source_commit:'old',parameters:['different'],dirty:true,observations:191,target:'wrong'})) {
     const broken=structuredClone(reports);broken[1][key]=value;
     assert.throws(()=>verify(broken,binaries,'commit',base.strategy_core_sha256),key);
   }
