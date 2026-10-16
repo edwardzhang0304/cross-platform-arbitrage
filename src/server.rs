@@ -448,6 +448,27 @@ mod account_host_tests {
         let monitor=crate::monitor::account_page(&second.paths.profile,&host.profiles());assert!(monitor.contains(&second.paths.profile.inventory_api()));assert!(monitor.contains("\"id\":"));
         assert!(!page.contains("synthetic-private-password"));std::fs::remove_dir_all(host.root.as_ref()).unwrap();
     }
+    #[tokio::test]
+    async fn additional_profiles_save_lock_and_unlock_their_own_encrypted_credentials_without_network() {
+        let host=host();
+        for (i,market) in [MarketPair::Openai,MarketPair::Anth].into_iter().enumerate() {
+            let mut add=request(&uuid::Uuid::new_v4().to_string(),&format!("synthetic account {i}"));add.market=market;
+            let result=add_account(State(host.clone()),headers(&host.token),Json(add)).await.0;
+            let app=host.app(result["data"]["profile"]["id"].as_str().unwrap()).unwrap();
+            let mut r=Request::default();r.command="save_credentials".into();r.id="synthetic-save".into();r.password=format!("synthetic-vault-password-{i}");
+            r.entropy_address=format!("0x{:040x}",500+i);r.entropy_key=format!("{:064x}",1000+i);
+            r.lighter_address=format!("0x{:040x}",600+i);r.lighter_account_index=(700+i).to_string();r.lighter_key_index="4".into();r.lighter_key="1".repeat(80);
+            handle(&app,&headers(&app.token),&r).await.unwrap();
+            let saved=app.paths.load().unwrap().unwrap();assert_eq!(saved.strategy.market,market);
+            assert_eq!(saved.strategy.lighter_account,app.paths.profile.alias("lighter"));
+            let vault=std::fs::read_to_string(&app.paths.vault).unwrap();assert!(!vault.contains(&r.entropy_key));assert!(!vault.contains(&r.lighter_key));
+            r.command="lock".into();r.id="synthetic-lock".into();handle(&app,&headers(&app.token),&r).await.unwrap();assert!(app.inner.lock().await.password.is_none());
+            r.command="unlock".into();r.id="synthetic-unlock".into();handle(&app,&headers(&app.token),&r).await.unwrap();
+            assert!(app.inner.lock().await.password.is_some());assert!(app.inner.lock().await.service.is_none());assert!(!app.paths.database.exists());
+        }
+        assert!(host.app("openai").unwrap().inner.lock().await.password.is_none());assert!(!host.app("openai").unwrap().paths.vault.exists());
+        std::fs::remove_dir_all(host.root.as_ref()).unwrap();
+    }
     #[test]
     fn whole_program_exit_requires_all_profiles_stopped_and_reconciled() {
         let c=serde_json::from_str(include_str!("../tests/fixtures/inventory/live-strategy.json")).unwrap();

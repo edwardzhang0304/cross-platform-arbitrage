@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][Alias('Profile')][string]$Market,
   [ValidateRange(1024,65535)][int]$Port=18794
 )
@@ -9,7 +9,7 @@ $Base="http://127.0.0.1:$Port"
 $Label=$Market.ToUpperInvariant()
 $Before=Invoke-RestMethod "$Base$Api" -TimeoutSec 10
 if (!$Before.ok -or !$Before.data.view) { throw 'Load the account and original ledger first.' }
-if ($Before.data.profile.id -and $Before.data.profile.id -ne $Market) { throw 'Account profile mismatch.' }
+if (($Before.data.profile.id -and $Before.data.profile.id -ne $Market) -or ($Market -notin @('openai','anth') -and $Before.data.profile.id -ne $Market)) { throw 'Account profile mismatch.' }
 $State=$Before.data.view.snapshot
 if ($State.status -ne 'stopped' -or !$State.stop_requested -or !$State.paused) { throw 'Click Stop trading first. Wait until Stopped.' }
 if ($State.consecutive_rollbacks -lt 3) { throw 'No consecutive rollback lock to release.' }
@@ -24,7 +24,8 @@ $Result=Invoke-RestMethod "$Base$Endpoint" -Method Post -ContentType 'applicatio
 if (!$Result.ok) { throw $Result.error }
 $After=Invoke-RestMethod "$Base$Api" -TimeoutSec 10
 if (!$After.ok -or !$After.data.view) { throw 'Request acknowledged; status unavailable. Run diagnostics before any further action.' }
+if ($Before.data.profile.id -and $After.data.profile.id -ne $Before.data.profile.id) { throw 'Account profile changed; run diagnostics.' }
 $State=$After.data.view.snapshot
-[ordered]@{market=$Market;status=$State.status;consecutive_rollbacks=$State.consecutive_rollbacks;pending=($null -ne $State.pending);stop_requested=$State.stop_requested} | ConvertTo-Json
+[ordered]@{profile_id=$Market;market=$Before.data.profile.market;status=$State.status;consecutive_rollbacks=$State.consecutive_rollbacks;pending=($null -ne $State.pending);stop_requested=$State.stop_requested} | ConvertTo-Json
 if ($State.status -ne 'stopped' -or $State.consecutive_rollbacks -ne 0 -or !$State.stop_requested -or $null -ne $State.pending) { throw 'State changed or verification did not complete. Run diagnostics; do not start.' }
 Write-Output 'VERIFIED: rollback protection released; trading remains STOPPED. Start separately from the page.'

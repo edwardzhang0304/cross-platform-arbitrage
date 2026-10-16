@@ -53,7 +53,10 @@ fn resolve_with_worker_requirement<'a>(
         ensure!(lighter[0].address.eq_ignore_ascii_case(address), "Lighter master address mismatch");
     }
     if config.market==super::MarketPair::Anth {
-        ensure!(entropy_id=="anth:live:entropy:trading" && lighter[0].secret_id=="anth:live:lighter:trading",
+        // The host validates immutable profile aliases. Keep the credential
+        // namespace bound to those aliases, including additional ANTH accounts.
+        ensure!(entropy_id==format!("{}:trading",config.entropy_account)
+            && lighter[0].secret_id==format!("{}:trading",config.lighter_account),
             "ANTH credential namespace mismatch");
     }
     Ok((entropy, lighter[0]))
@@ -171,5 +174,30 @@ mod tests {
         assert!(resolve_read_only(&config, &accounts, &entries).is_ok());
         accounts[0].enabled = false;
         assert!(resolve_read_only(&config, &accounts, &entries).is_err());
+    }
+}
+
+#[cfg(test)]
+mod multi_profile_tests {
+    use super::*;
+    use crate::{account_profiles::AccountProfile,openai_inventory::MarketPair};
+    #[test]
+    fn each_market_can_bind_multiple_profile_credentials_but_never_a_peer_vault() {
+        for market in [MarketPair::Openai,MarketPair::Anth] {
+            for profile in [AccountProfile::legacy(market),AccountProfile::new(market,"second".into(),&uuid::Uuid::new_v4().to_string()).unwrap()] {
+                let mut c:InventoryConfig=serde_json::from_str(include_str!("../../../tests/fixtures/inventory/live-strategy.json")).unwrap();
+                c.market=market;c.lighter_account=profile.alias("lighter");c.entropy_account=profile.alias("entropy");c.lighter_address=Some("0x1111111111111111111111111111111111111111".into());
+                profile.validate_config(&c).unwrap();
+                let account:crate::config::AccountConfig=serde_json::from_value(serde_json::json!({"account_id":c.entropy_account,"address":c.entropy_address,"secret_id":format!("{}:trading",c.entropy_account)})).unwrap();
+                let accounts=vec![account];
+                let mut entries=vec![VaultEntrySummary{secret_id:format!("{}:trading",c.entropy_account),account_id:c.entropy_account.clone(),address:c.entropy_address.clone(),has_api_wallet_key:true,has_lighter_api_key:false,lighter_account_index:None,lighter_api_key_index:None,updated_at_ms:0},
+                    VaultEntrySummary{secret_id:format!("{}:trading",c.lighter_account),account_id:c.lighter_account.clone(),address:c.lighter_address.clone().unwrap(),has_api_wallet_key:false,has_lighter_api_key:true,lighter_account_index:c.lighter_account_index,lighter_api_key_index:Some(4),updated_at_ms:0}];
+                assert!(resolve(&c,&accounts,&entries).is_ok());
+                entries[1].account_id="other:live:lighter".into();assert!(resolve(&c,&accounts,&entries).is_err());
+                entries[1].account_id=c.lighter_account.clone();entries[1].lighter_account_index=Some(999);assert!(resolve(&c,&accounts,&entries).is_err());
+                entries[1].lighter_account_index=c.lighter_account_index;
+                if market==MarketPair::Anth {entries[1].secret_id="wrong-profile:trading".into();assert!(resolve(&c,&accounts,&entries).is_err());}
+            }
+        }
     }
 }
