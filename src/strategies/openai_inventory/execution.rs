@@ -253,6 +253,37 @@ fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side,slippage:Deci
     Ok(limit)
 }
 
+/// A new reducing proposal can be smaller than the configured slice when both
+/// venues can execute that same base quantity inside the ordinary price guard.
+/// Existing requests, uncertain fills, and entry quantities are never resized.
+pub(super) fn protected_close_units(s:&Snapshot,books:&[Book;2],wanted:i64,now:u64)->Result<i64> {
+    ensure!(wanted>0,"nonpositive close size");
+    let mut paired = wanted;
+    for venue in [Venue::Lighter,Venue::Entropy] {
+        let book=&books[venue.index()];
+        book.validate(now,s.config.book_max_age_ms)?;
+        let side=s.direction.side(venue,Action::Close);
+        let limit=protected_price_bound(s,book,venue,side,s.config.execution_slippage_bps)?;
+        let mut available=0;
+        for level in if side==Side::Buy {&book.asks}else{&book.bids} {
+            if if side==Side::Buy {level.price>limit}else{level.price<limit} {break;}
+            available+=level.units.min(wanted-available);
+            if available==wanted {break;}
+        }
+        paired=paired.min(available);
+    }
+    let units=paired/s.config.common_step()*s.config.common_step();
+    // Lighter's dust exception is only for closing its whole actual position.
+    // A smaller clipped proposal must still be a legal partial reduction.
+    if units>0 && units<wanted && units<s.positions[0].units.abs()
+        && (units<s.config.market.minimum_units(Venue::Lighter)
+            || books[0].vwap(s.direction.side(Venue::Lighter,Action::Close),units)
+                .is_ok_and(|(px,_)|s.config.quantity(units)*px<Decimal::from(10))) {
+        return Ok(0);
+    }
+    Ok(units)
+}
+
 /// A reducing Entropy repair may consume only the available protected depth.
 /// It never exceeds this attempt's limit, rounds up, changes an existing request, or
 /// marks the remaining operation complete. The next slice needs a new terminal
@@ -500,6 +531,10 @@ pub(super) async fn advance_with_hedge_evidence(
         for b in books {
             b.validate(now, s.config.book_max_age_ms)?;
         }
+        // A risk-only thin-book estimate can trigger reducing protection, but
+        // cannot replace the original full-depth gate for new exposure. Check
+        // again here because the book may have thinned since reservation.
+        s.total_pnl(books)?;
         let op = s.pending.as_ref().unwrap();
         ensure!(
             now.saturating_sub(op.created_ms) <= s.config.operation_timeout_ms,

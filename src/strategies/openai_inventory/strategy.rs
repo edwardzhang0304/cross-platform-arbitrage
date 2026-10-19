@@ -164,10 +164,7 @@ fn recoverable_attention(s: &Snapshot) -> bool {
 pub fn enforce_loss_limit(s: &mut Snapshot, books: &[Book; 2], now: u64) -> Result<bool> {
     let mut changed = false;
     if s.loss_stop.is_none() {
-        for b in books {
-            b.validate(now, s.config.book_max_age_ms)?;
-        }
-        let pnl = s.total_pnl(books)?;
+        let pnl = s.risk_valuation(books, now)?.estimated_total_pnl;
         if pnl > -s.config.max_loss_usdc {
             return Ok(false);
         }
@@ -502,6 +499,8 @@ fn evaluate_inner(
                 let mut qty = s.config.common_units(s.config.close_slice_notional, books[0].mid().unwrap())?.min(lot.units);
                 if s.config.shared_exit_conditions && lot.units-qty>0
                     && s.config.quantity(lot.units-qty)*books[0].mid().unwrap()<Decimal::from(10) {qty=lot.units;}
+                qty = execution::protected_close_units(s, books, qty, now)?;
+                if qty == 0 { continue; }
                 let eligible = funding_ready && if s.config.shared_exit_conditions {
                     shared_profit_exit_eligible(s,Some(lot),books,qty,mean,now).unwrap_or(false)
                 } else {group_exit_eligible(s, lot, books, qty, now).unwrap_or(false)};
@@ -541,6 +540,15 @@ fn evaluate_inner(
             if held - qty > 0 && s.config.quantity(held - qty) * books[0].mid().unwrap() < Decimal::from(10)
             {
                 qty = held;
+            }
+            if s.close_requested {
+                // Stop-loss/margin exits need only the depth of this slice,
+                // never executable depth for the entire held inventory.
+                qty = execution::protected_close_units(s, books, qty, now)?;
+                if qty == 0 {
+                    s.reason = "protected close waiting for executable slice depth; close request retained".into();
+                    return Ok(None);
+                }
             }
             if qty > 0 {
                 action = Some((Action::Close, 0, qty));

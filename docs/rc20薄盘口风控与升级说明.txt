@@ -1,0 +1,53 @@
+rc.20：薄盘口不再阻断逐组平仓和亏损保护（Windows x64）
+
+修复内容
+
+原先在策略开始判断前，程序要求当前可见盘口能覆盖全部持仓，才能计算总平仓盈亏。大账户持仓超过可见盘口时，会返回 insufficient depth，连带跳过后面的逐组平仓、亏损保护和保证金危险检查。
+
+现在分开处理：
+1. 可见盘口足够时，仍使用原来的整仓成交均价模型。
+2. 可见盘口不足时，风控对可见数量按盘口计算，超出部分按该方向最后一档可见价格估值；仍计入已实现盈亏、手续费、已结算资金费和原滑点成本。它只是风险估值，未知深度真实成交可能更差，不能保证最终止损金额。
+3. 估值不再阻断已有持仓逐组止盈。每组仍须达到原利润/价差条件，两次确认，且真实可见深度能覆盖本次平仓切片；一整组放不下时，可在同样利润和滑点条件下先平合法的一部分；不使用风险估值认定盈利或生成虚构成交。
+4. 亏损保护或保证金危险触发的减仓，按两平台在原滑点内共同支持的数量切片，遵守共同精度和 Lighter 最小委托限制。没有合法切片时保留保护和退出请求，继续等可执行盘口；不会擅自放宽成紧急平仓的5%。
+5. 新开仓仍要求原来的完整持仓估值和本单深度，发单前再次核对。已经提交、成交不明的订单继续按原身份查询，不改数量、不重复发送；已成交单边继续原配平/补偿流程。
+6. 紧急“平掉全部持仓”的独立5%保护流程保持不变。普通亏损保护仍可能受真实流动性、网络及平台可用性限制。
+
+诊断新增 risk_valuation（仅风险估值）、unseen_exit_units（Lighter/Entropy 超出可见退出深度的数量）、盘口买卖档位数和总数量。盘口不足时精确整仓退出收益仍可为空，风险估值不会冒充可兑现收益。
+不更改持仓组、开仓锚点、均线、加仓时间与额度、杠杆、金额档位或已有账本格式。
+
+Windows 升级（已有两个 OPENAI、一个 ANTH）
+
+1. 把新版 ZIP 解压到桌面的 CPA-rc20 文件夹。找到里面的 Cross-Platform-Arbitrage.exe，暂不打开。
+2. 在旧程序依次停止 OPENAI账号1、OPENAI账号2、ANTH。运行旧程序目录中的 Run-Diagnostics.cmd；核对三个账户均停止、无 pending/孤立仓位/未完成挂单，两边实际数量与账本一致。正常配对持仓可以保留，不用为升级平仓。若仍有未完成订单，先处理该异常，不能直接结束进程或搬账本。
+3. 点击一次“退出所有账户”，确认后台已退出。备份旧程序旁完整 data 文件夹，然后将完整 data 复制到新版 EXE 旁。检查没有变成 data/data。多个账户目录、账户目录表、加密密钥、飞书配置和账本必须一起复制。
+4. 双击新 EXE，打开账户管理页面。应保留原来的三个账户，不要重新创建账号2，不要重新填写或覆盖旧交易凭据。
+5. 在 PowerShell 中执行下面整段，检查新程序与包内版本身份一致（如果解压位置不同，先修改第一行路径）：
+
+   $new = Join-Path $env:USERPROFILE 'Desktop\CPA-rc20\Cross-Platform-Arbitrage-Windows-x64'
+   $expected = Get-Content (Join-Path $new 'build-info.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+   $h = Invoke-RestMethod 'http://127.0.0.1:18794/health' -TimeoutSec 10
+   if ($h.version -ne '0.2.0-rc.20' -or $h.build.runtime -ne 'live' -or $h.build.dirty -or $h.build.source_commit -ne $expected.source_commit -or $h.build.strategy_core_sha256 -ne $expected.strategy_core_sha256) { throw '版本核对失败，先不要启动策略' }
+   $active = [string]$h.data_dir
+   if ($active.StartsWith('\\?\')) { $active = $active.Substring(4) }
+   $wanted = Join-Path $new 'data'
+   if ($active.TrimEnd('\') -ine $wanted.TrimEnd('\')) { throw '运行的数据目录不是新目录，先不要启动策略' }
+   [ordered]@{version=$h.version;commit=$h.build.source_commit;data_dir=$h.data_dir;profiles=$h.profiles} | ConvertTo-Json -Depth 5
+
+6. 分别解锁、加载三个已有账户，先保持停止。核对组数和两边持仓与升级前相符，pending/孤立仓位为空。保护状态不能仅靠点击启动解除；若显示需要处理，先读具体原因并诊断。
+7. 给 OPENAI账号2 配置下面的飞书通知并收到测试消息；账号1和ANTH原通知随完整 data 迁移、解锁恢复。
+8. 核对完成后，分别启动三个策略。新目录双击 Run-Diagnostics.cmd，将生成的 ZIP 发回验收。诊断自动包含全部账户，无需分别导出。
+
+已有持仓不需要清空。停止策略不等于退出进程，关闭浏览器也不等于退出。升级后产生新成交，不可用旧备份覆盖当前账本。
+
+OPENAI账号2飞书配置
+
+1. 账户管理页面进入 OPENAI账号2，确认页面顶部当前账户名称正确。
+2. 找到“4. 飞书异常通知”，展开“配置飞书机器人”。
+3. App ID、App Secret 使用账号1已经正常发送的同一个机器人。App Secret 从飞书开发者后台取得，只在 Windows 本机输入，不放到 GitHub、诊断包或聊天中。
+4. 接收位置选“私聊（open_id）”，接收 ID 与账号1当前通知配置中本人接收 ID 相同，不填手机号。
+5. 点击“加密保存当前账户通知”，再点击“发送测试通知”。手机收到标注 OPENAI账号2 的测试消息，页面显示“飞书异常通知已启用”，即配置完成。
+6. 无需停止交易即可保存通知，不会下交易单。每次重启先解锁并加载该账户，通知随该账户恢复。账号1的通知配置不会自动复制到账号2。
+
+验证范围
+
+合成数据覆盖两种标的、两个方向、原资金档及10倍资金档：薄盘口逐组止盈；亏损线触发、持久化、分片减仓到零并停止；保证金危险退出；最小数量、共同精度与滑点保护；过期/断开/错误盘口拒绝；开仓预留后盘口变薄时不发新单；真实成交核对与原未知成交恢复机制。另运行完整共享 live/paper 核心、签名向量、前端、Windows PowerShell 5.1 只读诊断及无凭据安装包冒烟测试。

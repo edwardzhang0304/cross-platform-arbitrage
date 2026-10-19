@@ -34,6 +34,18 @@ function Read-Local([string]$Path) {
     finally { $reader.Dispose() }
   } finally { $res.Dispose() }
 }
+function Book-View($book) {
+  if ($null -eq $book) { return $null }
+  return [ordered]@{
+    connected=$book.connected; received_ms=$book.received_ms
+    bid=$(if ($null -ne $book.bids -and @($book.bids).Count -gt 0) { $book.bids[0].price })
+    ask=$(if ($null -ne $book.asks -and @($book.asks).Count -gt 0) { $book.asks[0].price })
+    bid_levels=@($book.bids | Where-Object { $null -ne $_ }).Count
+    ask_levels=@($book.asks | Where-Object { $null -ne $_ }).Count
+    bid_units=($book.bids | Measure-Object -Property units -Sum).Sum
+    ask_units=($book.asks | Measure-Object -Property units -Sum).Sum
+  }
+}
 function Request-View($r) {
   if ($null -eq $r) { return $null }
   return [ordered]@{
@@ -128,6 +140,7 @@ function Capture-Market($Profile) {
       if ($s.status -eq 'needs_attention') { $flags.Add('NEEDS_ATTENTION') }
       if ($null -ne $s.live_orphan) { $flags.Add('ORPHAN_INCIDENT') }
       if ($null -ne $s.loss_stop) { $flags.Add('LOSS_PROTECTION') }
+      if ($null -ne $v.risk_valuation -and !$v.risk_valuation.depth_complete) { $flags.Add('RISK_VALUATION_THIN_DEPTH') }
       foreach ($venue in @('lighter','entropy')) {
         $a=@($v.accounts | Where-Object { $_.venue -eq $venue })
         $index=if ($venue -eq 'lighter') { 0 } else { 1 }
@@ -143,7 +156,8 @@ function Capture-Market($Profile) {
       snapshot=(Snapshot-View $s)
       recovery_policy=($d.recovery_policy | Select-Object retry_interval_ms,initial_slippage_bps,step_slippage_bps,max_slippage_bps,unknown_order_action,@{Name='entry_hedge_retry';Expression={$_.entry_hedge_retry | Select-Object retry_interval_ms,slippage_bps,after_exhaustion,unknown_order_action}})
       accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage)
-      books=@($v.books | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{connected=$_.connected; received_ms=$_.received_ms; bid=$(if (@($_.bids).Count -gt 0 -and $null -ne $_.bids) { $_.bids[0].price }); ask=$(if (@($_.asks).Count -gt 0 -and $null -ne $_.asks) { $_.asks[0].price })} })
+      books=@($v.books | Where-Object { $null -ne $_ } | ForEach-Object { Book-View $_ })
+      risk_valuation=($v.risk_valuation | Select-Object estimated_total_pnl,depth_complete,unseen_exit_units)
       market_transport=(Transport-View $v.market_transport)
       sampling=($v.sampling | Select-Object ready,continuity_active,covered_ms,required_ms); directional_means=$v.directional_means; submission_enabled=$v.submission_enabled
       warning=(SafeText $v.transient_warning); lookup_note=(SafeText $v.order_lookup_note)
@@ -294,7 +308,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc19'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc20'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   profiles=$profiles; observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

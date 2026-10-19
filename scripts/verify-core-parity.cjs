@@ -17,7 +17,7 @@ function verify(reports, binaries, expectedCommit, expectedCore, windowsOnly = f
     assert.equal(r.version, reference.version, 'different program version');
     assert.match(r.trace_sha256, /^[a-f0-9]{64}$/);
     assert.equal(r.trace_sha256, reference.trace_sha256, 'different strategy decision trace');
-    assert.equal(r.observations, 192, 'incomplete parity scenarios');
+    assert.equal(r.observations, 224, 'incomplete parity scenarios');
     assert.equal(r.parameters.length, 4, 'both markets and both capital tiers required');
     assert.deepEqual(r.parameters, reference.parameters, 'different strategy parameters');
   }

@@ -1862,6 +1862,7 @@ include!("entry_confirmation_tests.rs");
 include!("independent_entry_tests.rs");
 include!("core_parity_tests.rs");
 include!("capital_tests.rs");
+include!("thin_depth_tests.rs");
 include!("rules_upgrade_tests.rs");
 
 #[test]

@@ -157,6 +157,15 @@ pub struct AccountEvidence {
     pub authenticated: bool,
     pub liquidation_price: Option<Decimal>,
 }
+/// Risk-only mark when the visible book cannot price the entire inventory.
+/// Unseen units are marked at the last visible exit price, not represented as
+/// executable liquidity. Actual exits and new-entry admission still use VWAP.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RiskValuation {
+    pub estimated_total_pnl: Decimal,
+    pub depth_complete: bool,
+    pub unseen_exit_units: [i64; 2],
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
     pub id: String,
@@ -600,22 +609,59 @@ impl Snapshot {
         Ok(())
     }
     pub fn remaining_net(&self, books: &[Book; 2]) -> Result<Decimal> {
+        let mut prices = [Decimal::ZERO; 2];
+        for (i, p) in self.positions.iter().enumerate() {
+            if p.units != 0 {
+                prices[i] = books[i].vwap(
+                    if p.units > 0 { Side::Sell } else { Side::Buy }, p.units.abs(),
+                )?.0;
+            }
+        }
+        Ok(self.pnl_at_exit_prices(prices) - self.round_start_pnl)
+    }
+    /// Keep loss protection alive on thin but fresh books. The unseen tail may
+    /// execute worse than this estimate, so it must never authorize an entry,
+    /// a profit exit, or a full-size order. Complete depth retains exact VWAP.
+    pub fn risk_valuation(&self, books: &[Book; 2], now: u64) -> Result<RiskValuation> {
+        let mut prices = [Decimal::ZERO; 2];
+        let mut unseen_exit_units = [0; 2];
+        for (i, book) in books.iter().enumerate() {
+            book.validate(now, self.config.book_max_age_ms)?;
+            let p = &self.positions[i];
+            if p.units == 0 { continue; }
+            let wanted = p.units.checked_abs().ok_or_else(|| anyhow::anyhow!("position size overflow"))?;
+            let mut left = wanted;
+            let mut cost = Decimal::ZERO;
+            let mut last = Decimal::ZERO;
+            for level in if p.units > 0 { &book.bids } else { &book.asks } {
+                let take = left.min(level.units);
+                cost += level.price * Decimal::from(take);
+                left -= take;
+                last = level.price;
+                if left == 0 { break; }
+            }
+            unseen_exit_units[i] = left;
+            prices[i] = (cost + last * Decimal::from(left)) / Decimal::from(wanted);
+        }
+        Ok(RiskValuation {
+            estimated_total_pnl: self.pnl_at_exit_prices(prices),
+            depth_complete: unseen_exit_units == [0, 0],
+            unseen_exit_units,
+        })
+    }
+    fn pnl_at_exit_prices(&self, prices: [Decimal; 2]) -> Decimal {
         let mut net = Decimal::ZERO;
         for (i, p) in self.positions.iter().enumerate() {
             if p.units == 0 {
                 continue;
             }
-            let (price, _) = books[i].vwap(
-                if p.units > 0 { Side::Sell } else { Side::Buy },
-                p.units.abs(),
-            )?;
             let rate = if i == 0 {
                 self.config.fee_lighter
             } else {
                 self.config.fee_entropy
             };
             let slip = self.config.execution_slippage_bps / Decimal::from(10_000);
-            let px = price * (Decimal::ONE - Decimal::from(p.units.signum()) * slip);
+            let px = prices[i] * (Decimal::ONE - Decimal::from(p.units.signum()) * slip);
             net += p.unrealized_for(px, self.config.market) - self.config.quantity(p.units.abs()) * px * rate;
         }
         net += self
@@ -623,7 +669,7 @@ impl Snapshot {
             .iter()
             .map(|p| p.realized + p.funding - p.fees)
             .sum::<Decimal>();
-        Ok(net - self.round_start_pnl)
+        net
     }
     pub fn round_carry(&self) -> Decimal {
         self.positions.iter().map(|p| p.funding - p.fees).sum()

@@ -75,6 +75,28 @@ fn paper_and_live_share_the_same_decision_trace() {
         }
     }
     }
+    // Risk valuation and reducing slices must also agree across OS/runtime.
+    for scale in [1,10] {for market in [MarketPair::Openai,MarketPair::Anth] {for reverse in [false,true] {
+        for loss in [false,true] {
+            let now=4_000_000;let (mut paper,mut accounts,group)=thin_group_fixture(now,market,scale,reverse);
+            paper.instance_id=format!("thin-parity-{}-{scale}-{reverse}-{loss}",market.id());
+            if loss {paper.config.max_loss_usdc=d(scale);paper.config.close_slice_notional=d(150*scale);}
+            let mut live=paper.clone();live.config.mode=Mode::Live;
+            for offset in [0,15000] {
+                let t=now+offset;for a in &mut accounts {a.observed_ms=t;}
+                let b=thin_books(t,if loss {40}else{12},reverse,group);
+                let p=strategy::evaluate(&mut paper,&b,&accounts,t).unwrap();
+                let l=strategy::evaluate(&mut live,&b,&accounts,t).unwrap();
+                assert_eq!(serde_json::to_value(&p).unwrap(),serde_json::to_value(&l).unwrap());
+                if loss || offset>0 {assert_eq!(p.as_ref().map(|op|op.action),Some(Action::Close));}
+                let mut normalized=serde_json::to_value(&live).unwrap();normalized["config"]["mode"]="paper".into();
+                assert_eq!(serde_json::to_value(&paper).unwrap(),normalized);
+                let risk=paper.risk_valuation(&b,t).unwrap();assert!(!risk.depth_complete);
+                trace.push(serde_json::json!({"market":market,"capital_multiplier":scale,"reverse":reverse,
+                    "case":if loss {"thin_loss"}else{"thin_profit"},"offset":offset,"operation":p,"risk":risk}));
+            }
+        }
+    }}}
     if let Some(path) = std::env::var_os("STRATEGY_PARITY_REPORT") {
         let mut report = crate::build_info::current();
         report["trace_sha256"] = format!("{:x}", Sha256::digest(serde_json::to_vec(&trace).unwrap())).into();

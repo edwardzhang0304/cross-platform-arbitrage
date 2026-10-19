@@ -29,6 +29,9 @@ pub struct InventoryView {
     pub directional_means: [Option<Decimal>; 2],
     pub net_pnl: Option<Decimal>,
     pub estimated_exit_net: Option<Decimal>,
+    /// Separate from executable profit estimates; never used to display a
+    /// guaranteed exit value or to admit a new order.
+    pub risk_valuation: Option<RiskValuation>,
     pub profit_accounting: accounting::NetProfitAccounting,
     pub cumulative_fees: Decimal,
     pub cumulative_execution_cost: Decimal,
@@ -141,7 +144,7 @@ impl InventoryService {
         store.commit(&state, crate::domain::now_ms(), "service_started")?;
         let mut accounting_cache=accounting::AccountingCache::default();
         let profit_accounting=accounting_cache.report(&state,&books.read().unwrap(),crate::domain::now_ms());
-        let view=Arc::new(RwLock::new(InventoryView{entry_first_venue:Venue::Entropy,close_first_venue:Venue::Lighter,snapshot:state.clone(),books:books.read().unwrap().clone(),market_transport:transport.read().unwrap().clone(),chart_points:state.entry_mean.points.clone(),marks:marks.read().unwrap().clone(),accounts:None,mean:None,directional_means:[None,None],net_pnl:None,estimated_exit_net:None,profit_accounting,cumulative_fees:state.cumulative_fees(),cumulative_execution_cost:state.execution_cost,execution_cost_started_ms:state.execution_cost_started_ms,execution_cost_tracked_fills:state.execution_cost_tracked_fills,execution_cost_untracked_fills:state.untracked_execution_fills(),
+        let view=Arc::new(RwLock::new(InventoryView{entry_first_venue:Venue::Entropy,close_first_venue:Venue::Lighter,snapshot:state.clone(),books:books.read().unwrap().clone(),market_transport:transport.read().unwrap().clone(),chart_points:state.entry_mean.points.clone(),marks:marks.read().unwrap().clone(),accounts:None,mean:None,directional_means:[None,None],net_pnl:None,estimated_exit_net:None,risk_valuation:None,profit_accounting,cumulative_fees:state.cumulative_fees(),cumulative_execution_cost:state.execution_cost,execution_cost_started_ms:state.execution_cost_started_ms,execution_cost_tracked_fills:state.execution_cost_tracked_fills,execution_cost_untracked_fills:state.untracked_execution_fills(),
             submission_enabled:false,transient_warning:String::new(),order_lookup_note:String::new(),sampling:strategy::entry_sampling_progress(&state,crate::domain::now_ms()),funding_note:if config.mode==Mode::Paper {"虚拟成交；手续费按配置扣除；资金费为模拟估算，并非真实账户结算".into()} else {"Settled funding synchronized from venue history; pending payments are not yet realized".into()}}));
         let (commands, mut rx) = mpsc::channel::<Command>(16);
         let notifications=crate::notifications::NotificationHandle::default();
@@ -398,6 +401,7 @@ impl InventoryService {
                         v.submission_enabled=v.transient_warning.is_empty() && state.live_orphan.is_none() && config.mode==Mode::Live && workers.iter().all(AccountWorker::is_alive) && matches!(state.status,Status::Running|Status::Closing|Status::PausedEntries)
                             && current.iter().all(|b|b.validate(mean_now,config.book_max_age_ms).is_ok())
                             && accounts.as_ref().is_some_and(|a|a.iter().all(|a|a.authenticated && a.open_orders==0 && a.observed_ms<=mean_now && mean_now-a.observed_ms<=config.account_max_age_ms));
+                        v.risk_valuation=state.risk_valuation(&current,mean_now).ok();
                         v.snapshot=state.clone();v.books=current.clone();v.accounts=accounts.clone();v.mean=mean;v.directional_means=[Direction::LighterLong,Direction::LighterShort].map(|d|strategy::entry_reference_mean_for(&state,mean_now,d));v.net_pnl=if state.live_orphan.is_some() || super::emergency_exit::active(&state){None}else{state.total_pnl(&current).ok()};v.estimated_exit_net=if state.live_orphan.is_some() || super::emergency_exit::active(&state){None}else{state.remaining_net(&current).ok()};v.cumulative_fees=state.cumulative_fees();v.cumulative_execution_cost=state.execution_cost;v.execution_cost_started_ms=state.execution_cost_started_ms;v.execution_cost_tracked_fills=state.execution_cost_tracked_fills;v.execution_cost_untracked_fills=state.untracked_execution_fills();
                         v.profit_accounting=accounting_cache.report(&state,&current,mean_now);
                         v.sampling=strategy::entry_sampling_progress(&state,mean_now);v.marks=marks.read().unwrap().clone();

@@ -4,6 +4,8 @@
 
 源码仓库：[edwardzhang0304/cross-platform-arbitrage](https://github.com/edwardzhang0304/cross-platform-arbitrage)。原仓库名为 `openai-paired-trader`。
 
+rc.20 修复可见盘口不足时整仓估值阻断逐组平仓和亏损保护的问题；风险估值与实际委托深度分别核验。Windows 升级和账号2飞书配置见 [rc20 升级说明](docs/rc20薄盘口风控与升级说明.txt)。
+
 ## 怎么用
 
 1. 从本仓库成功的 GitHub Actions 运行中下载 `verified-windows`，使用其中的 `Cross-Platform-Arbitrage-Windows-x64.zip`。目前只交付 Windows 包；发布前验证 Windows live/paper 的同一核心、参数和决策轨迹。
