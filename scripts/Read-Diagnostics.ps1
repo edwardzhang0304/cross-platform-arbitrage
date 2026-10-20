@@ -75,9 +75,10 @@ function Emergency-View($e) {
   return [ordered]@{
     operation_ref=(Ref $e.id); requested_ms=$e.requested_ms; completed_ms=$e.completed_ms; flat_confirmed_ms=$e.flat_confirmed_ms
     remaining_units=$e.remaining_units; observed_ms=$e.observed_ms; next_attempt_ms=$e.next_attempt_ms
+    account_retry=@($e.account_retry | Select-Object attempts,after_ms)
     warnings=@($e.warnings | ForEach-Object { SafeText $_ }); accounting_error=(SafeText $e.accounting_error)
-    prior=@($e.prior | ForEach-Object { [ordered]@{terminal=$_.terminal; request=(Request-View $_.request)} })
-    orders=@($e.orders | Select-Object -Last 40 | ForEach-Object { [ordered]@{terminal=$_.terminal; request=(Request-View $_.request)} })
+    prior=@($e.prior | ForEach-Object { [ordered]@{terminal=$_.terminal; request=(Request-View $_.request); lookup_retry=($_.lookup_retry | Select-Object attempts,after_ms); lookup_note=(SafeText $_.lookup_note)} })
+    orders=@($e.orders | Select-Object -Last 40 | ForEach-Object { [ordered]@{terminal=$_.terminal; request=(Request-View $_.request); lookup_retry=($_.lookup_retry | Select-Object attempts,after_ms); lookup_note=(SafeText $_.lookup_note)} })
     order_count=$e.next_sequence; buffered_fill_count=@($e.fills.PSObject.Properties).Count
     buffered_fills=@($e.fills.PSObject.Properties.Value | Sort-Object time_ms -Descending | Select-Object -First 120 | ForEach-Object { [ordered]@{fill_ref=(Ref $_.id); order_ref=(Ref $_.order_id); venue=$_.venue; side=$_.side; units=$_.units; price=$_.price; fee=$_.fee; time_ms=$_.time_ms} })
   }

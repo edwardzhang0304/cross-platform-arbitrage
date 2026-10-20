@@ -75,9 +75,10 @@
       progress.hidden=!emergency || (emergency.completed_ms && snapshot.status!=='stopped');
       progress.textContent=!emergency?'':emergency.completed_ms?'紧急全部平仓完成：两平台持仓为零，已停止交易。':
         `紧急平仓 · 最大滑点 5% · 剩余 Lighter ${quantity(emergency.remaining_units?.[0])} / Entropy ${quantity(emergency.remaining_units?.[1])}。`+
-        (emergency.flat_confirmed_ms?'持仓已归零，仍在核对原订单和成交记录。':'正在按各平台实际持仓独立减仓。')+
+        (emergency.flat_confirmed_ms?`上次核对持仓已归零（${new Date(emergency.flat_confirmed_ms).toLocaleString()}），仍在核对原订单和成交记录；后台持续复查。`:'正在按各平台实际持仓独立减仓。')+
         (emergency.warnings||[]).filter(Boolean).join('；')+(emergency.accounting_error||'');
       get('groups').textContent = `${(snapshot.lots || []).length} / ${snapshot.closed_groups || 0}`;
+      get('groups').title = emergency?.flat_confirmed_ms && !emergency.completed_ms ? '账本组数待核对，实际持仓以上方账户和最近核对时间为准' : '账本持仓组数 / 已平组数';
       for (const [id, value] of [['pnl', view.net_pnl], ['closed-pnl', view.profit_accounting?.closed_net_profit]]) {
         const cell = profit(value);
         get(id).textContent = cell.text;

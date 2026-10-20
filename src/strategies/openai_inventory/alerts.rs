@@ -27,7 +27,11 @@ struct Incident {
 }
 
 fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
-    if super::emergency_exit::active(s) {return Some(("紧急全部平仓仍未完成，请查看两平台剩余持仓和订单核对进度",false));}
+    if super::emergency_exit::active(s) {
+        return Some((if s.emergency_exit.as_ref().unwrap().flat_confirmed_ms.is_some() {
+            "上次核对两平台持仓已归零，历史订单和账本仍待核对；保持停止，后台继续复查持仓"
+        } else {"紧急全部平仓仍未完成，请查看两平台剩余持仓和订单核对进度"},false));
+    }
     if s.live_orphan.is_some() {return Some(("出现未归属或不一致仓位，需要人工核对",true));}
     if s.loss_stop.is_some() && !s.lots.is_empty() {return Some(("已触发总亏损保护，正在受控平仓",true));}
     if s.status==Status::NeedsAttention && s.pending.is_none() && s.reason.starts_with("execution recovered;") {
@@ -103,12 +107,17 @@ fn cancel(tx:&Transaction<'_>,active:&Option<Incident>)->Result<()> {
 }
 fn promote(tx:&Transaction<'_>,a:&mut Incident,at:u64)->Result<()> {
     if a.body.is_empty() || (!a.urgent && at.saturating_sub(a.started_ms)<EXECUTION_GRACE_MS) {return Ok(());}
+    let body=format!("{}\n异常已持续至少 {} 秒；请运行程序目录中的一键诊断，发送生成的诊断包。",a.body,at.saturating_sub(a.started_ms)/1000);
     if let Some(id)=&a.outbox_id {
         let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM notification_outbox WHERE id=?1)",[id],|r|r.get(0))?;
-        if exists {return Ok(());}
+        if exists {
+            // Preserve delivery retry/cooldown, but don't send an obsolete
+            // "still closing" body after fresh evidence says accounts are flat.
+            tx.execute("UPDATE notification_outbox SET body=?1 WHERE id=?2",params![body,id])?;
+            return Ok(());
+        }
     }
     if a.notice_ms!=0 && at.saturating_sub(a.notice_ms)<REMINDER_MS {return Ok(());}
-    let body=format!("{}\n异常已持续至少 {} 秒；请运行程序目录中的一键诊断，发送生成的诊断包。",a.body,at.saturating_sub(a.started_ms)/1000);
     a.outbox_id=Some(enqueue(tx,at,&body)?);a.notice_ms=at;
     Ok(())
 }

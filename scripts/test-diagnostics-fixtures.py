@@ -85,6 +85,10 @@ for profile in profiles:
         warnings=[f'query failed https://private.invalid/?key={secret}', ''],accounting_error='',
         prior=[dict(request=request,terminal=False)],orders=[dict(request=request,terminal=False)],
         fills=state['fills'],unexpected_secret=secret)
+    state['emergency_exit']['account_retry']=[dict(attempts=0,after_ms=now+15000,unexpected_secret=secret)]*2
+    for item in state['emergency_exit']['prior']+state['emergency_exit']['orders']:
+        item['lookup_retry']=dict(attempts=5,after_ms=now+30000,unexpected_secret=secret)
+        item['lookup_note']='Entropy order status=filled requested=700 remaining=500 expected=200 observed=200 rows=1'
     if profile['id']==extra_id:
         state['closed_groups']=99
         state['anchor']='41'

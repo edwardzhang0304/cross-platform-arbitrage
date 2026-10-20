@@ -1,0 +1,46 @@
+rc.21：部分成交订单核对、查询退避和清仓状态修复（Windows x64）
+
+这次修了什么
+
+1. Entropy 的 IOC 订单可能标为 filled，同时仍返回未成交的剩余数量。旧代码把 filled 一律当成全额成交，导致已经拿到部分成交记录后，还在等不存在的剩余成交。新版先验证订单身份，再按原数量减剩余数量核对真实成交记录。保留旧版“全额成交但 sz 仍等于原数量”的响应兼容，该情况必须拿到全额真实成交记录才通过。缺失、重复、数量不匹配的记录不能被当成核对成功。
+2. 无进展的订单查询按 3、6、12、24、30 秒退避，之后最多每30秒查一次；获得新成交或终态会重置等待。紧急清仓的查询进度写入账本，重启不丢失。普通已确认订单后的配对腿补单、逐档放宽滑点等执行规则不变。
+3. 紧急清仓后，只为复查零持仓而发起的完整账户查询改为15秒一次；未完成委托只查原单，绝不因超时重复下单。平台查询失败也有退避。账户或交易所仍可能限流、断网，这不是无限查询额度。
+4. 旧订单查询没有新进展或查询失败，不再清掉刚验证的零持仓状态。页面会区分“正在平仓”和“已清仓，正在核对账本”；提示中的零持仓是上次可信核对结果，后台继续复查。出现迟到成交时会重新核对并减仓。
+5. 只有所有旧单及紧急减仓订单均已确认终态、真实成交记账后为零、两平台重新读取的可信持仓也为零，才完成账本收尾并停止。不会删除 pending、伪造成交或直接把账本数量改成零。
+6. 飞书继续对持续异常提醒；已清仓但账本未核对时会明确说明，不再只说仍在平仓。尚未送出的消息随新证据更新，保留重试次数及提醒间隔。
+7. 一键诊断增加原单状态、原数量、剩余数量、应有/已查到成交数量摘要，以及各订单/账户的下次查询时间。仍不收集私钥；订单身份仅输出不可逆引用。
+
+开仓条件、均线、网格、加仓间隔、金额、最大组数、杠杆和止损参数不变。只交付 Windows 包。
+
+本次升级：在原目录替换程序，不迁移或重建账本
+
+适用于已有三个账户，ANTH 已由紧急平仓减至零但旧订单仍未核对的这次故障。正常保留配对持仓的 OPENAI 账户不需要为了升级而平仓。
+
+1. 把新版 ZIP 解压到桌面 CPA-rc21 文件夹，找到 Cross-Platform-Arbitrage-Windows-x64 子目录，暂时不要双击新 EXE。
+2. 在旧程序停止三个账户。运行一次旧目录 Run-Diagnostics.cmd 保存升级前状态。核对 OPENAI 账户没有新的未完成委托或持仓不一致；ANTH 应仍是本次已确认的旧订单核对问题，真实两边持仓和挂单均为零。如果出现新单或实际仓位变化，先处理新情况，不套用本次清仓结论。
+3. 点击一次“退出所有账户”，确认后台进程已退出。完整复制旧程序文件夹作为备份，必须包括 data 及其下全部账户、密钥库、飞书配置、SQLite 和可能存在的 WAL 文件。不要只复制单个 sqlite，不要删除 pending。
+4. 把新版 Cross-Platform-Arbitrage-Windows-x64 文件夹里面的程序、脚本及说明文件复制到原程序文件夹，同名覆盖。新版包不含 data；原来的 data 文件夹原地保留，不移动，不新建账户，不把 data 套成 data/data。原目录名称仍含 rc20 是正常的，版本以 /health 为准。
+5. 双击原目录里替换后的 Cross-Platform-Arbitrage.exe。在 PowerShell 执行下面一整段。它只读版本、路径及构建信息，不下单：
+
+   $ErrorActionPreference='Stop'
+   $p=@(Get-Process -Name 'Cross-Platform-Arbitrage' -ErrorAction Stop)
+   if ($p.Count -ne 1) { throw '必须只有一个后台进程' }
+   $activeFolder=Split-Path $p[0].Path
+   $expected=Get-Content (Join-Path $activeFolder 'build-info.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+   $h=Invoke-RestMethod 'http://127.0.0.1:18794/health' -TimeoutSec 10
+   if ($h.version -ne '0.2.0-rc.21' -or $h.build.runtime -ne 'live' -or $h.build.dirty -or $h.build.source_commit -ne $expected.source_commit -or $h.build.strategy_core_sha256 -ne $expected.strategy_core_sha256) { throw '版本核对失败，先不要启动策略' }
+   $active=[string]$h.data_dir
+   if ($active.StartsWith('\\?\')) { $active=$active.Substring(4) }
+   if ($active.TrimEnd('\') -ine (Join-Path $activeFolder 'data').TrimEnd('\')) { throw '数据目录与当前程序不一致' }
+   [ordered]@{version=$h.version;commit=$h.build.source_commit;data_dir=$h.data_dir} | ConvertTo-Json
+
+6. 解锁并加载三个原有账户，先保持停止。ANTH 保留的紧急平仓流程会继续核对旧单、真实成交和实际账户；正常应自动完成账本收尾，显示已停止。因已有安全退出请求仍会继续处理真实剩余仓位，所以加载不等于中止旧退出流程。平台暂时限流时允许等待下一轮，勿再次创建账户、清空账本或反复点全部平仓。
+7. 运行原目录更新后的 Run-Diagnostics.cmd，把新 ZIP 发回验收。ANTH 的目标：实际两边持仓0、账本两边0、持仓组0、pending为空、emergency_exit.completed_ms有值、状态stopped。OPENAI 两账户应保持原配对持仓，账本和平台一致，无未完成订单。确认无保护未解除的情况，再分别启动需要运行的策略。
+
+升级后产生任何新成交或账本收尾记录，不要用升级前备份覆盖当前 data。备份用于保留证据，不是跳过核对的办法。
+
+测试与边界
+
+使用合成数据覆盖 filled 带剩余数量、旧全额响应、缺失/重复/错误数量、两个方向和开平仓；旧单部分成交后独立清仓、重启恢复、未知订单不重复下单、迟到开仓成交继续减仓、查询错误退避、零持仓与账本核对状态，以及诊断脱敏。完整 live/paper 核心、签名向量、前端和 Windows 无凭据打包检查以随包验收结果为准。
+
+该修复消除了本次已确认的判断错误和无进展轮询问题。网络中断、平台不可用或成交记录确实缺失时仍会进入保护和持续核对，不会假装已完成。

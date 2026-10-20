@@ -920,15 +920,24 @@ fn entropy_result(config: &InventoryConfig, r: &OrderRequest,
             fee: Decimal::from_str(&f.fee)?, time_ms: f.time,
         });
     }
-    let terminal = matches!(order.status.as_str(), "filled" | "canceled" | "rejected")
+    let terminal = matches!(order.status.as_str(), "filled" | "canceled" | "rejected" | "scheduledCancel")
         || order.status.ends_with("Rejected") || order.status.ends_with("Canceled");
     let remaining = config.units(Decimal::from_str(&order.order.sz)?)?;
     ensure!((0..=r.units).contains(&remaining), "invalid remaining size");
-    // A filled order can never be reconciled as a zero-fill rejection.
-    let expected = if order.status == "filled" { r.units } else { r.units - remaining };
+    // IOC may report "filled" with a nonzero unfilled remainder. The status
+    // proves termination, not full quantity. Older full-fill responses retain
+    // origSz in sz; that shape still requires authentic fills for EVERY unit.
+    let expected = if order.status == "filled" && remaining == r.units { r.units }
+        else { r.units - remaining };
+    let mut identities = std::collections::BTreeSet::new();
+    ensure!(fills.iter().all(|f| f.units > 0 && identities.insert(f.id.clone())),
+        "invalid or duplicate Entropy fills");
     let enough = fills.iter().map(|f| f.units).sum::<i64>() == expected;
+    let summary = format!("status={} requested={} remaining={} expected={} observed={} rows={}",
+        order.status, r.units, remaining, expected, fills.iter().map(|f| f.units).sum::<i64>(), rows.len());
     Ok(OrderResult { exchange_created_ms: Some(created_ms), terminal: terminal && enough,
-        fills, reason: if terminal && !enough { "Entropy fill history incomplete".into() } else { order.status.clone() } })
+        fills, reason: if terminal && !enough { format!("Entropy fill history incomplete: {summary}") }
+            else { format!("Entropy order {summary}") } })
 }
 impl EntropyLive {
     async fn inspect(&self, r: &OrderRequest, evidence: Option<&venue::LookupEvidence>) -> Result<OrderResult> {
@@ -976,12 +985,10 @@ impl EntropyLive {
             });
         };
         let created_ms = bound_entropy_created(&self.config, r, &order)?;
-        let rows = hyperliquid::fetch_user_fills_by_time(
+        let rows = hyperliquid::fetch_user_fills_by_time_unfiltered(
             "mainnet",
-            "io",
             &self.config.entropy_address,
             created_ms.saturating_sub(1000),
-            None,
         )
         .await?;
         entropy_result(&self.config, r, &order, &rows)

@@ -33,6 +33,7 @@ try {
     $Recovery=$Ledger.recent_events.events[0].manual_recovery
     if ($Recovery.previous_rollbacks -ne 3 -or $Recovery.accounts.Count -ne 2 -or $Recovery.accounts[0].position_units -ne -4900 -or $Recovery.accounts[1].open_orders -ne 0) { throw 'Manual recovery audit evidence missing' }
     if ($Ledger.snapshot.emergency_exit.order_count -ne 1 -or $Ledger.snapshot.emergency_exit.buffered_fill_count -ne 1) { throw 'Emergency progress missing from diagnostics' }
+    if ($Ledger.snapshot.emergency_exit.account_retry.Count -ne 2 -or $Ledger.snapshot.emergency_exit.prior[0].lookup_retry.attempts -ne 5 -or $Ledger.snapshot.emergency_exit.orders[0].lookup_note -notmatch 'remaining=500 expected=200 observed=200') { throw 'Order reconciliation quantities or backoff evidence missing' }
     if ($Ledger.snapshot.emergency_exit.orders[0].request.order_ref -ne $Ledger.snapshot.emergency_exit.buffered_fills[0].order_ref) { throw 'Emergency order/fill linkage lost' }
     if ($Ledger.snapshot.reason -notmatch 'account worker request deadline exceeded') { throw 'Useful diagnostic cause was lost' }
     if ($Ledger.snapshot.pending.requests.first.order_ref -ne $Ledger.snapshot.fills_in_operation_window[0].order_ref) { throw 'Opaque order linkage was lost' }

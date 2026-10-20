@@ -314,6 +314,10 @@ fn emergency_exit_alert_waits_for_grace_and_cancels_when_flat_and_reconciled() {
     super::super::emergency_exit::latch(&mut s,1000).unwrap();
     record(&mut db,&s,1000);record(&mut db,&s,60_999);assert!(rows(&db).is_empty());
     record(&mut db,&s,61_000);assert_eq!(rows(&db).len(),1);assert!(rows(&db)[0].1.contains("紧急全部平仓"));
+    s.emergency_exit.as_mut().unwrap().flat_confirmed_ms=Some(61_000);
+    record(&mut db,&s,61_001);
+    assert!(rows(&db)[0].1.contains("上次核对两平台持仓已归零"));
+    assert!(!rows(&db)[0].1.contains("紧急全部平仓仍未完成"));
     s.emergency_exit.as_mut().unwrap().completed_ms=Some(61_001);s.status=Status::Stopped;s.close_requested=false;
     record(&mut db,&s,61_001);assert!(rows(&db).is_empty());
 }

@@ -8,8 +8,18 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::{Arc, RwLock}};
 
 pub const SLIPPAGE_BPS: u32 = 500;
+const FLAT_ACCOUNT_POLL_MS: u64 = 15_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackedOrder { pub request: OrderRequest, pub terminal: bool }
+pub struct TrackedOrder {
+    pub request: OrderRequest, pub terminal: bool,
+    #[serde(default)] pub lookup_retry: ReadBackoff,
+    #[serde(default)] pub lookup_note: String,
+}
+impl TrackedOrder {
+    fn new(request: OrderRequest, terminal: bool) -> Self {
+        Self {request, terminal, lookup_retry: ReadBackoff::default(), lookup_note: String::new()}
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmergencyExit {
     pub id: String,
@@ -23,6 +33,8 @@ pub struct EmergencyExit {
     pub observed_ms: [u64; 2],
     pub warnings: [String; 2],
     pub next_attempt_ms: [u64; 2],
+    #[serde(default)]
+    pub account_retry: [ReadBackoff; 2],
     pub accounting_error: String,
     pub next_sequence: u64,
 }
@@ -34,18 +46,19 @@ pub fn latch(s: &mut Snapshot, now: u64) -> Result<()> {
     if let Some(p)=&s.pending {
         for (r,terminal) in [(&p.first,p.first_terminal),(&p.hedge,p.hedge_terminal),
             (&p.repair,p.repair_terminal),(&p.align_close,p.align_close_terminal),(&p.unwind_hedge,p.unwind_hedge_terminal)] {
-            if let Some(r)=r { prior.push(TrackedOrder{request:r.clone(),terminal}); }
+            if let Some(r)=r { prior.push(TrackedOrder::new(r.clone(),terminal)); }
         }
     }
     if let Some(p)=&s.live_orphan {
-        for a in &p.attempts { prior.push(TrackedOrder{request:a.request.clone(),terminal:a.result.as_ref().is_some_and(|r|r.terminal)}); }
+        for a in &p.attempts { prior.push(TrackedOrder::new(a.request.clone(),a.result.as_ref().is_some_and(|r|r.terminal))); }
     }
     if let Some(p)=&s.liquidation_protection {
-        for a in p.orders.iter().flatten() { prior.push(TrackedOrder{request:a.request.clone(),terminal:a.terminal}); }
+        for a in p.orders.iter().flatten() { prior.push(TrackedOrder::new(a.request.clone(),a.terminal)); }
     }
     s.emergency_exit=Some(EmergencyExit{id:format!("{}-emergency-{}",s.instance_id,uuid::Uuid::new_v4()),
         requested_ms:now,completed_ms:None,flat_confirmed_ms:None,prior,orders:vec![],fills:BTreeMap::new(),
-        remaining_units:[None,None],observed_ms:[0,0],warnings:Default::default(),next_attempt_ms:[0,0],accounting_error:String::new(),next_sequence:0});
+        remaining_units:[None,None],observed_ms:[0,0],warnings:Default::default(),next_attempt_ms:[0,0],
+        account_retry:Default::default(),accounting_error:String::new(),next_sequence:0});
     s.paused=true;s.stop_requested=true;s.resume_after_recovery=false;s.close_requested=true;s.stop_after_close=true;
     s.recovery_after_ms=None;s.entry_attempts_remaining=Some(0);s.status=Status::Closing;
     s.reason="紧急全部平仓已启动：5% 滑点上限，两平台独立减仓".into();
@@ -71,9 +84,10 @@ fn request(s:&Snapshot,a:&AccountEvidence,b:&Book,now:u64)->Result<OrderRequest>
         created_ms:now,expires_ms:now+s.config.operation_timeout_ms,
         signed_expires_ms:(a.venue==Venue::Lighter).then_some(now+599_000)})
 }
-fn save_result(s:&mut Snapshot,r:&OrderRequest,result:OrderResult)->Result<()> {
+fn save_result(s:&mut Snapshot,r:&OrderRequest,result:OrderResult)->Result<bool> {
     let start=result.exchange_created_ms.map(|t|r.verified_exchange_created(t)).transpose()?.unwrap_or(r.created_ms);
     let mut next=s.emergency_exit.clone().unwrap();
+    let before=next.fills.len();
     let mut seen=std::collections::BTreeSet::new();
     for f in &result.fills {
         ensure!(f.order_id==r.id && f.venue==r.venue && f.side==r.side && f.units>0 && f.price>Decimal::ZERO
@@ -87,8 +101,30 @@ fn save_result(s:&mut Snapshot,r:&OrderRequest,result:OrderResult)->Result<()> {
     let total:i64=s.fills.values().chain(next.fills.values()).filter(|f|f.venue==r.venue && f.order_id==r.id).map(|f|f.units).sum();
     ensure!(total<=r.units,"emergency fills exceed request");
     let order=next.orders.iter_mut().chain(next.prior.iter_mut()).find(|o|o.request.id==r.id).ok_or_else(||anyhow::anyhow!("untracked emergency request"))?;
+    let progress=next.fills.len()!=before || (!order.terminal && result.terminal);
     order.terminal |= result.terminal;
-    s.emergency_exit=Some(next);Ok(())
+    s.emergency_exit=Some(next);Ok(progress)
+}
+fn observe_result(s:&mut Snapshot,r:&OrderRequest,result:Result<OrderResult>,now:u64)->bool {
+    let note=match &result {Ok(result)=>result.reason.clone(),Err(error)=>format!("{error:#}")};
+    let outcome=result.and_then(|result|save_result(s,r,result));
+    let progress=outcome.as_ref().copied().unwrap_or(false);
+    let e=s.emergency_exit.as_mut().unwrap();
+    let o=e.orders.iter_mut().chain(e.prior.iter_mut()).find(|o|o.request.id==r.id).unwrap();
+    o.lookup_note=match outcome {Ok(_)=>note,Err(error)=>format!("订单结果待核对：{error:#}")};
+    o.lookup_retry.defer(now,progress);
+    if o.terminal {e.warnings[r.venue.index()].clear();}
+    else {e.warnings[r.venue.index()]=o.lookup_note.clone();}
+    // A failed/unchanged history read cannot invalidate an actual flat account
+    // snapshot. New fills/terminal evidence require a fresh post-lookup read.
+    if progress {
+        e.observed_ms[r.venue.index()]=0;e.flat_confirmed_ms=None;
+        e.account_retry[r.venue.index()]=ReadBackoff::default();
+        if e.remaining_units==[Some(0),Some(0)] && e.prior.iter().chain(e.orders.iter()).all(|o|o.terminal) {
+            e.account_retry=Default::default();
+        }
+    }
+    progress
 }
 fn evidence(s:&Snapshot,r:&OrderRequest)->LookupEvidence {
     let e=s.emergency_exit.as_ref().unwrap();
@@ -162,10 +198,13 @@ pub async fn advance(s:&mut Snapshot,store:&mut Store,workers:&[AccountWorker;2]
     for venue in [Venue::Lighter,Venue::Entropy] {
         let w=workers[venue.index()].clone();
         let e=s.emergency_exit.as_ref().unwrap();
-        if let Some(o)=e.orders.iter().rev().find(|o|o.request.venue==venue && !o.terminal) {
+        let now=crate::domain::now_ms();
+        if let Some(o)=e.orders.iter().rev().find(|o|o.request.venue==venue && !o.terminal && o.lookup_retry.due(now)) {
             let r=o.request.clone();let proof=evidence(s,&r);
             jobs.push(Box::pin(async move {let result=w.lookup_reconciled(r.clone(),proof).await;Event::Order(r,result)}));
-        } else {
+        } else if e.account_retry[venue.index()].due(now)
+            && (e.remaining_units!=[Some(0),Some(0)] || !e.prior.iter().chain(e.orders.iter()).all(|o|o.terminal)
+                || e.account_retry.iter().all(|retry|retry.due(now))) {
             jobs.push(Box::pin(async move {Event::Account(venue,w.reconcile_account().await)}));
         }
     }
@@ -178,6 +217,11 @@ pub async fn advance(s:&mut Snapshot,store:&mut Store,workers:&[AccountWorker;2]
                     let a=result?;ensure!(a.venue==venue,"account venue mismatch");trusted(s,&a,now)?;
                     let e=s.emergency_exit.as_mut().unwrap();
                     e.remaining_units[i]=Some(a.position_units);e.observed_ms[i]=a.observed_ms;e.warnings[i].clear();
+                    // An unresolved submitted order cannot be sent again even
+                    // if a position read is unchanged. Don't spend a full REST
+                    // account bundle every second while waiting for its history.
+                    let unresolved=e.orders.iter().any(|o|o.request.venue==venue && !o.terminal);
+                    e.account_retry[i]=ReadBackoff {attempts:0, after_ms:if a.position_units==0 || unresolved {now+FLAT_ACCOUNT_POLL_MS}else{0}};
                     if a.position_units!=0 {e.flat_confirmed_ms=None;}
                     observed[i]=Some(a.clone());
                     if submitted[i] || a.position_units==0 || now<e.next_attempt_ms[i]
@@ -189,42 +233,45 @@ pub async fn advance(s:&mut Snapshot,store:&mut Store,workers:&[AccountWorker;2]
                         submitted[i]=true;
                         let e=s.emergency_exit.as_mut().unwrap();e.flat_confirmed_ms=None;e.next_attempt_ms[i]=now+1000;
                         e.next_sequence=e.next_sequence.checked_add(1).ok_or_else(||anyhow::anyhow!("emergency sequence overflow"))?;
-                        e.orders.push(TrackedOrder{request:r.clone(),terminal:false});
+                        e.orders.push(TrackedOrder::new(r.clone(),false));
                         store.commit(s,now,"emergency_exit_dispatch")?;
                         let w=workers[i].clone();jobs.push(Box::pin(async move {let result=w.submit(r.clone()).await;Event::Order(r,result)}));
                     },
-                    Ok(None)=>{},Err(err)=>{s.emergency_exit.as_mut().unwrap().warnings[i]=format!("{err:#}");}
+                    Ok(None)=>{},Err(err)=>{
+                        let e=s.emergency_exit.as_mut().unwrap();e.warnings[i]=format!("{err:#}");
+                        e.account_retry[i].defer(now,false);
+                    }
                 }
             },
             Event::Order(r,result)=>{
                 let i=r.venue.index();
-                match result.and_then(|result|save_result(s,&r,result)) {
-                    Ok(())=>{
-                        let e=s.emergency_exit.as_mut().unwrap();e.warnings[i].clear();
-                        let filled=e.fills.values().any(|f|f.venue==r.venue && f.order_id==r.id);
-                        e.next_attempt_ms[i]=now+if filled{1000}else{5000};
-                    },
-                    Err(err)=>{s.emergency_exit.as_mut().unwrap().warnings[i]=format!("订单结果待核对：{err:#}");}
-                }
-                // Never use the pre-order snapshot as proof that the venue is flat.
-                s.emergency_exit.as_mut().unwrap().observed_ms[i]=0;
+                let progress=observe_result(s,&r,result,now);
+                let e=s.emergency_exit.as_mut().unwrap();
+                let filled=e.fills.values().any(|f|f.venue==r.venue && f.order_id==r.id);
+                e.next_attempt_ms[i]=now+if filled{1000}else{5000};
+                // Never use a pre-submission account as proof of flatness.
+                if submitted[i] {e.observed_ms[i]=0;e.flat_confirmed_ms=None;e.account_retry[i]=ReadBackoff::default();}
+                let refresh=progress || submitted[i] || e.account_retry[i].due(now);
                 store.commit(s,now,"emergency_exit_order_observed")?;
-                let w=workers[i].clone();let venue=r.venue;
-                jobs.push(Box::pin(async move {Event::Account(venue,w.reconcile_account().await)}));
+                if refresh {
+                    let w=workers[i].clone();let venue=r.venue;
+                    jobs.push(Box::pin(async move {Event::Account(venue,w.reconcile_account().await)}));
+                }
             }
         }
     }
     // Old unknown orders do not prevent reducing an already observed position above.
     // In particular, a late opening fill is closed on the next pass before completion.
     let e=s.emergency_exit.as_ref().unwrap();
-    let old=if e.remaining_units==[Some(0),Some(0)] {e.prior.iter().filter(|o|!o.terminal).cloned().collect::<Vec<_>>()} else {vec![]};
+    let now=crate::domain::now_ms();
+    let old=if e.remaining_units==[Some(0),Some(0)] {e.prior.iter().filter(|o|!o.terminal && o.lookup_retry.due(now)).cloned().collect::<Vec<_>>()} else {vec![]};
+    let mut queried=[false;2];
     for o in old {
+        if queried[o.request.venue.index()] {continue;}
+        queried[o.request.venue.index()]=true;
         let proof=evidence(s,&o.request);
-        match workers[o.request.venue.index()].lookup_reconciled(o.request.clone(),proof).await
-            .and_then(|r|save_result(s,&o.request,r)) {
-            Ok(())=>{}, Err(err)=>{s.emergency_exit.as_mut().unwrap().warnings[o.request.venue.index()]=format!("持仓正在独立减仓；旧订单记录待核对：{err:#}");}
-        }
-        let e=s.emergency_exit.as_mut().unwrap();e.observed_ms[o.request.venue.index()]=0;e.flat_confirmed_ms=None;
+        let result=workers[o.request.venue.index()].lookup_reconciled(o.request.clone(),proof).await;
+        observe_result(s,&o.request,result,crate::domain::now_ms());
         store.commit(s,crate::domain::now_ms(),"emergency_exit_prior_observed")?;
     }
     let now=crate::domain::now_ms();
@@ -235,7 +282,10 @@ pub async fn advance(s:&mut Snapshot,store:&mut Store,workers:&[AccountWorker;2]
     if let Err(err)=finish(s,now) {s.emergency_exit.as_mut().unwrap().accounting_error=err.to_string();}
     if active(s) {
         s.status=Status::Closing;s.reason="紧急全部平仓进行中：5% 滑点上限，按实际剩余持仓持续减仓".into();
-        if s.emergency_exit.as_ref().unwrap().flat_confirmed_ms.is_some() {s.reason="两平台已无持仓，正在核对原订单和成交记录；新交易保持停止".into();}
+        if s.emergency_exit.as_ref().unwrap().flat_confirmed_ms.is_some() {
+            s.status=Status::Recovering;
+            s.reason="上次核对两平台持仓已归零，正在核对原订单和账本；继续复查持仓，新交易保持停止".into();
+        }
     }
     let e=s.emergency_exit.as_mut().unwrap();
     // Bound rejected/empty IOC history; identities are monotonic, never reused.

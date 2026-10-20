@@ -96,6 +96,8 @@ test('emergency close has explicit 5 percent confirmation and physical progress,
  const e={remaining_units:[-700,0],warnings:[],observed_ms:[1,1]};
  assert.match(ctx.controlStateText({config:{market:'anth'},emergency_exit:e}),/剩余 Lighter 0\.007 \/ Entropy 0/);
  assert.match(ctx.controlStateText({emergency_exit:{...e,remaining_units:[0,0],flat_confirmed_ms:1}}),/原订单与成交记录仍在核对/);
+ assert.equal(ctx.strategyStateText({status:'recovering',emergency_exit:{...e,remaining_units:[0,0],flat_confirmed_ms:1}}),'已清仓，正在核对账本');
+ assert.equal(ctx.strategyStateText({status:'closing',emergency_exit:e}),'正在平仓');
  assert.match(ctx.controlStateText({status:'stopped',emergency_exit:{...e,completed_ms:1}}),/紧急全部平仓完成/);
 });
 

@@ -171,10 +171,12 @@ impl InventoryService {
             let mut last_funding_backfill = 0;
             let mut funding_warning = String::new();
             let mut last_position_check = 0;
-            let mut last_timeout_lookup = 0;
+            let mut timeout_lookup = ReadBackoff::default();
+            let mut timeout_operation = String::new();
             let mut order_lookup_note = String::new();
             let mut last_repair_check = 0;
             let mut last_emergency_poll = 0;
+            let mut emergency_accounts: [Option<AccountEvidence>;2] = [None,None];
             loop {
                 tokio::select! {
                     biased;
@@ -206,7 +208,7 @@ impl InventoryService {
                                 Control::ConfirmRollbackRecovery=>unreachable!("handled by authenticated reconciliation"),
                                 Control::Pause=>{next.paused=true;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::PausedEntries;}},
                                 Control::Stop=>{next.stop_requested=true;next.paused=true;next.resume_after_recovery=false;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::Stopped;}else if next.status!=Status::NeedsAttention {next.reason="finishing active paired operation before stopping".into();}},
-                                Control::CloseAll=>{super::emergency_exit::latch(&mut next,crate::domain::now_ms())?;last_emergency_poll=0;},
+                                Control::CloseAll=>{if !super::emergency_exit::active(&next) {emergency_accounts=[None,None];}super::emergency_exit::latch(&mut next,crate::domain::now_ms())?;last_emergency_poll=0;},
                                 Control::CancelCloseAll=>{execution::cancel_close_all(&mut next)?;},
                                 Control::Reconcile=>{execution::resume_terminal_repair(&mut next,accounts.as_ref(),crate::domain::now_ms())?;next.status=Status::Recovering;},
                                 Control::SetDirectionPolicy { direction_policy }=>{set_direction_policy(&mut next, direction_policy, accounts.as_ref(), crate::domain::now_ms())?;},
@@ -239,7 +241,14 @@ impl InventoryService {
                                 if now.saturating_sub(last_emergency_poll)<1000 {return Ok::<(),anyhow::Error>(());}
                                 last_emergency_poll=now;
                                 let seen=super::emergency_exit::advance(&mut state,&mut store,&workers,&books).await?;
-                                if let [Some(l),Some(e)]=seen {accounts=Some([l,e]);last_accounts=crate::domain::now_ms();}
+                                for (i,a) in seen.into_iter().enumerate() {
+                                    if let Some(a)=a {emergency_accounts[i]=Some(a);}
+                                }
+                                if let Some(previous)=accounts.as_mut() {
+                                    for (i,a) in emergency_accounts.iter().enumerate() {if let Some(a)=a {previous[i]=a.clone();}}
+                                } else if let [Some(l),Some(e)]=&emergency_accounts {accounts=Some([l.clone(),e.clone()]);}
+                                order_lookup_note=state.emergency_exit.as_ref().map(|e|e.prior.iter().chain(e.orders.iter())
+                                    .filter(|o|!o.terminal).map(|o|o.lookup_note.clone()).filter(|n|!n.is_empty()).collect::<Vec<_>>().join("; ")).unwrap_or_default();
                                 return Ok::<(),anyhow::Error>(());
                             }
                             #[cfg(feature="paper-runtime")]
@@ -261,11 +270,14 @@ impl InventoryService {
                                 store.commit(&state,now,"loss_limit_latched")?;
                                 tracing::warn!("OPENAI total loss limit latched; closing owned inventory and stopping");
                             }
+                            let operation=state.pending.as_ref().map(|p|p.id.as_str()).unwrap_or_default();
+                            if operation!=timeout_operation {timeout_operation=operation.to_string();timeout_lookup=ReadBackoff::default();}
                             if state.pending.is_some() && state.status==Status::NeedsAttention
                                 && state.reason.starts_with("order unresolved past execution deadline")
-                                && now.saturating_sub(last_timeout_lookup)>=execution::REPAIR_RETRY_DELAY_MS {
-                                last_timeout_lookup=now;
+                                && timeout_lookup.due(now) {
+                                let fill_count=state.fills.len();
                                 let lookup = execution::recheck_timed_out(&mut state,&mut store,&workers,now).await;
+                                timeout_lookup.defer(crate::domain::now_ms(),state.fills.len()!=fill_count || state.status!=Status::NeedsAttention);
                                 order_lookup_note = match &lookup {Ok(note)=>note.clone(),Err(e)=>format!("{e:#}")};
                                 lookup?;
                             } else if execution::entry_hedge_retry::due(&state,now) {

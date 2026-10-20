@@ -95,6 +95,34 @@ fn entropy_fill_search_uses_exchange_creation_and_retains_real_fill_time() {
 }
 
 #[test]
+fn entropy_filled_ioc_with_remainder_requires_exact_authentic_partial_fills() {
+    for side in [Side::Buy,Side::Sell] {for reduce_only in [false,true] {
+        let (config,mut request,mut order,mut fill)=entropy_fixture();
+        request.side=side;request.reduce_only=reduce_only;
+        order.order.side=if side==Side::Buy{"B"}else{"A"}.into();
+        order.order.reduce_only=reduce_only;order.order.sz="0.005".into();
+        fill.side=order.order.side.clone();fill.sz="0.002".into();
+        let result=entropy_result(&config,&request,&order,&[fill.clone()]).unwrap();
+        assert!(result.terminal);assert_eq!(result.fills[0].units,200);
+        assert!(result.reason.contains("requested=700 remaining=500 expected=200 observed=200"));
+        assert!(!entropy_result(&config,&request,&order,&[]).unwrap().terminal);
+        let mut incomplete=fill.clone();incomplete.sz="0.001".into();
+        assert!(!entropy_result(&config,&request,&order,&[incomplete]).unwrap().terminal);
+        let mut excess=fill.clone();excess.sz="0.007".into();
+        assert!(!entropy_result(&config,&request,&order,&[excess]).unwrap().terminal);
+        assert!(entropy_result(&config,&request,&order,&[fill.clone(),fill.clone()]).is_err());
+        for status in ["canceled","reduceOnlyCanceled","scheduledCancel"] {
+            order.status=status.into();
+            assert!(entropy_result(&config,&request,&order,&[fill.clone()]).unwrap().terminal);
+        }
+        order.status="open".into();
+        assert!(!entropy_result(&config,&request,&order,&[fill.clone()]).unwrap().terminal);
+        order.order.sz="0.008".into();
+        assert!(entropy_result(&config,&request,&order,&[fill]).is_err());
+    }}
+}
+
+#[test]
 fn live_lighter_request_preserves_anth_and_openai_base_quantity() {
     for market in [MarketPair::Openai, MarketPair::Anth] {
         let (config, request) = fixture(market, Venue::Lighter, false);

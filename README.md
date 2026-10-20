@@ -4,7 +4,7 @@
 
 源码仓库：[edwardzhang0304/cross-platform-arbitrage](https://github.com/edwardzhang0304/cross-platform-arbitrage)。原仓库名为 `openai-paired-trader`。
 
-rc.20 修复可见盘口不足时整仓估值阻断逐组平仓和亏损保护的问题；风险估值与实际委托深度分别核验。Windows 升级和账号2飞书配置见 [rc20 升级说明](docs/rc20薄盘口风控与升级说明.txt)。
+rc.21 修复 Entropy 部分成交终态核对、无进展查询消耗和紧急清仓后的账本核对状态；保留原策略参数。Windows 原目录升级见 [rc21 升级说明](docs/rc21订单核对与升级说明.txt)。
 
 ## 怎么用
 

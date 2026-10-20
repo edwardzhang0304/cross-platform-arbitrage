@@ -31,11 +31,12 @@ async fn manual_emergency_bypasses_strategy_halts_and_flattens_both_markets() {
 use super::venue::{VenueBackend,BoxFuture};
 use std::sync::Mutex;
 #[derive(Default)]
-struct Faults { account_down:bool, unknown:bool, lose_ack:bool, cap:Option<i64>, wrong_account:bool, stale:bool }
+struct Faults { account_down:bool, unknown:bool, lose_ack:bool, cap:Option<i64>, wrong_account:bool, stale:bool, lookups:usize, accounts:usize, lookup_error:bool, unknown_submission:bool }
 struct Backend {inner:PaperBackend,faults:Arc<Mutex<Faults>>,sent:Arc<Mutex<Vec<OrderRequest>>>,deferred:Option<OrderRequest>}
 impl VenueBackend for Backend {
  fn submit(&mut self,mut r:OrderRequest)->BoxFuture<'_,OrderResult> {Box::pin(async move {
     self.sent.lock().unwrap().push(r.clone());
+    if self.faults.lock().unwrap().unknown_submission {anyhow::bail!("synthetic submission outcome unknown");}
     if let Some(cap)=self.faults.lock().unwrap().cap {r.units=r.units.min(cap);}
     let result=self.inner.submit(r).await?;
     let lost={let mut f=self.faults.lock().unwrap();let lost=f.lose_ack;f.lose_ack=false;lost};
@@ -43,11 +44,14 @@ impl VenueBackend for Backend {
     Ok(result)
  })}
  fn lookup(&mut self,r:OrderRequest)->BoxFuture<'_,OrderResult>{Box::pin(async move {
+    self.faults.lock().unwrap().lookups+=1;
+    if self.faults.lock().unwrap().lookup_error {anyhow::bail!("synthetic info quota unavailable");}
     if self.faults.lock().unwrap().unknown {return Ok(OrderResult{exchange_created_ms:None,terminal:false,fills:vec![],reason:"synthetic unknown".into()});}
     if self.deferred.as_ref().is_some_and(|old|old.id==r.id) {let old=self.deferred.take().unwrap();self.inner.submit(old).await?;}
     self.inner.lookup(r).await
  })}
  fn account(&mut self)->BoxFuture<'_,AccountEvidence>{Box::pin(async move {
+    self.faults.lock().unwrap().accounts+=1;
     if self.faults.lock().unwrap().account_down {anyhow::bail!("synthetic account unavailable");}
     let mut a=self.inner.account().await?;
     let f=self.faults.lock().unwrap();
@@ -93,7 +97,8 @@ impl Fixture {
     emergency_exit::advance(&mut self.s,self.db.as_mut().unwrap(),&self.workers,&self.books).await.unwrap();
  }
  fn reload(&mut self) {drop(self.db.take());let (db,s)=store::Store::open(&self.path.join("state.sqlite"),&self.s.config).unwrap();self.db=Some(db);self.s=s;}
- fn next_attempt(&mut self) {self.s.emergency_exit.as_mut().unwrap().next_attempt_ms=[0,0];}
+ fn next_attempt(&mut self) {let e=self.s.emergency_exit.as_mut().unwrap();e.next_attempt_ms=[0,0];e.account_retry=Default::default();}
+ fn next_lookup(&mut self) {let e=self.s.emergency_exit.as_mut().unwrap();for o in e.prior.iter_mut().chain(e.orders.iter_mut()) {o.lookup_retry.after_ms=0;}e.account_retry=Default::default();}
  fn count(&self,i:usize)->usize {self.sent[i].lock().unwrap().len()}
 }
 impl Drop for Fixture {fn drop(&mut self){drop(self.db.take());let _=std::fs::remove_dir_all(&self.path);}}
@@ -107,7 +112,7 @@ async fn old_unknown_does_not_block_real_position_exit_and_is_not_resubmitted() 
     for w in &f.workers {assert_eq!(w.account().await.unwrap().position_units,0);}
     f.reload();f.step().await;
     if !known {assert!(emergency_exit::active(&f.s));assert!(f.s.pending.is_some());}
-    f.faults[first].lock().unwrap().unknown=false;f.step().await;f.step().await;
+    f.faults[first].lock().unwrap().unknown=false;f.next_lookup();f.step().await;f.step().await;
     assert!(!emergency_exit::active(&f.s),"{:?}",f.s.emergency_exit);
     assert!(f.s.positions.iter().all(|p|p.units==0));assert_eq!(f.s.closed_groups,1);assert!(f.s.pending.is_none());
     assert_eq!([f.count(0),f.count(1)],[1,1]);
@@ -120,7 +125,7 @@ async fn unknown_emergency_ack_is_lookup_only_after_restart() {
  f.faults[1].lock().unwrap().lose_ack=true;f.faults[1].lock().unwrap().unknown=true;
  f.step().await;f.reload();for _ in 0..3{f.step().await;}
  assert_eq!(f.count(1),1);assert!(emergency_exit::active(&f.s));
- f.faults[1].lock().unwrap().unknown=false;f.step().await;f.step().await;
+ f.faults[1].lock().unwrap().unknown=false;f.next_lookup();f.step().await;f.step().await;
  assert!(!emergency_exit::active(&f.s));assert_eq!(f.count(1),1);
 }
 #[tokio::test]
@@ -138,7 +143,7 @@ async fn one_venue_failure_does_not_block_other_and_untrusted_accounts_never_tra
     let mut f=Fixture::new(MarketPair::Anth,None,false).await;
     {let mut fault=f.faults[0].lock().unwrap();match case{0=>fault.account_down=true,1=>fault.wrong_account=true,2=>fault.stale=true,_=>f.books.write().unwrap()[0].connected=false}}
     f.step().await;assert_eq!([f.count(0),f.count(1)],[0,1]);assert!(emergency_exit::active(&f.s));
-    *f.faults[0].lock().unwrap()=Faults::default();f.books.write().unwrap()[0].connected=true;
+    *f.faults[0].lock().unwrap()=Faults::default();f.books.write().unwrap()[0].connected=true;f.next_attempt();
     f.step().await;f.step().await;assert!(!emergency_exit::active(&f.s));
  }
 }
@@ -148,7 +153,7 @@ async fn late_opening_fill_after_first_flat_read_is_closed_before_completion() {
  let mut f=Fixture::with_deferred(MarketPair::Anth,Some(Action::Open),false,true).await;
  f.faults[1].lock().unwrap().unknown=true;f.step().await;
  assert!(emergency_exit::active(&f.s));assert_eq!(f.workers[1].account().await.unwrap().position_units,0);
- f.faults[1].lock().unwrap().unknown=false;f.step().await;
+ f.faults[1].lock().unwrap().unknown=false;f.next_lookup();f.step().await;
  assert!(emergency_exit::active(&f.s),"late opening fill must not be declared complete");
  assert_eq!(f.workers[1].account().await.unwrap().position_units,MarketPair::Anth.common_step()*7);
  f.next_attempt();f.step().await;f.step().await;
@@ -200,4 +205,109 @@ async fn prior_close_rollback_opening_is_not_misattributed_as_a_lot_close() {
  assert!(f.s.emergency_fill_allocations["Entropy:unwind-previous"].is_empty());
  let report=accounting::AccountingCache::default().report(&f.s,&f.books.read().unwrap(),crate::domain::now_ms());
  assert!(report.closed_net_profit.is_some());
+}
+
+#[test]
+fn unresolved_read_backoff_is_bounded_and_progress_resets_without_busy_polling() {
+ let mut retry=ReadBackoff::default();let mut now=100_000;
+ for delay in [3000,6000,12000,24000,30000,30000] {
+   assert!(retry.due(now));retry.defer(now,false);
+   assert_eq!(retry.after_ms,now+delay);assert!(!retry.due(now+delay-1));
+   now+=delay;
+ }
+ retry.defer(now,true);assert_eq!(retry.after_ms,now+3000);
+ // A corrected wall clock cannot freeze reconciliation indefinitely.
+ assert!(retry.due(now-100_000));
+}
+
+#[tokio::test]
+async fn flat_unknown_history_is_paced_across_restart_and_keeps_truthful_status() {
+ for error in [false,true] {
+   let mut f=Fixture::new(MarketPair::Anth,Some(Action::Close),false).await;
+   {let mut faults=f.faults[0].lock().unwrap();faults.unknown=true;faults.lookup_error=error;}
+   f.step().await;
+   assert_eq!(f.s.status,Status::Recovering);
+   let e=f.s.emergency_exit.as_ref().unwrap();
+   assert_eq!(e.remaining_units,[Some(0),Some(0)]);
+   assert!(e.flat_confirmed_ms.is_some());assert!(e.completed_ms.is_none());
+   assert!(e.prior[0].lookup_retry.after_ms>crate::domain::now_ms());
+   f.reload();
+   let reads=f.faults.each_ref().map(|fault|{let f=fault.lock().unwrap();(f.lookups,f.accounts)});
+   for _ in 0..30 {f.step().await;}
+   assert_eq!(reads,f.faults.each_ref().map(|fault|{let f=fault.lock().unwrap();(f.lookups,f.accounts)}));
+   assert!(f.s.emergency_exit.as_ref().unwrap().flat_confirmed_ms.is_some());
+   assert_eq!([f.count(0),f.count(1)],[1,1]);
+   {let mut faults=f.faults[0].lock().unwrap();faults.unknown=false;faults.lookup_error=false;}
+   f.next_lookup();f.step().await;f.step().await;
+   assert!(!emergency_exit::active(&f.s));assert!(f.s.pending.is_none());
+   assert!(f.s.positions.iter().all(|p|p.units==0));
+ }
+}
+
+#[tokio::test]
+async fn legacy_emergency_journal_defaults_new_read_schedules_and_preserves_fills() {
+ let mut f=Fixture::new(MarketPair::Anth,Some(Action::Close),false).await;
+ f.faults[0].lock().unwrap().unknown=true;f.step().await;
+ let mut value=serde_json::to_value(&f.s).unwrap();
+ let e=value["emergency_exit"].as_object_mut().unwrap();e.remove("account_retry");
+ for field in ["prior","orders"] {for o in e[field].as_array_mut().unwrap() {
+   o.as_object_mut().unwrap().remove("lookup_retry");o.as_object_mut().unwrap().remove("lookup_note");
+ }}
+ f.s=serde_json::from_value(value).unwrap();
+ f.faults[0].lock().unwrap().unknown=false;
+ f.step().await;f.step().await;
+ assert!(!emergency_exit::active(&f.s));assert_eq!([f.count(0),f.count(1)],[1,1]);
+}
+
+#[tokio::test]
+async fn partial_old_hedge_then_independent_flatten_reconciles_without_duplicate_trade() {
+ let mut f=Fixture::new(MarketPair::Anth,Some(Action::Close),true).await;
+ let now=crate::domain::now_ms();
+ let r=OrderRequest{id:"blocked-v2-hedge".into(),venue:Venue::Entropy,side:Side::Sell,units:700,
+   limit:2099.into(),arrival_mid:Some(2100.into()),reduce_only:true,created_ms:now,expires_ms:now+5000,signed_expires_ms:None};
+ f.faults[1].lock().unwrap().cap=Some(200);
+ let result=f.workers[1].submit(r.clone()).await.unwrap();
+ for fill in &result.fills {f.s.record_fill(fill,r.arrival_mid).unwrap();}
+ assert_eq!(result.fills.iter().map(|fill|fill.units).sum::<i64>(),200);
+ f.faults[1].lock().unwrap().cap=None;f.sent[1].lock().unwrap().clear();
+ let p=f.s.pending.as_mut().unwrap();p.hedge=Some(r);p.hedge_terminal=false;p.hedge_filled=200;
+ f.s.emergency_exit=None;emergency_exit::latch(&mut f.s,now).unwrap();
+ f.faults[1].lock().unwrap().unknown=true;
+ f.step().await;f.reload();
+ assert_eq!(f.s.positions.iter().map(|p|p.units).collect::<Vec<_>>(),vec![-300,800]);
+ assert_eq!(f.s.emergency_exit.as_ref().unwrap().remaining_units,[Some(0),Some(0)]);
+ assert_eq!(f.s.status,Status::Recovering);
+ f.faults[1].lock().unwrap().unknown=false;f.next_lookup();f.step().await;f.step().await;
+ assert!(!emergency_exit::active(&f.s));assert!(f.s.pending.is_none());assert!(f.s.lots.is_empty());
+ assert_eq!(f.s.positions.iter().map(|p|p.units).collect::<Vec<_>>(),vec![0,0]);
+ assert_eq!(f.sent[0].lock().unwrap()[0].units,300);
+ assert_eq!(f.sent[1].lock().unwrap()[0].units,800);
+ assert_eq!([f.count(0),f.count(1)],[1,1]);
+ assert!(accounting::AccountingCache::default().report(&f.s,&f.books.read().unwrap(),crate::domain::now_ms()).closed_net_profit.is_some());
+}
+
+#[tokio::test]
+async fn unknown_new_exit_with_nonzero_position_does_not_flood_full_account_reads() {
+ let mut f=Fixture::new(MarketPair::Anth,None,false).await;
+ {let mut faults=f.faults[1].lock().unwrap();faults.unknown_submission=true;faults.unknown=true;}
+ f.step().await;
+ let before={let faults=f.faults[1].lock().unwrap();(faults.lookups,faults.accounts)};
+ for _ in 0..30 {f.step().await;}
+ let after={let faults=f.faults[1].lock().unwrap();(faults.lookups,faults.accounts)};
+ assert_eq!(before,after);assert_eq!(f.count(1),1);
+ assert_eq!(f.s.emergency_exit.as_ref().unwrap().remaining_units,[Some(0),Some(f.q)]);
+ assert!(f.s.emergency_exit.as_ref().unwrap().flat_confirmed_ms.is_none());
+ assert_eq!(f.s.status,Status::Closing);
+}
+
+#[tokio::test]
+async fn account_query_failure_is_paced_without_blocking_other_venue_exit() {
+ let mut f=Fixture::new(MarketPair::Anth,None,false).await;
+ f.faults[0].lock().unwrap().account_down=true;
+ f.step().await;f.reload();
+ let reads=f.faults[0].lock().unwrap().accounts;
+ for _ in 0..30 {f.step().await;}
+ assert_eq!(reads,f.faults[0].lock().unwrap().accounts);
+ assert_eq!([f.count(0),f.count(1)],[0,1]);
+ assert!(f.s.emergency_exit.as_ref().unwrap().flat_confirmed_ms.is_none());
 }

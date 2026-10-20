@@ -14,6 +14,7 @@ foreach ($File in @('Read-Diagnostics.ps1','DiagnosticsSqlite.cs','Run-Diagnosti
 Copy-Item 'docs/故障排查与处理流程.md' "$Package/故障排查与处理流程.md"
 Copy-Item 'docs/rc19多账户与共享行情.md' "$Package/rc19升级说明.md"
 Copy-Item 'docs/rc20薄盘口风控与升级说明.txt' "$Package/rc20升级说明.txt"
+Copy-Item 'docs/rc21订单核对与升级说明.txt' "$Package/rc21升级说明.txt"
 Copy-Item config "$Package/config-templates" -Recurse
 Copy-Item vendor/lighter-signing/licenses "$Package/licenses" -Recurse
 Copy-Item vendor/lighter-signing/LICENSE* "$Package/licenses/" -ErrorAction Stop

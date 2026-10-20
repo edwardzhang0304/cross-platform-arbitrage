@@ -286,6 +286,23 @@ pub struct OrderResult {
     pub fills: Vec<Fill>,
     pub reason: String,
 }
+/// Pace unresolved read-only evidence. A confirmed order's execution retry
+/// cadence is separate and remains unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReadBackoff {
+    pub attempts: u32,
+    pub after_ms: u64,
+}
+impl ReadBackoff {
+    pub fn due(&self, now: u64) -> bool {
+        now >= self.after_ms || self.after_ms.saturating_sub(now) > 30_000
+    }
+    pub fn defer(&mut self, now: u64, progress: bool) {
+        self.attempts = if progress { 1 } else { self.attempts.saturating_add(1) };
+        let delay = (3000u64 << self.attempts.saturating_sub(1).min(4)).min(30_000);
+        self.after_ms = now.saturating_add(delay);
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloseAllocation {
     pub lot_id: String,
