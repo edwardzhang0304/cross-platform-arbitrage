@@ -18,7 +18,23 @@ rc.21：部分成交订单核对、查询退避和清仓状态修复（Windows x
 
 1. 把新版 ZIP 解压到桌面 CPA-rc21 文件夹，找到 Cross-Platform-Arbitrage-Windows-x64 子目录，暂时不要双击新 EXE。
 2. 在旧程序停止三个账户。运行一次旧目录 Run-Diagnostics.cmd 保存升级前状态。核对 OPENAI 账户没有新的未完成委托或持仓不一致；ANTH 应仍是本次已确认的旧订单核对问题，真实两边持仓和挂单均为零。如果出现新单或实际仓位变化，先处理新情况，不套用本次清仓结论。
-3. 点击一次“退出所有账户”，确认后台进程已退出。完整复制旧程序文件夹作为备份，必须包括 data 及其下全部账户、密钥库、飞书配置、SQLite 和可能存在的 WAL 文件。不要只复制单个 sqlite，不要删除 pending。
+3. 本次旧版可能因为 ANTH 的旧 pending 拒绝“退出所有账户”。完成第2步核对后，可以在 PowerShell 执行以下整段，结束唯一的 rc.20 后台。这段会检查版本、实际进程与数据目录，随后停止进程；它不下单、不删数据。若第2步出现新委托、实际持仓不明或其他不一致，先不要执行：
+
+   $ErrorActionPreference='Stop'
+   $oldHealth=Invoke-RestMethod 'http://127.0.0.1:18794/health' -TimeoutSec 10
+   if ($oldHealth.version -ne '0.2.0-rc.20') { throw '此步骤仅用于本次 rc.20 旧后台，请先核对版本' }
+   $oldBackend=@(Get-Process -Name 'Cross-Platform-Arbitrage' -ErrorAction Stop)
+   if ($oldBackend.Count -ne 1) { throw '检测到多个后台，先核对，不自动结束' }
+   $oldData=[string]$oldHealth.data_dir
+   if ($oldData.StartsWith('\\?\')) { $oldData=$oldData.Substring(4) }
+   $oldFolder=Split-Path $oldBackend[0].Path
+   if ($oldData.TrimEnd('\') -ine (Join-Path $oldFolder 'data').TrimEnd('\')) { throw '进程与数据目录不一致，不自动结束' }
+   Stop-Process -InputObject $oldBackend[0] -Force
+   Start-Sleep -Seconds 2
+   if (Get-Process -Name 'Cross-Platform-Arbitrage' -ErrorAction SilentlyContinue) { throw '后台仍在运行，先不要复制' }
+   'BACKEND_STOPPED：旧后台已退出，现在备份整个旧文件夹'
+
+   进程退出后，完整复制旧程序文件夹作为备份，必须包括 data 及其下全部账户、密钥库、飞书配置、SQLite 和可能存在的 WAL 文件。不要在后台运行时复制，不要只复制单个 sqlite，不要删除 pending 或 WAL。原地升级由新版读取原账本继续核对；这里不执行旧版禁止的账户迁移或数据导出。
 4. 把新版 Cross-Platform-Arbitrage-Windows-x64 文件夹里面的程序、脚本及说明文件复制到原程序文件夹，同名覆盖。新版包不含 data；原来的 data 文件夹原地保留，不移动，不新建账户，不把 data 套成 data/data。原目录名称仍含 rc20 是正常的，版本以 /health 为准。
 5. 双击原目录里替换后的 Cross-Platform-Arbitrage.exe。在 PowerShell 执行下面一整段。它只读版本、路径及构建信息，不下单：
 
