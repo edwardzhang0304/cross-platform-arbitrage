@@ -4,7 +4,7 @@
 
 源码仓库：[edwardzhang0304/cross-platform-arbitrage](https://github.com/edwardzhang0304/cross-platform-arbitrage)。原仓库名为 `openai-paired-trader`。
 
-rc.24 统一 Lighter 实时推送与 REST 的可划转保证金口径，在第一边下单前拦截资金不足；同一次保证金保护飞书成功发送一次后不再重复，真实新异常仍提醒。Windows 采用完整 data 复制到独立新包目录，见 [rc24 升级说明](docs/rc24保证金检查与通知升级说明.txt)。
+rc.25 新增“仅恢复平仓和止损（保留保护）”：重新核对两平台后恢复原有仓位的正常退出，保证金拒单保护保留，禁止开仓和加仓。修正停止与暂停开仓的状态提示及恢复流程，保留 rc24 的资金核验与飞书去重。Windows 采用完整 data 复制到独立新包目录，见 [rc25 升级说明](docs/rc25仅平仓恢复升级说明.txt)。
 
 ## 怎么用
 

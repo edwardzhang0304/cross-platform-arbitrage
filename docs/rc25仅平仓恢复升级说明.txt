@@ -1,0 +1,62 @@
+rc.25：仅恢复正常平仓和止损，保留保证金拒单保护（Windows x64）
+
+修复内容
+新增“仅恢复平仓和止损（保留保护）”入口。按钮先重新查询当前账户的两个平台，确认身份、持仓与账本一致、数量相等方向相反、没有挂单或未完成订单，再持久化切换模式。资金不足仍然禁止新增开仓和加仓，但不要求补足新开仓的保证金才能恢复已有仓位的正常退出。
+
+恢复后应显示“仅平仓和止损（不再开仓加仓）”。原保证金保护、持仓、开仓价差、配对数量、策略参数和历史不会被按钮清除。平完一组会继续按原规则管理其他组，不会又因为旧停止标记而停住；清仓后仍不能开新仓。此按钮不是立即全部清仓，也不放宽原平仓盈利条件和滑点规则。紧急全部平仓（5%）仍是另一个操作。
+
+持仓不一致、尚有未完成订单、其他严重风控状态或平台查询失败时，拒绝切换，保留原状态。账本保存失败也不会启用平仓模式，会进入“需要处理”保护。原“暂停新增开仓”按钮不能再把已停止的账户伪装成运行中的退出模式，也不会抹掉其他故障状态。
+
+升级步骤（复制完整 data 到新包）
+1. 将新 ZIP 放到 Windows 桌面，解压为独立“多平台套利-rc25-Windows-x64”文件夹。先不要打开新版程序。
+2. 在旧后台对当前已加载的账户点击“停止交易”。账号1原本已停止，无需解除保证金保护；账号2也要停止。未加载的 ANTH 无需为升级而启动。
+3. 运行旧目录 Run-Diagnostics.cmd。升级前必须没有未完成订单、挂单或孤立仓位，两平台实际数量与各自账本一致。有已配平持仓可以升级；不一致或订单未结束则先保留旧后台处理，不能带着未解决操作复制迁移。
+4. 点击“退出所有账户”，确认任务管理器中 Cross-Platform-Arbitrage 进程已消失。浏览器页面关不关均可，关闭页面不等于退出后台。
+5. 将刚退出的旧程序文件夹完整复制一份作为备份。再复制旧程序使用的整个 data 文件夹，粘贴到新包 Cross-Platform-Arbitrage.exe 同一层。最终为“新 rc25 目录\Cross-Platform-Arbitrage-Windows-x64\data”。不要形成 data\data，不要合并两份不同时间的账本。若误启动新包生成了 data，先退出并保留该目录，重新解压一份再复制。
+6. 只打开新目录 EXE 一次。在新 EXE 所在文件夹地址栏输入 powershell 回车，执行下面整段，只检查版本及数据目录：
+
+$ErrorActionPreference='Stop'
+$request=[Net.HttpWebRequest]::Create('http://127.0.0.1:18794/health')
+$request.Proxy=$null; $request.Timeout=10000; $request.ReadWriteTimeout=10000
+$response=$request.GetResponse()
+try {
+  $reader=New-Object IO.StreamReader($response.GetResponseStream(),[Text.Encoding]::UTF8)
+  try { $h=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+} finally { $response.Dispose() }
+$expected=Get-Content -LiteralPath '.\build-info.json' -Raw | ConvertFrom-Json
+$expectedData=[IO.Path]::GetFullPath((Join-Path (Get-Location).Path 'data')).TrimEnd('\')
+$actual=[string]$h.data_dir
+if ($actual.StartsWith('\\?\')) { $actual=$actual.Substring(4) }
+if ($h.version -ne '0.2.0-rc.25' -or $h.build.runtime -ne 'live' -or $h.build.dirty -or $h.build.source_commit -ne $expected.source_commit -or $h.build.strategy_core_sha256 -ne $expected.strategy_core_sha256 -or $actual.TrimEnd('\') -ine $expectedData) { throw '版本或数据路径不符，先不要启动策略，把输出发来' }
+[ordered]@{version=$h.version;commit=$h.build.source_commit;data_dir=$h.data_dir;result='VERSION_OK'} | ConvertTo-Json
+
+7. 解锁账号1，点击“只读检查两个账户”，勾选独占使用确认，再点击“加载账户和原账本”。核对旧持仓和飞书配置仍在。此时显示“已停止”正常。
+8. 在账号1页面“开仓保护（连续回滚 / 保证金拒单）”区域，点击新按钮“仅恢复平仓和止损（保留保护）”，阅读当前账户确认提示后确认。
+   必须看到成功提示，并在程序状态中看到“仅平仓和止损（不再开仓加仓）”。保证金拒单保护应仍显示。不要点击“核对并解除开仓保护”，也不需要点击“启动实盘策略”。
+   若按钮返回查询失败、持仓不一致或存在未完成订单，保留当前状态并运行新目录 Run-Diagnostics.cmd 发诊断包；不要绕过检查或手改数据库。
+9. 账号2解锁、检查、加载原账本后，如希望继续原来的完整策略，再单独点击账号2的“启动实盘策略”。ANTH 如果暂时不用，继续保持未加载。
+10. 新目录运行 Run-Diagnostics.cmd 留存升级后的诊断包。也可在 PowerShell 执行下面的只读核验，确认账号1是保留保护的退出模式：
+
+$ErrorActionPreference='Stop'
+$d=(Invoke-RestMethod 'http://127.0.0.1:18794/api/openai-inventory' -TimeoutSec 10).data
+$s=$d.view.snapshot
+if (!$s) { throw '账号1未加载' }
+[ordered]@{
+  status=$s.status; paused=$s.paused; stop_requested=$s.stop_requested
+  margin_protection=($null -ne $s.entry_margin_block)
+  ledger=@($s.positions | ForEach-Object {$_.units})
+  accounts=@($d.view.accounts | Select-Object venue,position_units,open_orders)
+  pending=($null -ne $s.pending)
+} | ConvertTo-Json -Depth 4
+
+没有正在执行的平仓时，预期 status=paused_entries、paused=true、stop_requested=false、margin_protection=true，且两平台持仓和账本一致。paused=true 在此表示禁止新开仓，不表示平仓停了。正在平仓时允许暂时显示平仓/配平状态，应等待原订单完成；出现 needs_attention 则发诊断包。
+
+之后如何使用
+- 仍有持仓时，如果仅后台意外中断，没有主动停止交易，重新加载并核对持仓后保留仅平仓模式，不会自动开放开仓加仓。
+- 主动点击“停止交易”后，普通自动平仓会暂停。下次加载后需再次点击新按钮恢复；不能只点“暂停新增开仓”。
+- 退出模式已清仓后，重启保持已停止，保证金保护仍在，不会重新开仓。
+- 以后确实要重新允许开仓加仓，仍须按原流程处理资金、停止、核对并解除开仓保护，再单独启动。升级及新按钮都不会自动解除保护。
+- 保留旧版备份直到新版本验收通过。新版产生交易后，不能把旧备份账本覆盖回来。
+
+验证边界
+测试使用合成账户和订单，不连接用户账户下单。正常平仓仍需有效行情、账户证据和原有退出条件；网络中断或平台拒单仍走原核对、重试与告警机制，不承诺任何订单必然成交。

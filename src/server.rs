@@ -84,6 +84,7 @@ fn control_page(profile:&AccountProfile,profiles:&[AccountProfile])->String {
         .replace("/api/portable",&profile.control_api())
         .replace("START_OPENAI_LIVE_STRATEGY",&profile.start_confirmation())
         .replace("CONFIRM_OPENAI_ROLLBACK_RECOVERY",&profile.recovery_confirmation())
+        .replace("RESUME_OPENAI_PROTECTED_EXITS",&profile.protected_exits_confirmation())
         .replace("每平台每组约 15U 名义仓位",&format!("每个平台每组约 {}U 保证金、{}U 持仓金额，亏损保护 {}U",5*profile.capital_multiplier,15*profile.capital_multiplier,30*profile.capital_multiplier))
         .replace("OPENAI 实盘",&format!("{} 实盘",account_profiles::html_escape(&profile.label)))
         .replace("当前 OPENAI 标的",&format!("当前 {} 账户",account_profiles::html_escape(&profile.label)))
@@ -217,18 +218,31 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
     if matches!(r.command.as_str(),"save_notifications"|"test_notifications"|"disable_notifications") {
         return notification_action(app,r).await;
     }
-    if matches!(r.command.as_str(),"pause"|"stop"|"close_all"|"confirm_rollback_recovery") {
+    if matches!(r.command.as_str(),"pause"|"stop"|"close_all"|"confirm_rollback_recovery"|"resume_protected_exits") {
         let command=match r.command.as_str(){"pause"=>Control::Pause,"stop"=>Control::Stop,
             "confirm_rollback_recovery"=>{
                 ensure!(r.confirmation==app.paths.profile.recovery_confirmation(),
                     "请明确确认当前账户人工恢复；核对通过后仍需单独启动策略");
                 Control::ConfirmRollbackRecovery
+            },"resume_protected_exits"=>{
+                ensure!(r.confirmation==app.paths.profile.protected_exits_confirmation(),
+                    "请明确确认当前账户仅恢复平仓和止损，保留保证金保护");
+                Control::ResumeProtectedExits
             },_=>{
             ensure!(r.confirmation=="CLOSE_ALL_POSITIONS","请确认平掉全部持仓");Control::CloseAll}};
         let service=app.inner.lock().await.service.clone().context("账户尚未加载")?;
         service.control(r.id.clone(),command).await?;
         if r.command=="confirm_rollback_recovery" {
             return Ok(json!({"accepted":true,"message":"人工确认已记录；请核对开仓保护已解除、策略仍为已停止，再单独启动实盘策略。"}));
+        }
+        if r.command=="resume_protected_exits" {
+            let state=service.status().snapshot;
+            let message=if state.stop_requested || state.status==crate::openai_inventory::Status::Stopped {
+                "该请求已处理过；当前账户已停止。若需再次恢复，仅点击新入口，不会自动撤销后来的停止操作。"
+            } else if state.paused && state.entry_margin_block.is_some() {
+                "核对通过，仅平仓和止损已启用；保证金保护保留，禁止开仓和加仓。按原条件平仓，不是立即全部清仓。"
+            } else { "请求已处理；账户状态随后发生变化，请核对上方最新状态。" };
+            return Ok(json!({"accepted":true,"message":message}));
         }
         return Ok(json!({"accepted":true}));
     }
@@ -399,6 +413,8 @@ mod tests {
         assert!(!html.contains("fetch('/api/openai-inventory'"));
         assert!(html.contains("START_ANTH_LIVE_STRATEGY"));
         assert!(html.contains("CONFIRM_ANTH_ROLLBACK_RECOVERY"));
+        assert!(html.contains("RESUME_ANTH_PROTECTED_EXITS"));
+        assert!(!html.contains("RESUME_OPENAI_PROTECTED_EXITS"));
         assert!(!html.contains("CONFIRM_OPENAI_ROLLBACK_RECOVERY"));
         assert!(html.contains("/100000"));
         let monitor=crate::monitor::page(MarketPair::Anth,Mode::Live);
@@ -410,16 +426,22 @@ mod tests {
         for market in [MarketPair::Openai,MarketPair::Anth] {
             let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None,startup_failure:None})),token:Arc::new("synthetic-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),market),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(vec![]))};
             let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
-            let mut r=Request::default();r.command="confirm_rollback_recovery".into();r.id="manual-ack".into();
+            for (command, confirmation) in [
+                ("confirm_rollback_recovery", app.paths.profile.recovery_confirmation()),
+                ("resume_protected_exits", app.paths.profile.protected_exits_confirmation()),
+            ] {
+            let mut r=Request::default();r.command=command.into();r.id="manual-ack".into();
+            h.remove("x-inventory-token");
             assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("刷新页面"));
             h.insert("x-inventory-token","synthetic-token".parse().unwrap());
             for wrong in ["", "CONFIRM_OTHER_ROLLBACK_RECOVERY", if market==MarketPair::Openai {"CONFIRM_ANTH_ROLLBACK_RECOVERY"}else{"CONFIRM_OPENAI_ROLLBACK_RECOVERY"}] {
                 r.confirmation=wrong.into();
                 assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("明确确认"));
             }
-            r.confirmation=format!("CONFIRM_{}_ROLLBACK_RECOVERY",market.id().to_uppercase());
+            r.confirmation=confirmation;
             assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("尚未加载"));
             assert!(!app.lease.load(Ordering::SeqCst));
+            }
         }
     }
 
@@ -492,16 +514,18 @@ mod account_host_tests {
         assert!(!Arc::ptr_eq(&first.inner,&second.inner));assert!(!Arc::ptr_eq(&first.lease,&second.lease));assert_ne!(notification_path(&first),notification_path(&second));
         first.inner.lock().await.password=Some(Zeroizing::new("synthetic-private-password".into()));
         for (target,source) in [(&first,&second),(&second,&first)] {
-            for command in ["start","stop","close_all","launch","lock","quit","save_credentials","save_notifications","confirm_rollback_recovery"] {
+            for command in ["start","stop","close_all","launch","lock","quit","save_credentials","save_notifications","confirm_rollback_recovery","resume_protected_exits"] {
                 let mut r=Request::default();r.command=command.into();r.id="test".into();
                 assert!(handle(target,&headers(&source.token),&r).await.unwrap_err().to_string().contains("刷新页面"));
             }
             let mut r=Request::default();r.command="start".into();r.id="test".into();r.confirmation=source.paths.profile.start_confirmation();
             assert!(handle(target,&headers(&target.token),&r).await.unwrap_err().to_string().contains("明确确认"));
+            r.command="resume_protected_exits".into();r.confirmation=source.paths.profile.protected_exits_confirmation();
+            assert!(handle(target,&headers(&target.token),&r).await.unwrap_err().to_string().contains("明确确认"));
         }
         assert_eq!(status(State(second.clone()),headers("")).await.0["data"]["vault_unlocked"],false);
         assert_eq!(status(State(first.clone()),headers("")).await.0["data"]["vault_unlocked"],true);
-        let page=control_page(&second.paths.profile,&host.profiles());assert!(!page.contains("fetch('/api/portable'"));assert!(page.contains(&second.paths.profile.start_confirmation()));
+        let page=control_page(&second.paths.profile,&host.profiles());assert!(!page.contains("fetch('/api/portable'"));assert!(page.contains(&second.paths.profile.start_confirmation()));assert!(page.contains(&second.paths.profile.protected_exits_confirmation()));assert!(!page.contains("RESUME_OPENAI_PROTECTED_EXITS"));
         let monitor=crate::monitor::account_page(&second.paths.profile,&host.profiles());assert!(monitor.contains(&second.paths.profile.inventory_api()));assert!(monitor.contains("\"id\":"));
         assert!(!page.contains("synthetic-private-password"));std::fs::remove_dir_all(host.root.as_ref()).unwrap();
     }

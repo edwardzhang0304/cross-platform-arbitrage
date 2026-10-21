@@ -18,19 +18,7 @@ fn eligible(s: &Snapshot) -> Result<()> {
 
 fn checked_state(s: &Snapshot, a: &[AccountEvidence; 2], now: u64) -> Result<Snapshot> {
     eligible(s)?;
-    ensure!(s.lots.iter().all(|l| l.units > 0), "持仓分组数量无效，不能解除保护");
-    s.assert_reconciled(a).context("两平台实际持仓、配对数量与账本不一致，不能解除保护")?;
-    for (i, account) in a.iter().enumerate() {
-        let expected = if i == 0 { &s.config.lighter_account } else { &s.config.entropy_account };
-        ensure!(account.authenticated && account.venue.index() == i && &account.account == expected,
-            "账户认证或账户绑定不一致，不能解除保护");
-        ensure!(account.observed_ms > 0 && account.observed_ms <= now
-            && now - account.observed_ms <= s.config.account_max_age_ms,
-            "账户核对结果过期或时间异常，请稍后重试");
-        ensure!(account.open_orders == 0, "平台仍有挂单，不能解除保护");
-        ensure!(account.isolated && account.leverage == s.config.leverage,
-            "保证金模式或杠杆与配置不一致，不能解除保护");
-    }
+    verified_inventory(s, a, now)?;
     let mut next = s.clone();
     next.consecutive_rollbacks = 0;
     next.recovery_after_ms = None;
@@ -39,6 +27,77 @@ fn checked_state(s: &Snapshot, a: &[AccountEvidence; 2], now: u64) -> Result<Sna
     next.reason = format!("manual rollback protection recovery verified (previous rollbacks: {}); stopped until explicit start", s.consecutive_rollbacks);
     // Preserve inventory, entry anchors, quotas, funding, PnL and every other latch.
     Ok(next)
+}
+
+fn verified_inventory(s: &Snapshot, a: &[AccountEvidence; 2], now: u64) -> Result<()> {
+    ensure!(s.lots.iter().all(|l| l.units > 0), "持仓分组数量无效，不能恢复");
+    s.assert_reconciled(a).context("两平台实际持仓、配对数量与账本不一致，不能恢复")?;
+    for (i, account) in a.iter().enumerate() {
+        let expected = if i == 0 { &s.config.lighter_account } else { &s.config.entropy_account };
+        ensure!(account.authenticated && account.venue.index() == i && &account.account == expected,
+            "账户认证或账户绑定不一致，不能恢复");
+        ensure!(account.observed_ms > 0 && account.observed_ms <= now
+            && now - account.observed_ms <= s.config.account_max_age_ms,
+            "账户核对结果过期或时间异常，请稍后重试");
+        ensure!(account.open_orders == 0, "平台仍有挂单，不能恢复");
+        ensure!(account.isolated && account.leverage == s.config.leverage,
+            "保证金模式或杠杆与配置不一致，不能恢复");
+    }
+    Ok(())
+}
+
+fn protected_exits_eligible(s: &Snapshot) -> Result<()> {
+    ensure!(s.config.mode == Mode::Live && s.entry_margin_block.is_some(),
+        "仅适用于保留保证金拒单保护的实盘账户");
+    ensure!(s.paused && ((s.status == Status::Stopped && s.stop_requested)
+        || (s.status == Status::PausedEntries && !s.stop_requested)),
+        "请先停止交易并完成核对，再仅恢复平仓和止损");
+    ensure!(s.pending.is_none() && s.live_orphan.is_none() && s.loss_stop.is_none()
+        && s.liquidation_protection.is_none() && !s.close_requested && !s.stop_after_close
+        && !emergency_exit::active(s),
+        "仍有未完成订单、仓位异常或紧急止损任务，不能切换平仓模式");
+    s.config.validate()?;
+    Ok(())
+}
+
+fn checked_protected_exits(s: &Snapshot, a: &[AccountEvidence; 2], now: u64) -> Result<Snapshot> {
+    protected_exits_eligible(s)?;
+    verified_inventory(s, a, now)?;
+    let mut next = s.clone();
+    next.paused = true;
+    next.stop_requested = false;
+    next.resume_after_recovery = true;
+    next.recovery_after_ms = None;
+    next.status = Status::PausedEntries;
+    strategy::clear_decision_confirmation(&mut next);
+    next.reason = "仅平仓和止损：保证金拒单保护保留，禁止开仓和加仓".into();
+    // Do not clear the margin latch, rollback history, quantities or entry rules.
+    // Entry cash is deliberately not required: ordinary reduce-only checks remain
+    // in the strategy/worker path, and quotes/funding are checked at execution time.
+    Ok(next)
+}
+
+pub(super) async fn resume_protected_exits(
+    state: &mut Snapshot, store: &mut Store, workers: &[AccountWorker; 2], id: &str,
+) -> Result<Option<[AccountEvidence; 2]>> {
+    ensure!(!id.is_empty() && id.len() <= 128, "invalid command id");
+    let name = serde_json::to_string(&Control::ResumeProtectedExits)?;
+    if store.command_seen(id, &name)? { return Ok(None); }
+    protected_exits_eligible(state)?;
+    let accounts = venue::fresh_reconciled_accounts(workers, state.config.account_max_age_ms)
+        .await.context("无法重新核对两平台持仓和订单；原停止状态及保证金保护保留")?;
+    let now = crate::domain::now_ms();
+    let next = checked_protected_exits(state, &accounts, now)?;
+    let evidence = serde_json::json!({
+        "protected_exits_only": true, "margin_protection_retained": true,
+        "accounts": accounts.iter().map(|a| serde_json::json!({
+            "venue":a.venue,"position_units":a.position_units,"open_orders":a.open_orders,
+            "authenticated":a.authenticated,"observed_ms":a.observed_ms
+        })).collect::<Vec<_>>()
+    });
+    store.command_with_evidence(&next, id, &name, now, evidence)?;
+    *state = next;
+    Ok(Some(accounts))
 }
 
 pub(super) async fn confirm(
@@ -82,3 +141,7 @@ pub(super) async fn confirm(
 #[cfg(test)]
 #[path = "manual_recovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "protected_exits_tests.rs"]
+mod protected_exits_tests;

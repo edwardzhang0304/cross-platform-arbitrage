@@ -52,6 +52,7 @@ pub enum Control {
     StartOneEntry,
     StartLiveStrategy,
     ConfirmRollbackRecovery,
+    ResumeProtectedExits,
     Pause,
     Stop,
     CloseAll,
@@ -192,6 +193,10 @@ impl InventoryService {
                             super::manual_recovery::confirm(&mut state,&mut store,&workers,&command.id,Some(&books)).await.map(|fresh| {
                                 if let Some(a)=fresh {accounts=Some(a);last_accounts=crate::domain::now_ms();}
                             })
+                        } else if matches!(command.control, Control::ResumeProtectedExits) {
+                            super::manual_recovery::resume_protected_exits(&mut state,&mut store,&workers,&command.id).await.map(|fresh| {
+                                if let Some(a)=fresh {accounts=Some(a);last_accounts=crate::domain::now_ms();}
+                            })
                         } else {(||->Result<()>{
                             repair_evidence?;
                             ensure!(!command.id.is_empty() && command.id.len()<=128,"invalid command id");
@@ -205,8 +210,8 @@ impl InventoryService {
                                 Control::Start=>{start_continuous(&mut next)?;},
                                 Control::StartOneEntry=>{start_one_entry(&mut next, accounts.as_ref(), &books.read().unwrap().clone(), crate::domain::now_ms())?;},
                                 Control::StartLiveStrategy=>{start_live_strategy(&mut next, accounts.as_ref(), &books.read().unwrap().clone(), crate::domain::now_ms())?;},
-                                Control::ConfirmRollbackRecovery=>unreachable!("handled by authenticated reconciliation"),
-                                Control::Pause=>{next.paused=true;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::PausedEntries;}},
+                                Control::ConfirmRollbackRecovery|Control::ResumeProtectedExits=>unreachable!("handled by authenticated reconciliation"),
+                                Control::Pause=>{pause_entries(&mut next);},
                                 Control::Stop=>{next.stop_requested=true;next.paused=true;next.resume_after_recovery=false;execution::cancel_unsent_entry(&mut next);if next.pending.is_none(){next.status=Status::Stopped;}else if next.status!=Status::NeedsAttention {next.reason="finishing active paired operation before stopping".into();}},
                                 Control::CloseAll=>{if !super::emergency_exit::active(&next) {emergency_accounts=[None,None];}super::emergency_exit::latch(&mut next,crate::domain::now_ms())?;last_emergency_poll=0;},
                                 Control::CancelCloseAll=>{execution::cancel_close_all(&mut next)?;},
@@ -361,10 +366,7 @@ impl InventoryService {
                                         store.commit(&resumed,crate::domain::now_ms(),"rollback_auto_resumed")?;
                                         state=resumed;
                                     }
-                                    if state.status==Status::Recovering {
-                                        ensure!(a.iter().all(|x|x.open_orders==0),"unowned or unresolved orders at recovery");
-                                        state.status=if !state.resume_after_recovery {Status::Stopped}else if state.paused {Status::PausedEntries}else{Status::Warming};
-                                    }
+                                    complete_reconciled_recovery(&mut state, a)?;
                                     let prior=state.last_sample_ms;
                                     let prior_decision=state.decision_observation;
                                     let prior_loss_stop=state.loss_stop.is_some();
@@ -489,7 +491,7 @@ mod live_chart_tests {
 
 /// A live process may resume hedging an already submitted leg and managing
 /// owned inventory, but starting the process alone must never arm a new entry.
-fn quarantine_live_start(state: &mut Snapshot) {
+pub(super) fn quarantine_live_start(state: &mut Snapshot) {
     if state.config.mode != Mode::Live {
         return;
     }
@@ -503,6 +505,34 @@ fn quarantine_live_start(state: &mut Snapshot) {
         state.status = Status::Stopped;
         state.reason = "live entry stopped until explicit bounded start".into();
     }
+}
+
+pub(super) fn pause_entries(state: &mut Snapshot) {
+    state.paused = true;
+    let prior_status = state.status;
+    let prior_reason = state.reason.clone();
+    execution::cancel_unsent_entry(state);
+    if !matches!(prior_status, Status::Running | Status::Warming | Status::PausedEntries) {
+        state.status = prior_status;
+        state.reason = prior_reason;
+    }
+    // Pausing entries cannot resume a stopped account or erase another fault.
+    // Resuming protected exits is a separate authenticated, durable transition.
+    if state.pending.is_none() && !state.stop_requested
+        && matches!(state.status, Status::Running | Status::Warming | Status::PausedEntries)
+    {
+        state.status = Status::PausedEntries;
+    }
+}
+
+pub(super) fn complete_reconciled_recovery(state: &mut Snapshot, accounts: &[AccountEvidence; 2]) -> Result<()> {
+    if state.status == Status::Recovering {
+        state.assert_reconciled(accounts)?;
+        ensure!(accounts.iter().all(|x| x.open_orders == 0), "unowned or unresolved orders at recovery");
+        state.status = if state.stop_requested || !state.resume_after_recovery { Status::Stopped }
+            else if state.paused { Status::PausedEntries } else { Status::Warming };
+    }
+    Ok(())
 }
 
 #[cfg(test)]

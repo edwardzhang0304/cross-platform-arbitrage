@@ -37,7 +37,7 @@ try {
   $Extra=(Invoke-RestMethod "$Base$($ExtraProfile.inventory_api)").data
   if ($Extra.profile.id -ne $ExtraProfile.id -or $Extra.profile.market -ne 'openai' -or $Extra.profile.capital_multiplier -ne 10 -or $Extra.configured -or $Extra.view -or $Extra.vault_unlocked -or $Extra.csrf -eq $Status.csrf) { throw 'Second OPENAI state is not isolated' }
   foreach ($Pair in @(@($Status,$Extra),@($Extra,$Status))) {
-    foreach ($Command in @('start','stop','close_all','lock','quit','confirm_rollback_recovery','save_credentials','save_notifications')) {
+    foreach ($Command in @('start','stop','close_all','lock','quit','confirm_rollback_recovery','resume_protected_exits','save_credentials','save_notifications')) {
       $Body=@{command=$Command;id=[guid]::NewGuid().ToString();confirmation='CLOSE_ALL_POSITIONS'} | ConvertTo-Json -Compress
       $Cross=Invoke-RestMethod "$Base$($Pair[1].profile.control_api)" -Method Post -ContentType 'application/json' -Headers @{'X-Inventory-Token'=$Pair[0].csrf} -Body $Body
       if ($Cross.ok) { throw "Same-market foreign token accepted for $Command" }
@@ -80,6 +80,18 @@ try {
     $Request=@{command='confirm_rollback_recovery';id='empty-recovery';confirmation="CONFIRM_${Label}_ROLLBACK_RECOVERY"} | ConvertTo-Json -Compress
     $Empty=Invoke-RestMethod "$Base$($Pair[2])" -Method Post -ContentType 'application/json' -Headers $RecoveryHeaders -Body $Request
     if ($Empty.ok) { throw 'Unloaded account recovered' }
+  }
+  foreach ($Profile in @($Status.profile,$Anth.profile,$ExtraProfile)) {
+    $Current=(Invoke-RestMethod "$Base$($Profile.inventory_api)").data
+    $Headers=@{'X-Inventory-Token'=$Current.csrf}
+    $Page=(Invoke-WebRequest "$Base$($Profile.control_path)").Content
+    $Confirmation='RESUME_'+$Profile.id.ToUpperInvariant()+'_PROTECTED_EXITS'
+    if (!$Page.Contains($Confirmation) -or !$Page.Contains('resume_protected_exits')) { throw 'Protected exits button targets wrong account' }
+    foreach ($Confirm in @('',$Confirmation)) {
+      $Request=@{command='resume_protected_exits';id=[guid]::NewGuid().ToString();confirmation=$Confirm} | ConvertTo-Json -Compress
+      $Reply=Invoke-RestMethod "$Base$($Profile.control_api)" -Method Post -ContentType 'application/json' -Headers $Headers -Body $Request
+      if ($Reply.ok) { throw 'Unloaded account resumed protected exits' }
+    }
   }
   $RecoveryScript=Join-Path (Split-Path $Exe) 'Confirm-Rollback-Recovery.ps1'
   $ParseErrors=$null; $Tokens=$null

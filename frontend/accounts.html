@@ -6,7 +6,7 @@
 <section><details><summary>添加独立账户</summary><p>新账户从空白配置开始。请使用独立的两平台账户，不要把已有账户重复添加，也不要复制其他账户的账本。</p><label for="market">交易标的</label><select id="market"><option value="openai">OPENAI</option><option value="anth">ANTH</option></select><label for="label">账户名称</label><input id="label" maxlength="40" placeholder="例如 OPENAI 账号2" autocomplete="off"><label for="capital">每组每个平台的保证金</label><select id="capital"><option value="1">5U · 每边持仓约15U · 亏损保护30U</option><option value="10">50U · 每边持仓约150U · 亏损保护300U</option></select><p class="muted">均为逐仓3倍、最多20组。50U档每边保留100U可用资金，两个平台一组共用约100U保证金。金额会按两边共同精度取整；资金档位创建后固定，原账户不受影响。</p><p><button id="add" type="button" onclick="addAccount()">创建并配置</button></p><p class="muted">创建账户不会加载密钥或启动交易。配置、只读检查和启动都需在该账户页面分别完成。</p></details><p id="notice" role="status"></p></section></main>
 <script>
 const $=id=>document.getElementById(id);let token='',creating=false,requestId=null,requestKey='';
-const states={running:'运行中',stopped:'已停止',needs_attention:'需要处理',recovering:'正在核对',recovering_exposure:'正在配平',paused:'已暂停',closing:'正在平仓'};
+const states={running:'运行中',stopped:'已停止',needs_attention:'需要处理',recovering:'正在核对',recovering_exposure:'正在配平',paused:'已暂停',paused_entries:'仅平仓和止损（不再开仓加仓）',closing:'正在平仓'};
 function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
 function renderProfiles(data){
   const cards=[];

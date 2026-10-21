@@ -142,3 +142,37 @@ test('an unloaded account retains its safe bootstrap cause across refresh withou
   assert.match(element('control-status').textContent,/entropy_contract.*margin_mode_unsupported/);
   failure=null;await ctx.refresh();assert.equal(element('control-status').textContent,'');
 });
+
+test('protected exits button preserves the latch and distinguishes stopped, active and faulty states',async()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../frontend/portable.html'),'utf8');
+  const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)};
+  const snapshot={status:'stopped',paused:true,stop_requested:true,entry_margin_block:{rejection:'preflight_funding'},lots:[{}],closed_groups:0};
+  const posts=[];let accept=false;
+  const ctx=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},
+    crypto:{randomUUID:()=>`exit-${posts.length}`},confirm:()=>accept,setInterval(){},
+    fetch:async(url,opts)=>{
+      if(opts?.method==='POST'){
+        posts.push(JSON.parse(opts.body));snapshot.status='paused_entries';snapshot.stop_requested=false;
+        return {json:async()=>({ok:true,data:{message:'仅平仓和止损已启用；保证金保护保留'}})};
+      }
+      return {json:async()=>({ok:true,data:{csrf:'synthetic',view:{snapshot}}})};
+    }});
+  vm.runInContext(html.match(/<script>\s*([\s\S]*?)<\/script>/)[1],ctx);
+  await ctx.refresh();assert.equal(element('protected-exits').hidden,false);
+  assert.match(element('control-status').textContent,/已停止，普通自动平仓未启用/);
+  assert.match(element('rollback-count').textContent,/普通自动平仓未启用/);
+  const call=html.match(/onclick="(act\('resume_protected_exits'[^\"]+)"/)[1];
+  await vm.runInContext(call,ctx);assert.equal(posts.length,0);
+  accept=true;await vm.runInContext(call,ctx);
+  assert.equal(posts.length,1);assert.equal(posts[0].command,'resume_protected_exits');
+  assert.equal(posts[0].confirmation,'RESUME_OPENAI_PROTECTED_EXITS');
+  assert.match(element('summary').textContent,/仅平仓和止损/);
+  assert.match(element('control-status').textContent,/保证金拒单保护保留，禁止开仓和加仓/);
+  assert.ok(snapshot.entry_margin_block);assert.equal(snapshot.paused,true);
+  snapshot.status='needs_attention';await ctx.refresh();
+  assert.doesNotMatch(element('rollback-count').textContent,/仅平仓和止损已启用/);
+  snapshot.status='stopped';snapshot.stop_requested=true;await ctx.refresh();
+  assert.match(element('control-status').textContent,/普通自动平仓未启用/);
+  delete snapshot.entry_margin_block;await ctx.refresh();assert.equal(element('protected-exits').hidden,true);
+  assert.equal(posts.length,1,'polling and mode changes must not submit additional controls');
+});

@@ -5,7 +5,8 @@ use anyhow::{ensure, Context, Result};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-pub const BLOCK_MESSAGE: &str = "保证金拒单保护：已暂停新增开仓；正常平仓和止损仍保留，请核对可划转保证金后人工恢复";
+pub const BLOCK_MESSAGE: &str = "保证金拒单保护：禁止开仓和加仓；平仓与止损是否启用，请查看控制台当前状态";
+pub(super) const LEGACY_BLOCK_MESSAGE: &str = "保证金拒单保护：已暂停新增开仓；正常平仓和止损仍保留，请核对可划转保证金后人工恢复";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

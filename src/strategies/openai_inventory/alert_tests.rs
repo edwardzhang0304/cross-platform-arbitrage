@@ -415,7 +415,7 @@ fn rc23_margin_cursor_migrates_confirmed_send_but_not_unsent_or_new_incident() {
         db.execute("UPDATE notification_policy SET version=2",[]).unwrap();
         let id=if queued {let tx=db.transaction().unwrap();let id=enqueue(&tx,2000,entry_margin::BLOCK_MESSAGE).unwrap();tx.commit().unwrap();Some(id)}else{None};
         let old=serde_json::json!({"key":format!("{}-account",s.instance_id),"action":"持仓核对","started_ms":2000,
-            "notice_ms":2500,"urgent":true,"outbox_id":id,"body":entry_margin::BLOCK_MESSAGE});
+            "notice_ms":2500,"urgent":true,"outbox_id":id,"body":entry_margin::LEGACY_BLOCK_MESSAGE});
         db.execute("INSERT INTO notification_state VALUES(1,?1)",[old.to_string()]).unwrap();
         if new_incident {s.entry_margin_block.as_mut().unwrap().at_ms=3000;}
         record(&mut db,&s,900_000);
@@ -431,4 +431,17 @@ fn margin_receipt_is_transactional_and_does_not_suppress_another_account() {
     record(&mut db,&s,900_000);assert_eq!(rows(&db)[0].0,id);
     acknowledge(&mut db,&id,900_001);
     let mut other=self::db();record(&mut other,&s,900_002);assert_eq!(rows(&other).len(),1);
+}
+
+#[test]
+fn stopped_margin_message_does_not_claim_profit_exits_are_active_or_resend_on_resume() {
+    let mut db=Connection::open_in_memory().unwrap();db.execute_batch(SCHEMA).unwrap();
+    let mut s=margin_protected();s.status=Status::Stopped;s.stop_requested=true;
+    record(&mut db,&s,2000);
+    let (id,body)=rows(&db).pop().unwrap();
+    assert!(body.contains("普通自动平仓未启用"));
+    assert!(!body.contains("正常平仓和止损仍按原有条件执行"));
+    acknowledge(&mut db,&id,2500);
+    s.status=Status::PausedEntries;s.stop_requested=false;s.resume_after_recovery=true;
+    record(&mut db,&s,300_000);assert!(rows(&db).is_empty());
 }

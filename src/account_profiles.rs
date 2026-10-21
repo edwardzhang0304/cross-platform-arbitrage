@@ -47,6 +47,7 @@ impl AccountProfile {
     pub fn monitor_path(&self)->String {if self.is_legacy(){format!("/{}-inventory",self.id)}else{format!("/accounts/{}/monitor",self.id)}}
     pub fn start_confirmation(&self)->String {format!("START_{}_LIVE_STRATEGY",self.id.to_uppercase())}
     pub fn recovery_confirmation(&self)->String {format!("CONFIRM_{}_ROLLBACK_RECOVERY",self.id.to_uppercase())}
+    pub fn protected_exits_confirmation(&self)->String {format!("RESUME_{}_PROTECTED_EXITS",self.id.to_uppercase())}
     pub fn descriptor(&self)->serde_json::Value {serde_json::json!({"id":self.id,"label":self.label,"market":self.market,"mode":"live","capital_multiplier":self.capital_multiplier,
         "control_path":self.control_path(),"control_api":self.control_api(),"inventory_api":self.inventory_api(),"monitor_path":self.monitor_path()})}
     pub fn notification_label(&self)->String {format!("{} · {} · {}",self.label,self.market.label(),self.id)}

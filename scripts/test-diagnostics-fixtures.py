@@ -84,6 +84,7 @@ for profile in profiles:
                  lots=[dict(level=i,units=700,opened_ms=start-10000*(i+1),entry_spread="28.4",private_field=secret) for i in range(7)],
                  fills={"fill-key":dict(id="fill-key",order_id="synthetic-order",venue="entropy",side="buy",units=700,price="2100",fee="0.001",time_ms=start+1000,private_key=secret)},
                  closed_groups=1, direction="lighter_short", anchor="28", time_adds_used=1)
+    state['resume_after_recovery']=True
     state['entry_margin_block']=dict(venue='lighter',at_ms=now,order_id='synthetic-margin-order',rejection='margin_not_allowed',unexpected_secret=secret)
     state['emergency_exit']=dict(id='synthetic-emergency',requested_ms=start,completed_ms=None,flat_confirmed_ms=None,
         remaining_units=[-4900,5600],observed_ms=[now,now],next_attempt_ms=[now,now],next_sequence=1,

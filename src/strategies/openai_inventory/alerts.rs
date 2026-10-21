@@ -79,6 +79,9 @@ fn action(s:&Snapshot)->String {
     }.into()
 }
 fn message(s:&Snapshot,incident:&Incident,at:u64,title:&str,detail:&str)->String {
+    let detail = if detail == entry_margin::BLOCK_MESSAGE && (s.stop_requested || s.status == Status::Stopped) {
+        "保证金拒单保护保留；账户已停止，普通自动平仓未启用。可通过“仅恢复平仓和止损（保留保护）”核对后恢复，禁止开仓和加仓。"
+    } else { detail };
     let time=chrono::DateTime::from_timestamp_millis(at as i64).map(|t|t.to_rfc3339()).unwrap_or_default();
     let progress=s.pending.as_ref().map(|p|format!("\n请求数量 {}；首腿确认 {}；配对腿确认 {}；补偿确认 {}",
         s.config.quantity(p.requested_units),s.config.quantity(p.first_filled),s.config.quantity(p.hedge_filled),s.config.quantity(p.repair_filled))).unwrap_or_default();
@@ -118,7 +121,7 @@ fn promote(tx:&Transaction<'_>,a:&mut Incident,at:u64)->Result<()> {
         let sent:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM notification_once WHERE incident_key=?1 AND delivered_ms IS NOT NULL)",[key],|r|r.get(0))?;
         if sent {cancel(tx,&Some(a.clone()))?;a.outbox_id=None;return Ok(());}
     }
-    let body=if a.once_key.is_some() {format!("{}\n本次保证金保护只提醒一次；新增开仓保持暂停，正常平仓和止损仍按原有条件执行。",a.body)}
+    let body=if a.once_key.is_some() {format!("{}\n本次保证金保护只提醒一次；新增开仓保持暂停。普通自动平仓是否启用，以控制台当前状态为准。",a.body)}
         else {format!("{}\n异常已持续至少 {} 秒；请运行程序目录中的一键诊断，发送生成的诊断包。",a.body,at.saturating_sub(a.started_ms)/1000)};
     if let Some(id)=&a.outbox_id {
         let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM notification_outbox WHERE id=?1)",[id],|r|r.get(0))?;
@@ -182,7 +185,7 @@ pub fn observe(tx:&Transaction<'_>,s:&Snapshot,at:u64)->Result<()> {
         // rc23 stored delivery confirmation in the incident cursor. Preserve
         // that proof on upgrade; a queued/failed message is NOT proof of delivery.
         if let (Some(once),Some(a))=(&once_key,&mut active) {
-            if a.once_key.is_none() && a.body.contains(entry_margin::BLOCK_MESSAGE)
+            if a.once_key.is_none() && (a.body.contains(entry_margin::BLOCK_MESSAGE) || a.body.contains(entry_margin::LEGACY_BLOCK_MESSAGE))
                 && s.entry_margin_block.as_ref().is_some_and(|b|a.started_ms>=b.at_ms) {
                 a.key=key.clone();a.once_key=Some(once.clone());
                 let delivered=if a.notice_ms>0 && a.outbox_id.is_none() {Some(a.notice_ms)} else {None};
