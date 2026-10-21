@@ -1,0 +1,34 @@
+rc.24：第一边下单前的保证金检查与飞书去重（仅 Windows x64）
+
+这次修复
+rc23 的最终下单检查和拒单保护已生效，但实时资金推送与 REST 查询的 collateral 字段口径不同：推送包含已划入逐仓的保证金，REST 不包含。旧版在第一边成交之前仍可能误判可用资金，等第二边检查时才拦住，并撤回第一边。
+
+rc24 在平台适配层统一两条通道的口径。实时推送会扣除所有逐仓已分配保证金，包括其他标的和已空仓但仍留有保证金的记录。缺失金额、混合全仓风险或两路推送估值不一致时，不放行新增开仓；已有持仓证据、减仓和平仓不因此失效。最终发送前的 REST 核验仍保留。诊断包 entry_margin.collateral 现在统一表示未划入逐仓的余额，不再把实时推送总额直接填进去。
+
+同一次保证金保护：成功发出一次飞书后不再每五分钟重复；记录保存在该账户账本里，重启、停止、重新加载不重复。发送失败仍重试同一条通知。更严重的独立故障（例如持仓不符、平仓卡住、持续行情异常）仍按原规则提醒；解除后新发生的保证金保护会重新通知。升级会继承 rc23 能确认已经发送的记录；未确认成功的待发通知最多完成本次发送。诊断新增通知发送回执，事件 ID 只输出摘要，不导出密钥。
+
+升级不会解除现有保证金保护，也不会改变 20 组、3 倍、30 分钟、账户2的十倍额度及亏损保护。资金确实不足时，仍须按原规则处理；不会自动充值或划转保证金。
+
+升级：把完整 data 复制到新版本目录
+1. 把新 ZIP 传到 Windows 桌面，解压为单独的“多平台套利-rc24-Windows-x64”文件夹，先不要打开新版 EXE。
+2. 在旧后台三个账户分别点击“停止交易”，保留后台打开，等到全部已停止。运行旧程序目录中的 Run-Diagnostics.cmd，确认没有未完成订单、挂单或孤立仓位，两边实际数量与各自账本一致。有已配平持仓可以升级；如仍在配平或数量不符，先发送诊断包，不要退出迁移。
+3. 点击“退出所有账户”，然后确认 Windows 任务管理器中 Cross-Platform-Arbitrage 进程已消失。关闭浏览器页面不等于退出后台。
+4. 将旧程序文件夹完整复制一份作为升级前备份。以 /health 的 data_dir 和实际程序所在目录为准；本次通常从 rc23 目录迁移。
+5. 从刚退出的旧程序目录复制整个 data 文件夹，粘贴到新 rc24 包中 Cross-Platform-Arbitrage.exe 的同一层。结果为“新目录\Cross-Platform-Arbitrage-Windows-x64\data”。不要只复制某个数据库、不要形成 data\data、不要合并两份不同时间的账本。新包原本不带 data；如误启动生成了 data，先退出并保留该目录，重新解压一份再迁移。
+6. 只打开新目录的 Cross-Platform-Arbitrage.exe 一次。保留旧目录作为备份，不要再启动旧 EXE。在新程序文件夹地址栏输入 powershell 回车，再执行下面整段核对：
+
+$ErrorActionPreference='Stop'
+$h=Invoke-RestMethod 'http://127.0.0.1:18794/health' -TimeoutSec 10
+$expected=Get-Content -LiteralPath '.\build-info.json' -Raw | ConvertFrom-Json
+$expectedData=[IO.Path]::GetFullPath((Join-Path (Get-Location).Path 'data')).TrimEnd('\')
+$actual=[string]$h.data_dir
+if ($actual.StartsWith('\\?\')) { $actual=$actual.Substring(4) }
+if ($h.version -ne '0.2.0-rc.24' -or $h.build.runtime -ne 'live' -or $h.build.dirty -or $h.build.source_commit -ne $expected.source_commit -or $h.build.strategy_core_sha256 -ne $expected.strategy_core_sha256 -or $actual.TrimEnd('\') -ine $expectedData) { throw '版本或数据路径不符，先不要启动策略，把 health 输出发来' }
+[ordered]@{version=$h.version;commit=$h.build.source_commit;data_dir=$h.data_dir;result='VERSION_OK'} | ConvertTo-Json
+
+7. 三个账户用原密码解锁、运行只读检查并加载原账本，暂不启动策略。核对原账户、原持仓和飞书配置都在。运行新目录 Run-Diagnostics.cmd，把新 ZIP 发来做一次升级验收。诊断会自动收集三个账户，不需逐段输入查询。
+8. 验收持仓配平、没有 pending 后再分别启动。若出现“保证金拒单保护”，先处理实际可划转保证金不足，再停止该账户并点击“核对并解除开仓保护”。按钮会重新读取两平台持仓、订单与资金，条件不满足则拒绝解除；解除成功仍保持停止，需单独启动。不要反复点恢复或手改账本。原有连续三次回滚保护也仍需人工核对。
+9. 保留旧版升级前备份直到新版本验收通过。新版产生交易后，不能把旧备份账本覆盖回来。
+
+边界
+测试使用合成数据，不对真实账户下单。查询后到下单前仍可能发生账户资金变化，网络或平台仍可能拒单；本次修复的是已确认的资金口径遗漏及同一保证金保护重复提醒，不承诺所有订单必然成交。

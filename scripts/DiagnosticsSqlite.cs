@@ -60,6 +60,10 @@ public static class CpaDiagnosticsSqlite {
         if(Query(path,"SELECT name FROM sqlite_master WHERE type='table' AND name='market_notification_history'",1,128).Length==0) return new string[0];
         return Query(path,"SELECT body FROM market_notification_history ORDER BY seq DESC LIMIT 64",64,256*1024);
     }
+    public static string[] OneTimeNotices(string path) {
+        if(Query(path,"SELECT name FROM sqlite_master WHERE type='table' AND name='notification_once'",1,128).Length==0) return new string[0];
+        return Query(path,"SELECT incident_key||char(9)||COALESCE(CAST(delivered_ms AS TEXT),'')||char(9)||CASE WHEN EXISTS(SELECT 1 FROM notification_outbox WHERE id=outbox_id) THEN '1' ELSE '0' END FROM notification_once ORDER BY rowid DESC LIMIT 32",32,64*1024);
+    }
     public static string[] Events(string path,long from,long to) {
         string where="kind NOT IN ('sample','halted_market_sample','funding_reconciled')";
         if(from>=0 && to>=from) where+=" AND at_ms BETWEEN "+from.ToString(CultureInfo.InvariantCulture)+" AND "+to.ToString(CultureInfo.InvariantCulture);

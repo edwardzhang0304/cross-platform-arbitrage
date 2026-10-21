@@ -111,6 +111,8 @@ for profile in profiles:
         evidence=dict(at_ms=now,window_ms=60000,observed_ms=60000,unavailable_ms=[50000,0],current_bad=[True,False],eligible=[True,False],received_ms=[now-2000,now],reasons=['stale','healthy'],unexpected_secret=secret)
         db.execute("INSERT INTO market_notification_state VALUES(1,?)", (json.dumps(dict(schema=2,last_sent_ms=now,outbox_id=None,evidence=evidence,unexpected_secret=secret)),))
         db.execute("INSERT INTO market_notification_history VALUES(1,?)", (json.dumps(dict(kind='delivered',at_ms=now,evidence=evidence,unexpected_secret=secret)),))
+        db.executescript("CREATE TABLE notification_once(incident_key TEXT PRIMARY KEY,outbox_id TEXT,delivered_ms INTEGER); CREATE TABLE notification_outbox(id TEXT PRIMARY KEY);")
+        db.execute("INSERT INTO notification_once VALUES(?,?,?)",(secret,'synthetic-notice',now))
         for seq, at, kind in [(1,start,"operation_reserved"),(2,start+1000,"order_observed"),(3,now,"reconciliation_blocked")]:
             db.execute("INSERT INTO events VALUES(?,?,?,?)",(seq,at,kind,json.dumps(dict(status=state['status'],reason=state['reason'],pending=pending,private_key=secret,groups=7))))
         recovery=dict(command='"confirm_rollback_recovery"',id=secret,evidence=dict(previous_rollbacks=3,unexpected_secret=secret,

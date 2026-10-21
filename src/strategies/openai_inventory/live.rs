@@ -89,6 +89,39 @@ fn lighter_leverage(v: &Value) -> Result<u32> {
         .context("leverage overflow")
 }
 
+// user_stats collateral includes isolated allocations; REST account collateral
+// excludes them. Normalize at the adapter boundary, across ALL positions (also
+// zero-size rows retaining margin), before the shared first-leg admission gate.
+// Missing or incoherent cash evidence disables entries, not position reads or exits.
+fn lighter_stream_account(frame:&Value, stats:&Value)->Result<Value> {
+    let positions=frame["positions"].as_object().context("missing position snapshot")?
+        .values().cloned().collect::<Vec<_>>();
+    let cash=(|| -> Result<Decimal> {
+        let total=decimal(&stats["stats"]["collateral"])?;
+        let mut allocated=Decimal::ZERO;
+        let mut pnl=Decimal::ZERO;
+        for p in &positions {
+            let q=decimal(&p["position"])?;
+            let margin=decimal(&p["allocated_margin"])?;
+            ensure!(margin>=Decimal::ZERO,"negative isolated allocation");
+            match integer(&p["margin_mode"]) {
+                Some(1)=>allocated+=margin,
+                Some(0) if q.is_zero() && margin.is_zero()=>{},
+                _=>anyhow::bail!("unsupported cross or unknown margin evidence"),
+            }
+            pnl+=decimal(&p["unrealized_pnl"])?;
+        }
+        // Channels update independently. Do not spend an inconsistent combined
+        // snapshot; tolerate only the per-row USDC display rounding.
+        let equity=decimal(&stats["stats"]["portfolio_value"])?;
+        let rounding=Decimal::new(1,5)*Decimal::from(positions.len().max(1));
+        ensure!((equity-total-pnl).abs()<=rounding,"inconsistent account stream valuation");
+        Ok((total-allocated).max(Decimal::ZERO))
+    })().ok();
+    Ok(json!({"positions":positions,"available_balance":stats["stats"]["available_balance"],
+        "equity":stats["stats"]["portfolio_value"],"collateral":cash.map(|v|v.to_string())}))
+}
+
 fn lighter_entry_margin(a:&Value,p:Option<&Value>)->entry_margin::EntryMarginEvidence {
     let positions=a["positions"].as_array();
     // Account collateral is separate from isolated allocated margin and PnL.
@@ -752,15 +785,7 @@ impl VenueBackend for LighterLive {
                 let (_, stats) = self
                     .feed
                     .get("user_stats", self.config.account_max_age_ms)?;
-                let positions = p["positions"]
-                    .as_object()
-                    .context("missing position snapshot")?
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                Ok(
-                    json!({"positions":positions,"available_balance":stats["stats"]["available_balance"],"equity":stats["stats"]["portfolio_value"],"collateral":stats["stats"]["collateral"]}),
-                )
+                lighter_stream_account(&p,&stats)
             })();
             let a = if self.last_rest != 0 && streamed.is_ok() {
                 streamed?

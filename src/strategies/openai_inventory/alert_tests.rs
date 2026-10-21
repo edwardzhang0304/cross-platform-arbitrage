@@ -343,3 +343,92 @@ fn balanced_but_margin_blocked_entry_is_actionable_even_before_three_rollbacks()
     s.status=Status::Stopped;assert!(issue(&s).unwrap().1);
     s.entry_margin_block=None;assert!(issue(&s).is_none());
 }
+
+fn margin_protected() -> Snapshot {
+    let mut s=Snapshot::new(InventoryConfig::default()).unwrap();
+    s.status=Status::PausedEntries;s.paused=true;
+    s.positions[0].units=-700;s.positions[1].units=700;
+    s.entry_margin_block=Some(entry_margin::EntryMarginBlock{venue:Venue::Lighter,at_ms:1000,
+        order_id:"synthetic-margin-one".into(),rejection:entry_margin::EntryRejection::PreflightFunding});
+    s
+}
+fn acknowledge(db:&mut Connection,id:&str,at:u64) {
+    let tx=db.transaction().unwrap();
+    tx.execute("DELETE FROM notification_outbox WHERE id=?1",[id]).unwrap();
+    delivered(&tx,id,at).unwrap();tx.commit().unwrap();
+}
+
+#[test]
+fn margin_notice_once_survives_restart_stop_and_new_incidents_still_alert() {
+    let path=std::env::temp_dir().join(format!("cpa-margin-alert-{}.sqlite",uuid::Uuid::new_v4()));
+    let mut s=margin_protected();
+    {let mut db=Connection::open(&path).unwrap();db.execute_batch(SCHEMA).unwrap();
+     record(&mut db,&s,2000);
+     let (id,body)=rows(&db).pop().unwrap();assert!(body.contains("只提醒一次"));
+     acknowledge(&mut db,&id,2500);}
+    {let mut db=Connection::open(&path).unwrap();db.execute_batch(SCHEMA).unwrap();
+     for at in [302_500,3_000_000,90_000_000] {
+        s.status=Status::Stopped;record(&mut db,&s,at);
+        let tx=db.transaction().unwrap();tick(&tx,at+300_000).unwrap();tx.commit().unwrap();
+        assert!(rows(&db).is_empty());
+     }
+     // An independent actual account discrepancy must not hide behind a margin latch.
+     s.status=Status::NeedsAttention;s.reason="venue position differs from owned ledger".into();
+     record(&mut db,&s,91_000_000);let (id,body)=rows(&db).pop().unwrap();
+     assert!(body.contains("执行或持仓核对异常"));assert!(!body.contains(entry_margin::BLOCK_MESSAGE));
+     acknowledge(&mut db,&id,91_000_001);
+     s.status=Status::PausedEntries;record(&mut db,&s,92_000_000);assert!(rows(&db).is_empty());
+     // A close that stays unresolved still matures its own independent alert.
+     pending(&mut s);s.pending.as_mut().unwrap().action=Action::Close;s.pending.as_mut().unwrap().failed=true;
+     s.status=Status::Recovering;record(&mut db,&s,93_000_000);record(&mut db,&s,93_060_000);
+     assert_eq!(rows(&db).len(),1);assert!(rows(&db)[0].1.contains("平仓"));
+     s.pending=None;s.status=Status::PausedEntries;record(&mut db,&s,94_000_000);assert!(rows(&db).is_empty());
+     // Cleared and later re-latched protection is a genuinely new incident.
+     s.entry_margin_block=None;s.status=Status::Running;record(&mut db,&s,95_000_000);
+     s=margin_protected();let b=s.entry_margin_block.as_mut().unwrap();b.order_id="synthetic-margin-two".into();b.at_ms=96_000_000;
+     record(&mut db,&s,96_000_001);assert_eq!(rows(&db).len(),1);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn margin_failed_delivery_retries_same_id_and_late_success_is_remembered() {
+    let mut db=db();let mut s=margin_protected();record(&mut db,&s,2000);
+    let id=rows(&db)[0].0.clone();
+    db.execute("UPDATE notification_outbox SET attempts=2,next_ms=999999",[]).unwrap();
+    record(&mut db,&s,900_000);
+    assert_eq!(rows(&db)[0].0,id);
+    assert_eq!(db.query_row("SELECT attempts,next_ms FROM notification_outbox",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(),(2,999999));
+    // Successful POST can return after the actor has changed to a different issue.
+    s.status=Status::NeedsAttention;record(&mut db,&s,900_001);
+    s.status=Status::PausedEntries;record(&mut db,&s,900_002);
+    assert_eq!(rows(&db)[0].0,id); // reuse the same Feishu idempotency key
+    acknowledge(&mut db,&id,900_003);
+    record(&mut db,&s,900_004);
+    assert!(rows(&db).is_empty());
+}
+
+#[test]
+fn rc23_margin_cursor_migrates_confirmed_send_but_not_unsent_or_new_incident() {
+    for (queued,new_incident) in [(false,false),(true,false),(false,true)] {
+        let mut db=db();let mut s=margin_protected();
+        db.execute("UPDATE notification_policy SET version=2",[]).unwrap();
+        let id=if queued {let tx=db.transaction().unwrap();let id=enqueue(&tx,2000,entry_margin::BLOCK_MESSAGE).unwrap();tx.commit().unwrap();Some(id)}else{None};
+        let old=serde_json::json!({"key":format!("{}-account",s.instance_id),"action":"持仓核对","started_ms":2000,
+            "notice_ms":2500,"urgent":true,"outbox_id":id,"body":entry_margin::BLOCK_MESSAGE});
+        db.execute("INSERT INTO notification_state VALUES(1,?1)",[old.to_string()]).unwrap();
+        if new_incident {s.entry_margin_block.as_mut().unwrap().at_ms=3000;}
+        record(&mut db,&s,900_000);
+        assert_eq!(rows(&db).len(),usize::from(queued||new_incident));
+        if queued {assert_eq!(rows(&db)[0].0,id.unwrap());}
+    }
+}
+
+#[test]
+fn margin_receipt_is_transactional_and_does_not_suppress_another_account() {
+    let mut db=db();let s=margin_protected();record(&mut db,&s,2000);let id=rows(&db)[0].0.clone();
+    {let tx=db.transaction().unwrap();delivered(&tx,&id,2500).unwrap();} // rollback
+    record(&mut db,&s,900_000);assert_eq!(rows(&db)[0].0,id);
+    acknowledge(&mut db,&id,900_001);
+    let mut other=self::db();record(&mut other,&s,900_002);assert_eq!(rows(&other).len(),1);
+}

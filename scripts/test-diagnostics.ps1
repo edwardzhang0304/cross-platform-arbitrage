@@ -21,6 +21,7 @@ try {
     if ($Ledger.snapshot.entry_margin_block.rejection -ne 'margin_not_allowed' -or !$Ledger.snapshot.entry_margin_block.order_ref) { throw 'Margin protection evidence missing' }
     if ($Ledger.market_transport.Count -ne 2 -or $Ledger.market_transport[1].reconnect_count -ne 9 -or $Ledger.market_transport[1].history[0].detail -notmatch 'L2 silent') { throw 'Offline transport diagnosis missing' }
     if ($Ledger.market_alerts.schema -ne 2 -or $Ledger.market_alerts.evidence.unavailable_ms[0] -ne 50000 -or $Ledger.market_alerts.history[0].kind -ne 'delivered') { throw 'Market alert evidence/history missing' }
+    if ($Ledger.one_time_notices.Count -ne 1 -or !$Ledger.one_time_notices[0].incident_ref -or !$Ledger.one_time_notices[0].delivered_ms -or $Ledger.one_time_notices[0].queued) { throw 'One-time notification receipt missing' }
     if (!$Ledger.readonly -or !$Ledger.available -or $Ledger.snapshot.held_groups -ne 7 -or $Ledger.snapshot.pending.first_filled -ne 700) { throw 'Offline snapshot extraction failed' }
     if ($Ledger.snapshot.ledger[0].venue -ne 'lighter' -or $Ledger.snapshot.ledger[1].venue -ne 'entropy') { throw 'Ledger venue mapping is incorrect' }
     if ($Ledger.snapshot.pending.entry_hedge_retry.attempt -ne 2 -or $Ledger.snapshot.pending.entry_hedge_retry.reason -notmatch 'hedge retry waiting') { throw 'Entry hedge retry diagnostics missing' }

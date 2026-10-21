@@ -19,7 +19,8 @@ pub struct EntryMarginBlock {
     pub rejection: EntryRejection,
 }
 
-/// Raw, credential-free evidence. Missing fields remain unknown rather than 0.
+/// Normalized, credential-free evidence. Collateral excludes all isolated
+/// allocations on both REST and streaming paths. Missing fields stay unknown.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EntryMarginEvidence {
     pub reported_available: Option<Decimal>,

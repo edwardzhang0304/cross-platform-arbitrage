@@ -285,6 +285,12 @@ try {
         $entry.market_transport=if ($transport.Count) { Transport-View ($transport[0] | ConvertFrom-Json) } else { @() }
       } catch { $script:Problems.Add("Market transport history unavailable: $market") }
       try { $entry.market_alerts=Read-MarketAlerts $path } catch { $entry.market_alerts_error='Market alert evidence unavailable'; $script:Problems.Add("Market alert query incomplete: $market") }
+      try {
+        $entry.one_time_notices=@([CpaDiagnosticsSqlite]::OneTimeNotices($path) | ForEach-Object {
+          $parts=$_ -split "`t",3
+          [ordered]@{incident_ref=(Ref $parts[0]); delivered_ms=$(if ($parts[1]) { [long]$parts[1] } else { $null }); queued=($parts[2] -eq '1')}
+        })
+      } catch { $script:Problems.Add("One-time notice evidence unavailable: $market") }
       if ($null -ne $state.pending) {
         try {
           # Explicit Int64 arithmetic avoids ambiguous Math.Max overload binding in PowerShell 5.1.
@@ -311,7 +317,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc23'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc24'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   profiles=$profiles; observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

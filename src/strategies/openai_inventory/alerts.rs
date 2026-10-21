@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notification_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notification_once(incident_key TEXT PRIMARY KEY,outbox_id TEXT,delivered_ms INTEGER);
 CREATE TABLE IF NOT EXISTS market_notification_state(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS market_notification_history(seq INTEGER PRIMARY KEY,body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS notification_outbox(id TEXT PRIMARY KEY,at_ms INTEGER NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_ms INTEGER NOT NULL DEFAULT 0);
@@ -24,6 +25,7 @@ struct Incident {
     key:String, action:String, started_ms:u64, notice_ms:u64, urgent:bool,
     #[serde(default)] outbox_id:Option<String>,
     #[serde(default)] body:String,
+    #[serde(default)] once_key:Option<String>,
 }
 
 fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
@@ -34,7 +36,7 @@ fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
     }
     if s.live_orphan.is_some() {return Some(("出现未归属或不一致仓位，需要人工核对",true));}
     if s.loss_stop.is_some() && !s.lots.is_empty() {return Some(("已触发总亏损保护，正在受控平仓",true));}
-    if s.entry_margin_block.is_some() && s.pending.is_none() {
+    if s.entry_margin_block.is_some() && s.pending.is_none() && s.status!=Status::NeedsAttention {
         return Some((entry_margin::BLOCK_MESSAGE,true));
     }
     if s.status==Status::NeedsAttention && s.pending.is_none() && s.reason.starts_with("execution recovered;") {
@@ -85,7 +87,9 @@ fn message(s:&Snapshot,incident:&Incident,at:u64,title:&str,detail:&str)->String
         s.config.quantity(s.positions[0].units),s.config.quantity(s.positions[1].units))
 }
 pub fn enqueue(tx:&Transaction<'_>,at:u64,body:&str)->Result<String> {
-    let id=uuid::Uuid::new_v4().to_string();
+    enqueue_id(tx,at,body,uuid::Uuid::new_v4().to_string())
+}
+fn enqueue_id(tx:&Transaction<'_>,at:u64,body:&str,id:String)->Result<String> {
     tx.execute("INSERT INTO notification_outbox(id,at_ms,body) VALUES(?1,?2,?3)",params![id,at,body])?;
     // A bounded queue cannot fill the user's disk during a long outage. The
     // public delivery status reports how many oldest notifications overflowed.
@@ -110,7 +114,12 @@ fn cancel(tx:&Transaction<'_>,active:&Option<Incident>)->Result<()> {
 }
 fn promote(tx:&Transaction<'_>,a:&mut Incident,at:u64)->Result<()> {
     if a.body.is_empty() || (!a.urgent && at.saturating_sub(a.started_ms)<EXECUTION_GRACE_MS) {return Ok(());}
-    let body=format!("{}\n异常已持续至少 {} 秒；请运行程序目录中的一键诊断，发送生成的诊断包。",a.body,at.saturating_sub(a.started_ms)/1000);
+    if let Some(key)=&a.once_key {
+        let sent:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM notification_once WHERE incident_key=?1 AND delivered_ms IS NOT NULL)",[key],|r|r.get(0))?;
+        if sent {cancel(tx,&Some(a.clone()))?;a.outbox_id=None;return Ok(());}
+    }
+    let body=if a.once_key.is_some() {format!("{}\n本次保证金保护只提醒一次；新增开仓保持暂停，正常平仓和止损仍按原有条件执行。",a.body)}
+        else {format!("{}\n异常已持续至少 {} 秒；请运行程序目录中的一键诊断，发送生成的诊断包。",a.body,at.saturating_sub(a.started_ms)/1000)};
     if let Some(id)=&a.outbox_id {
         let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM notification_outbox WHERE id=?1)",[id],|r|r.get(0))?;
         if exists {
@@ -121,7 +130,13 @@ fn promote(tx:&Transaction<'_>,a:&mut Incident,at:u64)->Result<()> {
         }
     }
     if a.notice_ms!=0 && at.saturating_sub(a.notice_ms)<REMINDER_MS {return Ok(());}
-    a.outbox_id=Some(enqueue(tx,at,&body)?);a.notice_ms=at;
+    let stable_id=if let Some(key)=&a.once_key {
+        tx.query_row("SELECT outbox_id FROM notification_once WHERE incident_key=?1",[key],|r|r.get::<_,Option<String>>(0)).optional()?.flatten()
+    } else {None};
+    a.outbox_id=Some(enqueue_id(tx,at,&body,stable_id.unwrap_or_else(||uuid::Uuid::new_v4().to_string()))?);a.notice_ms=at;
+    if let Some(key)=&a.once_key {
+        tx.execute("INSERT INTO notification_once(incident_key,outbox_id) VALUES(?1,?2) ON CONFLICT(incident_key) DO UPDATE SET outbox_id=excluded.outbox_id",params![key,a.outbox_id])?;
+    }
     Ok(())
 }
 /// Delivery timer matures the durable incident even if quotes/actor commits stop.
@@ -134,6 +149,9 @@ pub fn tick(tx:&Transaction<'_>,at:u64)->Result<()> {
     Ok(())
 }
 pub fn delivered(tx:&Transaction<'_>,id:&str,at:u64)->Result<()> {
+    // Record delivery even if another, higher-priority incident replaced the
+    // active cursor while the HTTP request was in flight.
+    tx.execute("UPDATE notification_once SET delivered_ms=?1 WHERE outbox_id=?2",params![at,id])?;
     let mut active=cursor(tx)?;
     if let Some(a)=&mut active {
         if a.outbox_id.as_deref()==Some(id) {a.outbox_id=None;a.notice_ms=at;save(tx,&active)?;}
@@ -157,10 +175,23 @@ pub fn observe(tx:&Transaction<'_>,s:&Snapshot,at:u64)->Result<()> {
         tx.execute("UPDATE notification_policy SET version=2 WHERE id=1",[])?;
     }
     if let Some((detail,urgent))=issue(s) {
-        let key=s.emergency_exit.as_ref().filter(|_|super::emergency_exit::active(s)).map(|e|e.id.clone()).or_else(||s.pending.as_ref().map(|p|p.id.clone())).unwrap_or_else(||format!("{}-account",s.instance_id));
+        let once_key=if detail==entry_margin::BLOCK_MESSAGE {
+            s.entry_margin_block.as_ref().map(|b|format!("entry-margin:{}:{}",b.order_id,b.at_ms))
+        } else {None};
+        let key=once_key.clone().unwrap_or_else(||s.emergency_exit.as_ref().filter(|_|super::emergency_exit::active(s)).map(|e|e.id.clone()).or_else(||s.pending.as_ref().map(|p|p.id.clone())).unwrap_or_else(||format!("{}-account",s.instance_id)));
+        // rc23 stored delivery confirmation in the incident cursor. Preserve
+        // that proof on upgrade; a queued/failed message is NOT proof of delivery.
+        if let (Some(once),Some(a))=(&once_key,&mut active) {
+            if a.once_key.is_none() && a.body.contains(entry_margin::BLOCK_MESSAGE)
+                && s.entry_margin_block.as_ref().is_some_and(|b|a.started_ms>=b.at_ms) {
+                a.key=key.clone();a.once_key=Some(once.clone());
+                let delivered=if a.notice_ms>0 && a.outbox_id.is_none() {Some(a.notice_ms)} else {None};
+                tx.execute("INSERT OR IGNORE INTO notification_once VALUES(?1,?2,?3)",params![once,a.outbox_id,delivered])?;
+            }
+        }
         let fresh=active.as_ref().is_none_or(|a|a.key!=key);
         if fresh {cancel(tx,&active)?;}
-        let mut incident=if fresh {Incident{key,action:action(s),started_ms:at,notice_ms:0,urgent,outbox_id:None,body:String::new()}}else{active.take().unwrap()};
+        let mut incident=if fresh {Incident{key,action:action(s),started_ms:at,notice_ms:0,urgent,outbox_id:None,body:String::new(),once_key:once_key.clone()}}else{active.take().unwrap()};
         // A transition to needs_attention during the same operation does not
         // bypass the grace period. Independent emergencies still alert at once.
         if urgent && !incident.urgent {cancel(tx,&Some(incident.clone()))?;incident.outbox_id=None;incident.notice_ms=0;}
@@ -172,6 +203,9 @@ pub fn observe(tx:&Transaction<'_>,s:&Snapshot,at:u64)->Result<()> {
     } else if s.pending.as_ref().is_some_and(|p|active.as_ref().is_some_and(|a|a.key!=p.id)) {
         cancel(tx,&active)?;active=None;
     }
+    // Keep the current incident plus bounded historical receipts. Unsent IDs
+    // are retained for late delivery acknowledgements, without unbounded growth.
+    tx.execute("DELETE FROM notification_once WHERE incident_key NOT IN (SELECT incident_key FROM notification_once ORDER BY rowid DESC LIMIT 32)",[])?;
     save(tx,&active)?;
     Ok(())
 }
