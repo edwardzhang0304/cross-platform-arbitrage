@@ -228,7 +228,7 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
         let service=app.inner.lock().await.service.clone().context("账户尚未加载")?;
         service.control(r.id.clone(),command).await?;
         if r.command=="confirm_rollback_recovery" {
-            return Ok(json!({"accepted":true,"message":"人工确认已记录；请核对连续回滚次数为 0、策略仍为已停止，再单独启动实盘策略。"}));
+            return Ok(json!({"accepted":true,"message":"人工确认已记录；请核对开仓保护已解除、策略仍为已停止，再单独启动实盘策略。"}));
         }
         return Ok(json!({"accepted":true}));
     }

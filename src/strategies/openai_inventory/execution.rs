@@ -450,6 +450,9 @@ fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult
         4 => op.align_close_terminal = result.terminal,
         _ => op.unwind_hedge_terminal = result.terminal,
     };
+    if result.terminal && !req.reduce_only && s.pending.as_ref().is_some_and(|p|p.action==Action::Open) {
+        if let Some(rejection)=result.rejection { entry_margin::latch(s,req,rejection); }
+    }
     s.reason = result.reason.clone();
     if result.terminal && s.status == Status::RecoveringExposure {
         s.status = Status::Recovering;
@@ -600,6 +603,12 @@ pub(super) async fn advance_with_hedge_evidence(
             store.commit(s, now, "unsent_profit_exit_discarded")?;
             return Ok(());
         }
+    }
+    if s.entry_margin_block.is_some() && s.pending.as_ref().is_some_and(|p|
+        p.action==Action::Open && p.first_terminal && p.hedge.is_none() && !p.hedge_terminal) {
+        let mut next=s.clone();let p=next.pending.as_mut().unwrap();
+        p.hedge_terminal=true;p.failed=true;
+        store.commit(&next,now,"unsent_hedge_cancelled_by_margin_protection")?;*s=next;
     }
     if entry_hedge_retry::prepare(s,store,books,now,accounts)? {return Ok(());}
     let Some(op) = s.pending.clone() else {

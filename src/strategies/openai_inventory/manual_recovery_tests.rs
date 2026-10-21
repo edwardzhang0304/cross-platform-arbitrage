@@ -22,7 +22,7 @@ fn fixture(market: MarketPair, now: u64) -> (Snapshot, [AccountEvidence; 2]) {
         venue, account: if venue == Venue::Lighter {s.config.lighter_account.clone()} else {s.config.entropy_account.clone()},
         observed_ms:now,position_units:s.positions[venue.index()].units,
         free_margin:100.into(),equity:100.into(),leverage:3,isolated:true,
-        open_orders:0,authenticated:true,liquidation_price:None,
+        open_orders:0,authenticated:true,entry_margin: None, liquidation_price:None,
     });
     (s, a)
 }
@@ -153,7 +153,7 @@ async fn running_or_unlocked_strategy_is_rejected_before_network_reads() {
         if unlocked {s.consecutive_rollbacks=0;}else{s.status=Status::Running;s.stop_requested=false;}
         let temp=Temp::new();let (mut db,_)=Store::open(&temp.db(),&s.config).unwrap();
         db.commit(&s,now,"seed").unwrap();let (workers,calls)=workers(a,"");
-        assert!(confirm(&mut s,&mut db,&workers,"not-eligible").await.is_err());
+        assert!(confirm(&mut s,&mut db,&workers,"not-eligible",None).await.is_err());
         assert_eq!(calls.each_ref().map(|n|n.load(Ordering::SeqCst)),[0,0]);
     }
 }
@@ -164,7 +164,7 @@ async fn fresh_queries_durable_ack_and_duplicate_cannot_release_a_future_inciden
         let now=crate::domain::now_ms();let (mut s,a)=fixture(market,now);let temp=Temp::new();
         let (mut db,_)=Store::open(&temp.db(),&s.config).unwrap();db.commit(&s,now,"seed").unwrap();
         let (workers,calls)=workers(a,"");
-        confirm(&mut s,&mut db,&workers,"operator-ack").await.unwrap();
+        confirm(&mut s,&mut db,&workers,"operator-ack",None).await.unwrap();
         assert_eq!(s.consecutive_rollbacks,0);assert_eq!(calls.each_ref().map(|n|n.load(Ordering::SeqCst)),[1,1]);
         let sql=rusqlite::Connection::open(temp.db()).unwrap();
         let event:String=sql.query_row("SELECT body FROM events WHERE kind='command' ORDER BY seq DESC LIMIT 1",[],|r|r.get(0)).unwrap();
@@ -177,9 +177,9 @@ async fn fresh_queries_durable_ack_and_duplicate_cannot_release_a_future_inciden
         assert_eq!(restored.consecutive_rollbacks,0);assert!(restored.stop_requested && restored.paused);
         assert_eq!(restored.paired_units(),s.paired_units());
         s.consecutive_rollbacks=3;db.commit(&s,now+1,"later-incident").unwrap();
-        assert!(confirm(&mut s,&mut db,&workers,"operator-ack").await.unwrap().is_none());
+        assert!(confirm(&mut s,&mut db,&workers,"operator-ack",None).await.unwrap().is_none());
         assert_eq!(s.consecutive_rollbacks,3);assert_eq!(calls.each_ref().map(|n|n.load(Ordering::SeqCst)),[1,1]);
-        confirm(&mut s,&mut db,&workers,"new-explicit-ack").await.unwrap();assert_eq!(s.consecutive_rollbacks,0);
+        confirm(&mut s,&mut db,&workers,"new-explicit-ack",None).await.unwrap();assert_eq!(s.consecutive_rollbacks,0);
     }
 }
 
@@ -191,10 +191,42 @@ async fn failed_checks_timeouts_and_failed_commit_leave_latch_unchanged() {
         let (workers,_)=workers(a,failure);let sql=rusqlite::Connection::open(temp.db()).unwrap();
         if failure=="disk" {sql.execute_batch("CREATE TRIGGER fail_ack BEFORE INSERT ON commands BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();}
         let before=serde_json::to_value(&s).unwrap();
-        assert!(confirm(&mut s,&mut db,&workers,"rejected-ack").await.is_err(),"{failure}");
+        assert!(confirm(&mut s,&mut db,&workers,"rejected-ack",None).await.is_err(),"{failure}");
         assert_eq!(serde_json::to_value(&s).unwrap(),before);
         let durable:String=sql.query_row("SELECT body FROM state",[],|r|r.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<serde_json::Value>(&durable).unwrap(),before);
         assert!(!db.command_seen("rejected-ack","\"confirm_rollback_recovery\"").unwrap());
+    }
+}
+
+#[tokio::test]
+async fn margin_ack_requires_current_cash_and_never_starts_trading_or_changes_inventory() {
+    for case in ["cash","missing","stale","disk","good"] {
+        let now=crate::domain::now_ms();let (mut s,mut a)=fixture(MarketPair::Openai,now);
+        s.consecutive_rollbacks=1;
+        s.entry_margin_block=Some(entry_margin::EntryMarginBlock{venue:Venue::Lighter,at_ms:now-1000,
+            order_id:"synthetic-margin-ref".into(),rejection:entry_margin::EntryRejection::MarginNotAllowed});
+        a[0].entry_margin=Some(entry_margin::EntryMarginEvidence{reported_available:Some(100.into()),
+            collateral:Some(if case=="cash" {Decimal::ZERO}else{100.into()}),allocated_margin:Some(10.into()),
+            unrealized_pnl:Some(Decimal::ZERO),position_value:Some(15.into()),
+            initial_margin_fraction:Some(Decimal::new(3333,4)),mark_price:Some(1700.into()),isolated_only:true});
+        if case=="missing"{a[0].entry_margin=None;}
+        let books=std::sync::RwLock::new([1700,1688].map(|p|Book{bids:vec![Level{price:p.into(),units:10000}],
+            asks:vec![Level{price:p.into(),units:10000}],connected:true,received_ms:if case=="stale"{now-10000}else{now}}));
+        let temp=Temp::new();let (mut db,_)=Store::open(&temp.db(),&s.config).unwrap();db.commit(&s,now,"seed").unwrap();
+        let sql=rusqlite::Connection::open(temp.db()).unwrap();
+        if case=="disk"{sql.execute_batch("CREATE TRIGGER fail_ack BEFORE INSERT ON commands BEGIN SELECT RAISE(ABORT,'synthetic disk failure'); END;").unwrap();}
+        let before=serde_json::to_value(&s).unwrap();let (workers,_)=workers(a,"");
+        let result=confirm(&mut s,&mut db,&workers,"cash-ack",Some(&books)).await;
+        if case=="good" {
+            result.unwrap();assert!(s.entry_margin_block.is_none());assert_eq!(s.consecutive_rollbacks,0);
+            assert_eq!(s.status,Status::Stopped);assert!(s.stop_requested && s.paused);
+            assert_eq!(serde_json::to_value(&s.lots).unwrap(),before["lots"]);
+            assert_eq!(serde_json::to_value(&s.positions).unwrap(),before["positions"]);
+            s.entry_margin_block=Some(entry_margin::EntryMarginBlock{venue:Venue::Lighter,at_ms:now,
+                order_id:"later-incident".into(),rejection:entry_margin::EntryRejection::MarginNotAllowed});
+            assert!(confirm(&mut s,&mut db,&workers,"cash-ack",Some(&books)).await.unwrap().is_none());
+            assert!(s.entry_margin_block.is_some());
+        } else {assert!(result.is_err(),"{case}");assert_eq!(serde_json::to_value(&s).unwrap(),before);}
     }
 }

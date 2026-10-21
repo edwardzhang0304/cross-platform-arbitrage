@@ -32,7 +32,7 @@ fn evidence(s: &Snapshot, now: u64) -> ([AccountEvidence; 2], [Book; 2]) {
         venue, account: if venue == Venue::Lighter {s.config.lighter_account.clone()} else {s.config.entropy_account.clone()},
         observed_ms: now, position_units: s.positions[venue.index()].units,
         free_margin: Decimal::from(90), equity: Decimal::from(100), leverage: 3,
-        isolated: true, open_orders: 0, authenticated: true, liquidation_price: None,
+        isolated: true, open_orders: 0, authenticated: true, entry_margin: None, liquidation_price: None,
     });
     let b = [1706, 1698].map(|p| Book { bids: vec![Level {price:p.into(),units:10000}],
         asks:vec![Level {price:p.into(),units:10000}],received_ms:now,connected:true });

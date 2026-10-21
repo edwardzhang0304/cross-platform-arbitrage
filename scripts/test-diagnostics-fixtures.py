@@ -29,6 +29,7 @@ if len(sys.argv)>2 and sys.argv[2]=='--serve':
                 accounts=[dict(venue=v,position_units=n,open_orders=0,authenticated=True,observed_ms=stamp,account='synthetic-credential-NOT-FOR-EXPORT') for v,n in zip(['lighter','entropy'],[p['units'] for p in state['positions']])]
                 books=[dict(connected=True,received_ms=stamp,bids=[dict(price='2100',units=100)],asks=[dict(price='2100.1',units=200)]) for _ in range(2)]
                 risk=dict(estimated_total_pnl='-12.5',depth_complete=False,unseen_exit_units=[300,400],unexpected_secret='synthetic-credential-NOT-FOR-EXPORT')
+                accounts[0]['entry_margin']=dict(reported_available='28',collateral='0.1',allocated_margin='90',unrealized_pnl='18',position_value='240',initial_margin_fraction='0.3333',mark_price='1500',isolated_only=True,unexpected_secret='synthetic-credential-NOT-FOR-EXPORT')
                 value=dict(ok=True,data=dict(profile=profile,csrf='synthetic-credential-NOT-FOR-EXPORT',view=dict(snapshot=state,accounts=accounts,books=books,risk_valuation=risk,market_transport=transport,profit_accounting=dict(funding_complete=False)),notifications=dict(saved=True,unlocked=True,delivery=dict(enabled=True,pending=0,error=None))))
                 if profile['id']=='anth':
                     value['data']['view']=None
@@ -83,6 +84,7 @@ for profile in profiles:
                  lots=[dict(level=i,units=700,opened_ms=start-10000*(i+1),entry_spread="28.4",private_field=secret) for i in range(7)],
                  fills={"fill-key":dict(id="fill-key",order_id="synthetic-order",venue="entropy",side="buy",units=700,price="2100",fee="0.001",time_ms=start+1000,private_key=secret)},
                  closed_groups=1, direction="lighter_short", anchor="28", time_adds_used=1)
+    state['entry_margin_block']=dict(venue='lighter',at_ms=now,order_id='synthetic-margin-order',rejection='margin_not_allowed',unexpected_secret=secret)
     state['emergency_exit']=dict(id='synthetic-emergency',requested_ms=start,completed_ms=None,flat_confirmed_ms=None,
         remaining_units=[-4900,5600],observed_ms=[now,now],next_attempt_ms=[now,now],next_sequence=1,
         warnings=[f'query failed https://private.invalid/?key={secret}', ''],accounting_error='',

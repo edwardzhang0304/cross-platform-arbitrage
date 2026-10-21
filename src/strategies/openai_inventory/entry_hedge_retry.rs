@@ -12,7 +12,7 @@ fn eligible(s:&Snapshot)->bool {
         && p.entry_hedge_retry.as_ref().is_some_and(|r|!r.abandoned))
 }
 fn stopped(s:&Snapshot)->bool {
-    s.paused || s.stop_requested || s.close_requested || s.stop_after_close
+    s.entry_margin_block.is_some() || s.paused || s.stop_requested || s.close_requested || s.stop_after_close
         || s.loss_stop.is_some() || s.live_orphan.is_some() || s.liquidation_protection.is_some()
         || super::super::emergency_exit::active(s)
 }
@@ -105,6 +105,14 @@ pub(super) fn prepare(s:&mut Snapshot,store:&mut Store,books:&[Book;2],now:u64,
     let qty=op.first_filled-op.hedge_filled;
     let side=s.direction.open_side(Venue::Lighter);
     let candidate=request(&next,books,Venue::Lighter,side,qty,false,"hedge",now);
+    if let Ok(request)=&candidate {
+        if let Err(error)=entry_margin::check_account(&a[0],&s.config,qty,request.limit,side) {
+            entry_margin::latch(&mut next,request,entry_margin::EntryRejection::PreflightFunding);
+            next.reason=error.to_string();
+            save(s,store,next,now,"entry_hedge_margin_blocked")?;
+            return Ok(false);
+        }
+    }
     let gate=candidate.as_ref().map_err(|e|e.to_string()).and_then(|request| {
         let account=&a[0];
         let notional=s.config.quantity(qty)*request.limit;

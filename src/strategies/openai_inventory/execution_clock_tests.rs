@@ -44,7 +44,7 @@ fn incident(market: MarketPair, now: u64) -> (Snapshot, OrderRequest, OrderResul
     let fills = vec![Fill { id:"exchange-first-fill".into(), order_id:req.id.clone(),
         venue:req.venue,side:req.side,units:req.units,price:req.limit,fee:Decimal::new(1,3),
         time_ms:exchange+500 }];
-    (s, req, OrderResult { exchange_created_ms:Some(exchange),terminal:true,fills,reason:"filled".into()})
+    (s, req, OrderResult { rejection: None, exchange_created_ms:Some(exchange),terminal:true,fills,reason:"filled".into()})
 }
 
 struct RecoveryBackend {
@@ -56,7 +56,7 @@ impl venue::VenueBackend for RecoveryBackend {
         Box::pin(async move {
             assert!(!r.id.ends_with("-first"), "original request must never be resubmitted");
             self.sent.lock().unwrap().push(r.clone());
-            Ok(OrderResult { exchange_created_ms:Some(r.created_ms),terminal:true,reason:"filled".into(),
+            Ok(OrderResult { rejection: None, exchange_created_ms:Some(r.created_ms),terminal:true,reason:"filled".into(),
                 fills:vec![Fill {id:format!("{}-fill",r.id),order_id:r.id,venue:r.venue,side:r.side,
                     units:r.units,price:r.limit,fee:Decimal::ZERO,time_ms:r.created_ms}]})
         })

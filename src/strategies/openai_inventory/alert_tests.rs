@@ -333,3 +333,13 @@ fn market_recovery_during_http_post_still_rate_limits_confirmed_delivery() {
     for at in (71_000..370_000).step_by(1000) {market_record(&mut db,&s,at,false);assert!(rows(&db).is_empty());}
     market_record(&mut db,&s,370_002,false);assert_eq!(rows(&db).len(),1);
 }
+
+#[test]
+fn balanced_but_margin_blocked_entry_is_actionable_even_before_three_rollbacks() {
+    let mut s=Snapshot::new(InventoryConfig::default()).unwrap();s.status=Status::PausedEntries;
+    s.entry_margin_block=Some(entry_margin::EntryMarginBlock{venue:Venue::Lighter,at_ms:1000,
+        order_id:"synthetic".into(),rejection:entry_margin::EntryRejection::MarginNotAllowed});
+    assert_eq!(issue(&s),Some((entry_margin::BLOCK_MESSAGE,true)));
+    s.status=Status::Stopped;assert!(issue(&s).unwrap().1);
+    s.entry_margin_block=None;assert!(issue(&s).is_none());
+}

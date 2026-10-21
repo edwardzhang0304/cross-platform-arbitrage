@@ -222,6 +222,7 @@ pub fn risk_check(
 ) -> Result<()> {
     ensure!(qty > 0 && qty % s.config.common_step() == 0, "invalid common quantity");
     if action == Action::Open {
+        ensure!(s.entry_margin_block.is_none(), "{}", entry_margin::BLOCK_MESSAGE);
         ensure!(
             s.loss_stop.is_none(),
             "loss limit latched; new entries disabled"
@@ -271,6 +272,10 @@ pub fn risk_check(
                 s.config.quantity(qty) * px >= Decimal::from(10),
                 "below venue minimum notional"
             );
+            if a.entry_margin.is_some() {
+                let limit=execution::protected_limit(s,books,a.venue,side,qty,now)?;
+                entry_margin::check_account(a,&s.config,qty,limit,side)?;
+            }
             let ntl = s.config.quantity(qty) * px;
             let fee = ntl
                 * if i == 0 {
@@ -557,7 +562,7 @@ fn evaluate_inner(
         }
     }
     if action.is_none()
-        && funding_ready && !s.paused && !s.close_requested && !s.exit_batch_active
+        && funding_ready && !s.paused && s.entry_margin_block.is_none() && !s.close_requested && !s.exit_batch_active
         && s.entry_attempts_remaining != Some(0)
     {
         for (idx, direction) in [Direction::LighterLong, Direction::LighterShort].into_iter().enumerate() {
@@ -611,7 +616,7 @@ fn evaluate_inner(
         }
     } else { clear_entry_confirmation(s); }
     let Some((action, level, qty)) = action else {
-        s.reason = if funding_ready {
+        s.reason = if s.entry_margin_block.is_some() { entry_margin::BLOCK_MESSAGE } else if funding_ready {
             "waiting for executable spread"
         } else {
             "funding reconciliation required; automatic entry/profit exit paused"

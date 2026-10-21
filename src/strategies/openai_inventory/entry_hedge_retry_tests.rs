@@ -38,11 +38,11 @@ fn fixture(now:u64,market:MarketPair,direction:Direction)->(Snapshot,[AccountEvi
 fn evidence(s:&Snapshot,now:u64)->[AccountEvidence;2] {
     [Venue::Lighter,Venue::Entropy].map(|venue|AccountEvidence{venue,account:"o1".into(),
         observed_ms:now,position_units:s.positions[venue.index()].units,free_margin:Decimal::from(100),
-        equity:Decimal::from(200),leverage:3,isolated:true,open_orders:0,authenticated:true,liquidation_price:None})
+        equity:Decimal::from(200),leverage:3,isolated:true,open_orders:0,authenticated:true,entry_margin: None, liquidation_price:None})
 }
 fn fresh(b:&[Book;2],now:u64)->[Book;2] {let mut b=b.clone();for x in &mut b {x.received_ms=now;}b}
 fn fill(r:&OrderRequest,units:i64,terminal:bool)->OrderResult {
-    OrderResult{exchange_created_ms:None,terminal,reason:"synthetic IOC".into(),fills:if units==0 {vec![]}else{vec![Fill{
+    OrderResult{rejection: None, exchange_created_ms:None,terminal,reason:"synthetic IOC".into(),fills:if units==0 {vec![]}else{vec![Fill{
         id:format!("{}-fill",r.id),order_id:r.id.clone(),venue:r.venue,side:r.side,units,
         price:r.limit,fee:Decimal::ZERO,time_ms:r.created_ms}]}}
 }
@@ -317,4 +317,76 @@ async fn failed_write_never_sends_and_lost_receipt_after_crash_never_resends() {
         }
         drop(db);std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+#[tokio::test]
+async fn definitive_margin_rejection_skips_price_retries_and_survives_restart() {
+    use entry_margin::EntryRejection;
+    for market in [MarketPair::Openai,MarketPair::Anth] {for dir in [Direction::LighterLong,Direction::LighterShort] {
+        for partial in [false,true] {
+            let now=crate::domain::now_ms();let (mut s,_,b)=fixture(now,market,dir);
+            let old=s.lots[0].clone();let r=s.pending.as_ref().unwrap().hedge.clone().unwrap();
+            let paired=if partial {market.common_step()*6}else{0};
+            let mut result=fill(&r,paired,true);result.rejection=Some(EntryRejection::MarginNotAllowed);
+            apply(&mut s,1,&r,result).unwrap();
+            assert!(s.entry_margin_block.is_some());assert!(!due(&s,now+30_000));
+            let (w,calls)=workers(vec![]);let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+            db.commit(&s,now,"margin-rejected").unwrap();
+            s=serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+            advance(&mut s,&mut db,&w,&b,now).await.unwrap();
+            let sent=calls.lock().unwrap().clone();assert_eq!(sent.len(),1);
+            assert!(sent[0].1.reduce_only && sent[0].1.venue==Venue::Entropy);
+            assert_eq!(sent[0].1.units,r.units-paired);
+            advance(&mut s,&mut db,&w,&b,now).await.unwrap();
+            assert!(s.pending.is_none());assert_eq!(s.status,Status::PausedEntries);
+            assert_eq!(s.positions[0].units,-s.positions[1].units);
+            assert_eq!(s.positions[0].units.abs(),old.units+paired);
+            assert_eq!(serde_json::to_value(&s.lots[0]).unwrap(),serde_json::to_value(old).unwrap());
+            assert!(s.entry_margin_block.is_some());
+            let a=evidence(&s,now);
+            assert!(strategy::risk_check(&s,&b,&a,now,market.common_step()*6,Action::Open).is_err());
+            strategy::risk_check(&s,&b,&a,now,market.common_step()*6,Action::Close).unwrap();
+        }
+    }}
+}
+
+#[test]
+fn nonterminal_margin_note_never_authorizes_repair_or_resubmission() {
+    let now=100_000;let (mut s,_,_)=fixture(now,MarketPair::Openai,Direction::LighterShort);
+    let r=s.pending.as_ref().unwrap().hedge.clone().unwrap();
+    let mut result=fill(&r,0,false);result.rejection=Some(entry_margin::EntryRejection::MarginNotAllowed);
+    apply(&mut s,1,&r,result).unwrap();
+    assert!(s.entry_margin_block.is_none());assert!(!due(&s,now+10_000));
+    assert_eq!(s.status,Status::RecoveringExposure);
+}
+
+#[tokio::test]
+async fn depleted_transferable_cash_during_retry_latches_before_any_more_entry_submissions() {
+    let now=crate::domain::now_ms();let (mut s,mut a,b)=fixture(now,MarketPair::Openai,Direction::LighterShort);
+    s.pending.as_mut().unwrap().entry_hedge_retry.as_mut().unwrap().after_ms=Some(now);
+    a[0].entry_margin=Some(entry_margin::EntryMarginEvidence{reported_available:Some(100.into()),
+        collateral:Some(Decimal::ZERO),allocated_margin:Some(20.into()),unrealized_pnl:Some(5.into()),
+        position_value:Some(30.into()),initial_margin_fraction:Some(Decimal::new(3333,4)),
+        mark_price:Some(2020.into()),isolated_only:true});
+    let (w,calls)=workers(vec![]);let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+    advance_with_hedge_evidence(&mut s,&mut db,&w,&b,now,Some(&a)).await.unwrap();
+    assert!(s.entry_margin_block.is_some());assert!(calls.lock().unwrap().iter().all(|(_,r)|r.reduce_only));
+}
+
+#[tokio::test]
+async fn first_leg_partial_margin_rejection_does_not_create_a_second_open_order() {
+    let now=crate::domain::now_ms();let (mut s,_,b)=fixture(now,MarketPair::Openai,Direction::LighterShort);
+    let p=s.pending.as_mut().unwrap();p.hedge=None;p.hedge_terminal=false;
+    let remaining=p.first_filled/2;p.first_filled-=remaining;p.first_value/=Decimal::TWO;
+    s.positions[1].units-=remaining;s.fills.values_mut().find(|f|f.id=="first-fill").unwrap().units-=remaining;
+    let first=p.first.clone().unwrap();
+    let mut result=fill(&first,0,true);result.rejection=Some(entry_margin::EntryRejection::InvalidBalance);
+    apply(&mut s,0,&first,result).unwrap();
+    let (w,calls)=workers(vec![]);let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+    advance(&mut s,&mut db,&w,&b,now).await.unwrap();
+    assert_eq!(calls.lock().unwrap().len(),1);
+    assert!(calls.lock().unwrap()[0].1.reduce_only);
+    advance(&mut s,&mut db,&w,&b,now).await.unwrap();
+    assert!(s.pending.is_none() && s.entry_margin_block.is_some());
+    assert_eq!(s.positions[0].units,-s.positions[1].units);
 }

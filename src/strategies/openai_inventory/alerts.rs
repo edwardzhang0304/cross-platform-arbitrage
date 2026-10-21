@@ -34,6 +34,9 @@ fn issue(s:&Snapshot) -> Option<(&'static str,bool)> {
     }
     if s.live_orphan.is_some() {return Some(("出现未归属或不一致仓位，需要人工核对",true));}
     if s.loss_stop.is_some() && !s.lots.is_empty() {return Some(("已触发总亏损保护，正在受控平仓",true));}
+    if s.entry_margin_block.is_some() && s.pending.is_none() {
+        return Some((entry_margin::BLOCK_MESSAGE,true));
+    }
     if s.status==Status::NeedsAttention && s.pending.is_none() && s.reason.starts_with("execution recovered;") {
         // Balanced exposure is not the same as a resumed strategy. Only an
         // eligible automatic cooldown gets the usual grace period; a permanent

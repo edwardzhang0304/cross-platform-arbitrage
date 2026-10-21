@@ -46,7 +46,7 @@ impl VenueBackend for Backend {
  fn lookup(&mut self,r:OrderRequest)->BoxFuture<'_,OrderResult>{Box::pin(async move {
     self.faults.lock().unwrap().lookups+=1;
     if self.faults.lock().unwrap().lookup_error {anyhow::bail!("synthetic info quota unavailable");}
-    if self.faults.lock().unwrap().unknown {return Ok(OrderResult{exchange_created_ms:None,terminal:false,fills:vec![],reason:"synthetic unknown".into()});}
+    if self.faults.lock().unwrap().unknown {return Ok(OrderResult{rejection: None, exchange_created_ms:None,terminal:false,fills:vec![],reason:"synthetic unknown".into()});}
     if self.deferred.as_ref().is_some_and(|old|old.id==r.id) {let old=self.deferred.take().unwrap();self.inner.submit(old).await?;}
     self.inner.lookup(r).await
  })}

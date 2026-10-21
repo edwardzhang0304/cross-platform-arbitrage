@@ -1,4 +1,4 @@
-//! Operator acknowledgement releases only the consecutive-rollback latch.
+//! Operator acknowledgement releases only verified entry-protection latches.
 //! Queries and persistence run inside the owning actor; this path cannot submit.
 use super::{store::Store, venue::{self, AccountWorker}, *};
 use anyhow::{ensure, Context, Result};
@@ -7,7 +7,7 @@ fn eligible(s: &Snapshot) -> Result<()> {
     ensure!(s.config.mode == Mode::Live, "人工恢复仅适用于实盘连续回滚保护");
     ensure!(s.status == Status::Stopped && s.paused && s.stop_requested,
         "请先点击停止交易，等待状态变为已停止，再确认恢复");
-    ensure!(s.consecutive_rollbacks >= 3, "当前没有连续回滚保护需要解除");
+    ensure!(s.consecutive_rollbacks >= 3 || s.entry_margin_block.is_some(), "当前没有开仓保护需要解除");
     ensure!(s.pending.is_none(), "仍有未完成订单，不能解除保护");
     ensure!(s.live_orphan.is_none() && s.loss_stop.is_none() && s.liquidation_protection.is_none()
         && !s.close_requested && !s.stop_after_close && !emergency_exit::active(s),
@@ -43,6 +43,7 @@ fn checked_state(s: &Snapshot, a: &[AccountEvidence; 2], now: u64) -> Result<Sna
 
 pub(super) async fn confirm(
     state: &mut Snapshot, store: &mut Store, workers: &[AccountWorker; 2], id: &str,
+    books: Option<&std::sync::RwLock<[Book;2]>>,
 ) -> Result<Option<[AccountEvidence; 2]>> {
     ensure!(!id.is_empty() && id.len() <= 128, "invalid command id");
     let name = serde_json::to_string(&Control::ConfirmRollbackRecovery)?;
@@ -52,12 +53,24 @@ pub(super) async fn confirm(
     let accounts = venue::fresh_reconciled_accounts(workers, state.config.account_max_age_ms)
         .await.context("无法取得两个平台的新核对结果，保护未解除，请稍后重试或发送诊断包")?;
     let now = crate::domain::now_ms();
-    let next = checked_state(state, &accounts, now)?;
+    let mut next = checked_state(state, &accounts, now)?;
+    if state.entry_margin_block.is_some() {
+        let current=books.context("保证金恢复需要最新盘口")?.read().unwrap().clone();
+        for b in &current { b.validate(now,state.config.book_max_age_ms)?; }
+        ensure!(accounts[0].entry_margin.is_some(),"缺少 Lighter 原始保证金明细，保护未解除");
+        let qty=state.config.common_units(state.config.group_notional,
+            (current[0].mid().context("missing book")?+current[1].mid().context("missing book")?)/rust_decimal::Decimal::TWO)?;
+        next.entry_margin_block=None;
+        strategy::risk_check(&next,&current,&accounts,now,qty,Action::Open)
+            .context("当前资金或风险条件仍不允许新增一组，保证金保护未解除")?;
+        next.reason="保证金及两平台持仓核对通过，已解除开仓保护；保持停止，等待单独启动".into();
+    }
     let evidence = serde_json::json!({
         "previous_rollbacks": state.consecutive_rollbacks,
+        "margin_protection_cleared": state.entry_margin_block.is_some(),
         "accounts": accounts.iter().map(|a| serde_json::json!({
             "venue":a.venue,"position_units":a.position_units,"open_orders":a.open_orders,
-            "authenticated":a.authenticated,"observed_ms":a.observed_ms
+            "authenticated":a.authenticated,"observed_ms":a.observed_ms,"entry_margin":a.entry_margin
         })).collect::<Vec<_>>()
     });
     // A failed transaction leaves both the in-memory latch and durable state intact.

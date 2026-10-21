@@ -93,7 +93,7 @@ function Snapshot-View($s) {
     status=$s.status; reason=(SafeText $s.reason); reason_ref=(Ref $s.reason)
     emergency_exit=(Emergency-View $s.emergency_exit)
     paused=$s.paused; stop_requested=$s.stop_requested; close_requested=$s.close_requested; stop_after_close=$s.stop_after_close
-    consecutive_rollbacks=$s.consecutive_rollbacks; recovery_after_ms=$s.recovery_after_ms
+    entry_margin_block=$(if ($null -ne $s.entry_margin_block) { [ordered]@{venue=$s.entry_margin_block.venue; at_ms=$s.entry_margin_block.at_ms; order_ref=(Ref $s.entry_margin_block.order_id); rejection=(SafeText $s.entry_margin_block.rejection)} }); consecutive_rollbacks=$s.consecutive_rollbacks; recovery_after_ms=$s.recovery_after_ms
     orphan=($null -ne $s.live_orphan); loss_stop=($null -ne $s.loss_stop)
     held_groups=@($s.lots).Count; closed_groups=$s.closed_groups
     lot_units_sum=($s.lots | Measure-Object units -Sum).Sum
@@ -138,6 +138,7 @@ function Capture-Market($Profile) {
     if ($null -eq $s) { $flags.Add('ACCOUNT_NOT_LOADED') }
     else {
       if ($null -ne $s.pending) { $flags.Add('PENDING_OPERATION') }
+      if ($null -ne $s.entry_margin_block) { $flags.Add('ENTRY_MARGIN_PROTECTION') }
       if ($s.status -eq 'needs_attention') { $flags.Add('NEEDS_ATTENTION') }
       if ($null -ne $s.live_orphan) { $flags.Add('ORPHAN_INCIDENT') }
       if ($null -ne $s.loss_stop) { $flags.Add('LOSS_PROTECTION') }
@@ -157,7 +158,7 @@ function Capture-Market($Profile) {
       startup_failure=$(if ($null -ne $d.startup_failure) { [ordered]@{at_ms=$d.startup_failure.at_ms; operation=(SafeText $d.startup_failure.operation); issue=[ordered]@{stage=(SafeText $d.startup_failure.issue.stage); code=(SafeText $d.startup_failure.issue.code); message=(SafeText $d.startup_failure.issue.message)}} })
       snapshot=(Snapshot-View $s)
       recovery_policy=($d.recovery_policy | Select-Object retry_interval_ms,initial_slippage_bps,step_slippage_bps,max_slippage_bps,unknown_order_action,@{Name='entry_hedge_retry';Expression={$_.entry_hedge_retry | Select-Object retry_interval_ms,slippage_bps,after_exhaustion,unknown_order_action}})
-      accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage)
+      accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage,@{Name='entry_margin';Expression={$_.entry_margin | Select-Object reported_available,collateral,allocated_margin,unrealized_pnl,position_value,initial_margin_fraction,mark_price,isolated_only}})
       books=@($v.books | Where-Object { $null -ne $_ } | ForEach-Object { Book-View $_ })
       risk_valuation=($v.risk_valuation | Select-Object estimated_total_pnl,depth_complete,unseen_exit_units)
       market_transport=(Transport-View $v.market_transport)
@@ -179,7 +180,7 @@ function Read-Events([string]$Path,[long]$From=-1,[long]$To=-1) {
     $e=$part[2] | ConvertFrom-Json
     $recovery=$null
     if ($e.command -eq '"confirm_rollback_recovery"' -and $null -ne $e.evidence) {
-      $recovery=[ordered]@{previous_rollbacks=$e.evidence.previous_rollbacks; accounts=@($e.evidence.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms)}
+      $recovery=[ordered]@{previous_rollbacks=$e.evidence.previous_rollbacks; margin_protection_cleared=$e.evidence.margin_protection_cleared; accounts=@($e.evidence.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms)}
     }
     [ordered]@{at_ms=[long]$part[0]; kind=(SafeText $part[1]); status=$e.status; reason=(SafeText $e.reason); reason_ref=(Ref $e.reason); pending=(Pending-View $e.pending); groups=$e.groups; manual_recovery=$recovery}
   })
@@ -310,7 +311,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc20'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc23'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   profiles=$profiles; observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

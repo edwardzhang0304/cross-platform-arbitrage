@@ -12,10 +12,10 @@ if (!$Before.ok -or !$Before.data.view) { throw 'Load the account and original l
 if (($Before.data.profile.id -and $Before.data.profile.id -ne $Market) -or ($Market -notin @('openai','anth') -and $Before.data.profile.id -ne $Market)) { throw 'Account profile mismatch.' }
 $State=$Before.data.view.snapshot
 if ($State.status -ne 'stopped' -or !$State.stop_requested -or !$State.paused) { throw 'Click Stop trading first. Wait until Stopped.' }
-if ($State.consecutive_rollbacks -lt 3) { throw 'No consecutive rollback lock to release.' }
+if ($State.consecutive_rollbacks -lt 3 -and $null -eq $State.entry_margin_block) { throw 'No entry protection lock to release.' }
 Write-Output "This requests fresh authenticated checks on BOTH venues for $Label."
 Write-Output 'The server must verify ledger/position agreement and no outstanding orders.'
-Write-Output 'It releases only the rollback lock. Trading stays STOPPED. No orders are sent.'
+Write-Output 'It verifies funding too when margin protection is active. Trading stays STOPPED. No orders are sent.'
 $Answer=Read-Host "Type $Label to confirm (anything else cancels)"
 if ($Answer -cne $Label) { throw 'Cancelled. Protection unchanged.' }
 $Endpoint=if ($Market -eq 'openai') { '/api/portable' } elseif ($Market -eq 'anth') { '/api/anth-portable' } else { "/api/accounts/$Market/control" }
@@ -26,6 +26,6 @@ $After=Invoke-RestMethod "$Base$Api" -TimeoutSec 10
 if (!$After.ok -or !$After.data.view) { throw 'Request acknowledged; status unavailable. Run diagnostics before any further action.' }
 if ($Before.data.profile.id -and $After.data.profile.id -ne $Before.data.profile.id) { throw 'Account profile changed; run diagnostics.' }
 $State=$After.data.view.snapshot
-[ordered]@{profile_id=$Market;market=$Before.data.profile.market;status=$State.status;consecutive_rollbacks=$State.consecutive_rollbacks;pending=($null -ne $State.pending);stop_requested=$State.stop_requested} | ConvertTo-Json
-if ($State.status -ne 'stopped' -or $State.consecutive_rollbacks -ne 0 -or !$State.stop_requested -or $null -ne $State.pending) { throw 'State changed or verification did not complete. Run diagnostics; do not start.' }
+[ordered]@{profile_id=$Market;market=$Before.data.profile.market;status=$State.status;consecutive_rollbacks=$State.consecutive_rollbacks;entry_margin_block=($null -ne $State.entry_margin_block);pending=($null -ne $State.pending);stop_requested=$State.stop_requested} | ConvertTo-Json
+if ($State.status -ne 'stopped' -or $State.consecutive_rollbacks -ne 0 -or !$State.stop_requested -or $null -ne $State.pending -or $null -ne $State.entry_margin_block) { throw 'State changed or verification did not complete. Run diagnostics; do not start.' }
 Write-Output 'VERIFIED: rollback protection released; trading remains STOPPED. Start separately from the page.'

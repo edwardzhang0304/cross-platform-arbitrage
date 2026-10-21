@@ -120,7 +120,7 @@ impl venue::VenueBackend for AbsenceRecoveryBackend {
             assert_eq!(r.venue,Venue::Entropy);
             assert!(r.reduce_only && r.id.ends_with("-repair-1"));
             self.sent.lock().unwrap().push(r.clone());
-            Ok(OrderResult {exchange_created_ms:None,terminal:true,reason:"filled".into(),
+            Ok(OrderResult {rejection: None, exchange_created_ms:None,terminal:true,reason:"filled".into(),
                 fills:vec![Fill {id:"synthetic-successful-repair".into(),order_id:r.id,
                     venue:r.venue,side:r.side,units:r.units,price:r.limit,fee:Decimal::ZERO,time_ms:r.created_ms}]})
         })
@@ -212,7 +212,7 @@ async fn persisted_unknown_repair_recovers_once_and_preserves_seven_pairs_and_st
         let retry_at=s.pending.as_ref().unwrap().repair_retry_after_ms.unwrap();
         let accounts=[Venue::Lighter,Venue::Entropy].map(|v|AccountEvidence {venue:v,account:"fixture".into(),
             observed_ms:retry_at,position_units:s.positions[v.index()].units,free_margin:Decimal::from(100),
-            equity:Decimal::from(100),leverage:3,isolated:true,open_orders:0,authenticated:true,liquidation_price:None});
+            equity:Decimal::from(100),leverage:3,isolated:true,open_orders:0,authenticated:true,entry_margin: None, liquidation_price:None});
         let books=books.map(|mut b|{b.received_ms=retry_at;b});
         assert!(execution::resume_protected_repair(&mut s,&accounts,&books,retry_at).unwrap());
         execution::advance(&mut s,&mut db,&workers,&books,retry_at).await.unwrap();

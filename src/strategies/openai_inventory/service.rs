@@ -189,7 +189,7 @@ impl InventoryService {
                             }
                         } else { Ok(()) };
                         let outcome=if matches!(command.control, Control::ConfirmRollbackRecovery) {
-                            super::manual_recovery::confirm(&mut state,&mut store,&workers,&command.id).await.map(|fresh| {
+                            super::manual_recovery::confirm(&mut state,&mut store,&workers,&command.id,Some(&books)).await.map(|fresh| {
                                 if let Some(a)=fresh {accounts=Some(a);last_accounts=crate::domain::now_ms();}
                             })
                         } else {(||->Result<()>{
@@ -594,6 +594,7 @@ pub(super) fn set_direction_policy(
 
 pub(super) fn start_continuous(s: &mut Snapshot) -> Result<()> {
     ensure!(!super::emergency_exit::active(s),"emergency exit is incomplete");
+    ensure!(s.entry_margin_block.is_none(),"{}",entry_margin::BLOCK_MESSAGE);
     ensure!(s.config.mode == Mode::Paper,
         "continuous OPENAI inventory start remains paper-only; live uses bounded entry");
     ensure!(s.pending.is_none(), "reconcile pending operation first");
@@ -713,6 +714,7 @@ pub(super) fn start_live_strategy(
     s: &mut Snapshot, accounts: Option<&[AccountEvidence; 2]>, books: &[Book; 2], now: u64,
 ) -> Result<()> {
     s.config.validate()?;
+    ensure!(s.entry_margin_block.is_none(),"{}",entry_margin::BLOCK_MESSAGE);
     ensure!(s.config.mode == Mode::Live && s.config.max_groups == 20
         && s.config.max_notional_per_venue == Decimal::from(300) * Decimal::from(s.config.capital_multiplier)
         && s.config.max_loss_usdc == Decimal::from(30) * Decimal::from(s.config.capital_multiplier), "approved continuous live bounds required");
@@ -840,6 +842,7 @@ pub(super) fn resume_verified_rollback(
         || s.stop_after_close
         || s.close_requested
         || s.consecutive_rollbacks >= 3
+        || s.entry_margin_block.is_some()
     {
         return Ok(false);
     }

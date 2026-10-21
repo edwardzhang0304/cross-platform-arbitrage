@@ -329,7 +329,7 @@ impl PaperBackend {
         if changed {self.persist()?;}Ok(())
     }
     fn reject(&mut self,id:String,reason:&str)->Result<OrderResult> {
-        let result=OrderResult{exchange_created_ms: None, terminal:true,fills:vec![],reason:reason.into()};
+        let result=OrderResult{rejection: None, exchange_created_ms: None, terminal:true,fills:vec![],reason:reason.into()};
         self.orders.insert(id,result.clone());self.persist()?;Ok(result)
     }
     /// Shared frame time for paired paper experiments only; ordinary service uses wall time.
@@ -462,7 +462,7 @@ impl VenueBackend for PaperBackend {
             if (r.side == Side::Buy && worst > r.limit) || (r.side == Side::Sell && worst < r.limit)
             {
                 let out = OrderResult {
-                    exchange_created_ms: None,
+                    rejection: None, exchange_created_ms: None,
                     terminal: true,
                     fills: vec![],
                     reason: "paper IOC cancelled by price".into(),
@@ -510,7 +510,7 @@ impl VenueBackend for PaperBackend {
             }
             self.position.apply_for(&f, self.config.market)?;
             let out = OrderResult {
-                exchange_created_ms: None,
+                rejection: None, exchange_created_ms: None,
                 terminal: true,
                 fills: vec![f],
                 reason: "paper fill; not a venue execution".into(),
@@ -523,7 +523,7 @@ impl VenueBackend for PaperBackend {
     fn lookup(&mut self, r: OrderRequest) -> BoxFuture<'_, OrderResult> {
         Box::pin(async move {
             Ok(self.orders.get(&r.id).cloned().unwrap_or(OrderResult {
-                exchange_created_ms: None,
+                rejection: None, exchange_created_ms: None,
                 terminal: false,
                 fills: vec![],
                 reason: "paper order history unavailable after restart; reconciliation required"
@@ -556,7 +556,7 @@ impl VenueBackend for PaperBackend {
                 isolated: true,
                 open_orders: 0,
                 authenticated: true,
-                liquidation_price: self.isolation.as_ref().and_then(|(spec,s,_)|s.liquidation_price_for(p,spec.maintenance_rates[self.venue.index()],self.config.market)),
+                entry_margin: None, liquidation_price: self.isolation.as_ref().and_then(|(spec,s,_)|s.liquidation_price_for(p,spec.maintenance_rates[self.venue.index()],self.config.market)),
             })
         })
     }
@@ -634,7 +634,7 @@ mod lookup_timeout_tests {
             Box::pin(async {
                 tokio::time::sleep(std::time::Duration::from_millis(3200)).await;
                 Ok(OrderResult {
-                    exchange_created_ms: None,
+                    rejection: None, exchange_created_ms: None,
                     terminal: true,
                     fills: vec![],
                     reason: "verified absence".into(),
@@ -678,7 +678,7 @@ mod fresh_pair_tests {
             let venue=self.venue;
             Box::pin(async move{Ok(AccountEvidence{venue,account:"synthetic-only".into(),observed_ms,
                 position_units:if venue==Venue::Lighter{-810}else{990},free_margin:Decimal::from(50),equity:Decimal::from(100),
-                leverage:3,isolated:true,open_orders:0,authenticated:true,liquidation_price:None})})
+                leverage:3,isolated:true,open_orders:0,authenticated:true,entry_margin: None, liquidation_price:None})})
         }
     }
     #[tokio::test]

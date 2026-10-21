@@ -90,7 +90,7 @@ test('shared account and fill components preserve each market precision and esca
     const accounts=f.element('accounts').innerHTML,fills=f.element('fills').innerHTML;
     assert(!accounts.includes('data-field="open_orders"'));
     assert(!f.element('inventory-tables').innerHTML.includes('挂单'));
-    for(const label of ['权益','可用资金','持仓数量','保证金模式'])assert(accounts.includes(`data-label="${label}"`));
+    for(const label of ['权益','可用于加仓','持仓数量','保证金模式'])assert(accounts.includes(`data-label="${label}"`));
     const quantity=(637/(10**decimals)).toFixed(decimals);
     assert.match(accounts,new RegExp(`>${quantity.replace('.','\\.')}<`));
     assert.match(fills,new RegExp(`>${quantity.replace('.','\\.')}<`));
@@ -100,4 +100,17 @@ test('shared account and fill components preserve each market precision and esca
     assert.match(accounts,/&lt;img/);
     assert.match(f.element('inventory-tables').innerHTML,mode==='paper'?/两平台虚拟账户/:/两平台真实账户/);
   }
+});
+
+test('isolated entry funds distinguish valuation, transferable collateral and unknown evidence',()=>{
+  const f=fixture();
+  const row={venue:'lighter',equity:'110',free_margin:'28',position_units:-1600,isolated:true,leverage:3,
+    entry_margin:{reported_available:'28',collateral:'0.1',isolated_only:true}};
+  f.payload.view.accounts=[row];f.render();
+  assert.match(f.element('accounts').innerHTML,/平台显示可用 28.00 U/);
+  assert.match(f.element('accounts').innerHTML,/>0.10 U<\/td>/);
+  row.entry_margin.collateral=null;f.render();assert.match(f.element('accounts').innerHTML,/>待核对<\/td>/);
+  row.entry_margin.collateral='100';row.entry_margin.isolated_only=false;
+  f.render();assert.match(f.element('accounts').innerHTML,/>待核对<\/td>/);
+  row.entry_margin=null;f.render();assert.match(f.element('accounts').innerHTML,/>28.00 U<\/td>/);
 });

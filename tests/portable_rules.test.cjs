@@ -63,6 +63,8 @@ test('manual rollback acknowledgement is explicit, market-bound and never starts
   assert.equal(posts[0].body.confirmation,'CONFIRM_OPENAI_ROLLBACK_RECOVERY');
   assert.match(element('notice').textContent,/still stopped/);
   snapshot.consecutive_rollbacks=0;await ctx.refresh();assert.equal(element('rollback-recovery').hidden,true);
+  snapshot.entry_margin_block={rejection:'margin_not_allowed'};await ctx.refresh();
+  assert.equal(element('rollback-recovery').hidden,false);assert.match(element('control-status').textContent,/保证金拒单/);
   assert.equal(posts.length,1,'success must not send start or any order');
 });
 

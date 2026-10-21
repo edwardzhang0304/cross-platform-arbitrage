@@ -3,7 +3,7 @@ use super::*;
 fn account(c:&InventoryConfig, at:u64)->AccountEvidence {
     AccountEvidence { venue:Venue::Entropy,account:c.entropy_account.clone(),observed_ms:at,
         position_units:700,free_margin:Decimal::from(100),equity:Decimal::from(100),
-        leverage:c.leverage,isolated:true,open_orders:0,authenticated:true,liquidation_price:None }
+        leverage:c.leverage,isolated:true,open_orders:0,authenticated:true,entry_margin: None, liquidation_price:None }
 }
 
 #[test]

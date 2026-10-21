@@ -1,4 +1,4 @@
-use super::InventoryConfig;
+use super::{InventoryConfig, entry_margin};
 use anyhow::{Result, bail, ensure};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
@@ -156,6 +156,8 @@ pub struct AccountEvidence {
     pub open_orders: usize,
     pub authenticated: bool,
     pub liquidation_price: Option<Decimal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_margin: Option<entry_margin::EntryMarginEvidence>,
 }
 /// Risk-only mark when the visible book cannot price the entire inventory.
 /// Unseen units are marked at the last visible exit price, not represented as
@@ -279,6 +281,8 @@ impl OrderRequest {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<entry_margin::EntryRejection>,
     /// Exchange creation time from an identity-validated order, never a guessed fill time.
     #[serde(default)]
     pub exchange_created_ms: Option<u64>,
@@ -434,6 +438,8 @@ pub struct Snapshot {
     pub recovery_after_ms: Option<u64>,
     #[serde(default)]
     pub consecutive_rollbacks: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_margin_block: Option<entry_margin::EntryMarginBlock>,
     #[serde(default)]
     pub mean_initialized: bool,
     /// Last established reference, retained for at most one window during maintenance.
@@ -525,6 +531,7 @@ impl Snapshot {
             entry_attempts_remaining: None,
             recovery_after_ms: None,
             consecutive_rollbacks: 0,
+            entry_margin_block: None,
             mean_initialized: false,
             continuity_mean: None,
             entry_mean: super::entry_mean::EntryMean::default(),
@@ -839,6 +846,11 @@ impl Snapshot {
                 Status::Closing
             };
             self.reason = "total loss limit latched; protected close and stop".into();
+        } else if self.entry_margin_block.is_some() {
+            self.paused = true;
+            self.recovery_after_ms = None;
+            self.status = if self.stop_requested || (self.stop_after_close && self.lots.is_empty()) { Status::Stopped } else { Status::PausedEntries };
+            self.reason = entry_margin::BLOCK_MESSAGE.into();
         } else if op.failed {
             self.status = Status::NeedsAttention;
             if ((op.action == Action::Open && paired == 0) || op.action == Action::Close)

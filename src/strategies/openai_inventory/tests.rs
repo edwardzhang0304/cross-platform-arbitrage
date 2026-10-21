@@ -29,7 +29,7 @@ fn accounts(now: u64) -> [AccountEvidence; 2] {
         isolated: true,
         open_orders: 0,
         authenticated: true,
-        liquidation_price: None,
+        entry_margin: None, liquidation_price: None,
     })
 }
 fn warmed(now: u64) -> Snapshot {
@@ -592,7 +592,7 @@ impl venue::VenueBackend for FaultVenue {
             };
             remote.position.apply(&f)?;
             let result = OrderResult {
-                exchange_created_ms: None,
+                rejection: None, exchange_created_ms: None,
                 terminal: true,
                 fills: vec![f],
                 reason: "fixture exchange execution".into(),
@@ -1461,7 +1461,7 @@ async fn late_terminal_lookup_can_finish_without_reentering_timeout_halt() {
         backend.orders.insert(
             "original-late-first".into(),
             OrderResult {
-                exchange_created_ms: None,
+                rejection: None, exchange_created_ms: None,
                 terminal: true,
                 fills: vec![],
                 reason: "verified expired absence".into(),
@@ -1606,7 +1606,7 @@ impl venue::VenueBackend for ExpiredCloseHedge {
                 remote.orders.insert(
                     r.id,
                     OrderResult {
-                        exchange_created_ms: None,
+                        rejection: None, exchange_created_ms: None,
                         terminal: true,
                         fills: vec![],
                         reason: "expired; verified no execution".into(),
@@ -1885,3 +1885,21 @@ include!("batch_exit_tests.rs");
 include!("entry_mean_tests.rs");
 
 include!("anth_tests.rs");
+
+#[test]
+fn depleted_cash_prevents_reserving_first_leg_without_consuming_entry_quota() {
+    let now=4_000_000;let mut s=warmed(now);s.entry_attempts_remaining=Some(1);
+    let mut blocked=false;
+    for t in [now,now+15_000,now+30_000] {
+        let mut a=accounts(t);a[0].entry_margin=Some(entry_margin::EntryMarginEvidence{
+            reported_available:Some(d(100)),collateral:Some(Decimal::new(1,1)),
+            allocated_margin:Some(Decimal::ZERO),unrealized_pnl:Some(Decimal::ZERO),
+            position_value:Some(Decimal::ZERO),initial_margin_fraction:Some(Decimal::new(3333,4)),
+            mark_price:None,isolated_only:true});
+        match strategy::evaluate(&mut s,&books(t,27),&a,t) {
+            Ok(op)=>assert!(op.is_none()),
+            Err(e)=>{assert!(e.to_string().contains("可划转保证金不足"),"{e}");blocked=true;}
+        }
+    }
+    assert!(blocked);assert_eq!(s.sequence,0);assert_eq!(s.entry_attempts_remaining,Some(1));assert!(s.pending.is_none());
+}

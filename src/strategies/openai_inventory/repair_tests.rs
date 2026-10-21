@@ -49,7 +49,7 @@ fn incident(now: u64, direction: Direction) -> (Snapshot, [AccountEvidence; 2], 
     let accounts=[Venue::Lighter,Venue::Entropy].map(|venue| AccountEvidence {
         venue,account:"fixture".into(),observed_ms:now,position_units:s.positions[venue.index()].units,
         free_margin:d(50),equity:d(100),leverage:3,isolated:true,open_orders:0,
-        authenticated:true,liquidation_price:None,
+        authenticated:true,entry_margin: None, liquidation_price:None,
     });
     let books=[1652,1628].map(|p| Book {bids:vec![Level {price:d(p),units:2000}],
         asks:vec![Level {price:d(p+1),units:2000}],received_ms:now,connected:true});
@@ -57,7 +57,7 @@ fn incident(now: u64, direction: Direction) -> (Snapshot, [AccountEvidence; 2], 
 }
 
 fn result(req:&OrderRequest, units:i64, terminal:bool)->OrderResult {
-    OrderResult { exchange_created_ms: None, terminal,reason:"fixture result".into(),fills: if units==0 {vec![]} else {vec![Fill {
+    OrderResult { rejection: None, exchange_created_ms: None, terminal,reason:"fixture result".into(),fills: if units==0 {vec![]} else {vec![Fill {
         id:format!("{}-fill",req.id),order_id:req.id.clone(),venue:req.venue,side:req.side,
         units,price:req.limit,fee:Decimal::ZERO,time_ms:req.created_ms,
     }]}}

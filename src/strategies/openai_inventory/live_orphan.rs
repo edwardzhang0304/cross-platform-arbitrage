@@ -234,11 +234,11 @@ mod tests {
                 a.position_units += r.side.sign() * r.units;
                 submitted.lock().unwrap().push(r);
                 if uncertain { anyhow::bail!("simulated lost acknowledgement after fill"); }
-                Ok(OrderResult { exchange_created_ms: None, terminal: true, fills: vec![], reason: "mock terminal".into() })
+                Ok(OrderResult { rejection: None, exchange_created_ms: None, terminal: true, fills: vec![], reason: "mock terminal".into() })
             })
         }
         fn lookup(&mut self, _r: OrderRequest) -> BoxFuture<'_, OrderResult> {
-            Box::pin(async { Ok(OrderResult { exchange_created_ms: None, terminal: true, fills: vec![], reason: "mock terminal".into() }) })
+            Box::pin(async { Ok(OrderResult { rejection: None, exchange_created_ms: None, terminal: true, fills: vec![], reason: "mock terminal".into() }) })
         }
     }
     #[test]
@@ -258,7 +258,7 @@ mod tests {
             venue, account: if venue == Venue::Lighter { s.config.lighter_account.clone() } else { s.config.entropy_account.clone() }, observed_ms: now,
             position_units: s.positions[venue.index()].units, free_margin: Decimal::from(100),
             equity: Decimal::from(100), leverage: 3, isolated: true,
-            open_orders: 0, authenticated: true, liquidation_price: None,
+            open_orders: 0, authenticated: true, entry_margin: None, liquidation_price: None,
         });
         assert_eq!(candidate(&s, &a, now), None);
         a[1].position_units = 0;
@@ -285,7 +285,7 @@ mod tests {
                 account: if venue == Venue::Lighter { c.lighter_account.clone() } else { c.entropy_account.clone() },
                 observed_ms: now, position_units: owned, free_margin: Decimal::from(100),
                 equity: Decimal::from(100), leverage: 3, isolated: true,
-                open_orders: 0, authenticated: true, liquidation_price: None };
+                open_orders: 0, authenticated: true, entry_margin: None, liquidation_price: None };
             let book = Book { bids: vec![Level { price: Decimal::from(1600), units: 400 }],
                 asks: vec![Level { price: Decimal::from(1601), units: 400 }],
                 received_ms: now, connected: true };
@@ -321,7 +321,7 @@ mod tests {
             venue, account: if venue == Venue::Lighter { c.lighter_account.clone() } else { c.entropy_account.clone() },
             observed_ms: now, position_units: if venue == Venue::Lighter { 100 } else { 0 },
             free_margin: Decimal::from(100), equity: Decimal::from(100), leverage: 3,
-            isolated: true, open_orders: 0, authenticated: true, liquidation_price: None,
+            isolated: true, open_orders: 0, authenticated: true, entry_margin: None, liquidation_price: None,
         })));
         let submitted = Arc::new(Mutex::new(Vec::new()));
         let workers = [Venue::Lighter, Venue::Entropy].map(|venue| AccountWorker::spawn(

@@ -9,6 +9,7 @@ pub mod account_binding;
 mod comparison;
 pub mod charts;
 pub mod entry_mean;
+pub mod entry_margin;
 pub mod accounting;
 pub mod alerts;
 pub mod liquidation;

@@ -26,7 +26,13 @@
         columns:[
           {key:'venue', label:'平台', width:24, value:r => venueName(r.venue), className:'account-name'},
           {key:'equity', label:'权益', width:19, numeric:true, value:r => amount(r.equity)},
-          {key:'free_margin', label:'可用资金', width:19, numeric:true, value:r => amount(r.free_margin)},
+          {key:'free_margin', label:'可用于加仓', width:19, numeric:true, value:r => {
+            const e=r.entry_margin;
+            if(!e)return amount(r.free_margin);
+            const known=e.isolated_only && Number.isFinite(number(e.collateral)) && Number.isFinite(number(e.reported_available));
+            return {text:known?amount(Math.max(0,Math.min(number(e.collateral),number(e.reported_available)))):'待核对',
+              title:`平台显示可用 ${amount(r.free_margin)}；未划入逐仓的余额 ${amount(e.collateral)}。加仓还需预留保证金和安全余额，逐仓内资金及浮盈不能直接用于新订单。`};
+          }},
           {key:'position_units', label:'持仓数量', width:19, numeric:true, value:r => quantity(r.position_units)},
           {key:'margin', label:'保证金模式', width:19, align:'center', value:r => `${r.isolated ? '逐仓' : '非逐仓'} ${r.leverage}×`}
         ]},

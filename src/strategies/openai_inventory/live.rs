@@ -62,7 +62,7 @@ fn lighter_account_equity(account: &Value) -> Result<Decimal> {
     decimal(account.get("equity").context("missing Lighter account equity")?)
         .context("invalid Lighter portfolio value")
 }
-fn lighter_leverage(v: &Value) -> Result<u32> {
+fn lighter_margin_fraction(v: &Value) -> Result<Decimal> {
     let reported = decimal(v)?;
     ensure!(reported > Decimal::ZERO, "missing leverage evidence");
     // Lighter deployments have returned IMR as a fraction (0.3334), a
@@ -80,10 +80,35 @@ fn lighter_leverage(v: &Value) -> Result<u32> {
         fraction > Decimal::ZERO && fraction <= Decimal::ONE,
         "invalid margin fraction"
     );
-    (Decimal::ONE / fraction)
+    Ok(fraction)
+}
+fn lighter_leverage(v: &Value) -> Result<u32> {
+    (Decimal::ONE / lighter_margin_fraction(v)?)
         .round()
         .to_u32()
         .context("leverage overflow")
+}
+
+fn lighter_entry_margin(a:&Value,p:Option<&Value>)->entry_margin::EntryMarginEvidence {
+    let positions=a["positions"].as_array();
+    // Account collateral is separate from isolated allocated margin and PnL.
+    // For mixed cross positions we cannot reconstruct their initial requirement
+    // from the simplified stream; retain unknown rather than spending it.
+    let isolated_only=positions.is_some_and(|ps|ps.iter().all(|p|
+        decimal(&p["position"]).is_ok_and(|q|q.is_zero() || integer(&p["margin_mode"])==Some(1))));
+    let value=|key:&str|p.and_then(|p|decimal(&p[key]).ok());
+    let position=value("position").map(|q|q.abs());
+    let position_value=value("position_value").map(|v|v.abs());
+    entry_margin::EntryMarginEvidence {
+        reported_available:decimal(&a["available_balance"]).ok(),
+        collateral:decimal(&a["collateral"]).ok(),
+        allocated_margin:value("allocated_margin"),
+        unrealized_pnl:value("unrealized_pnl"),
+        position_value,
+        initial_margin_fraction:p.and_then(|p|lighter_margin_fraction(&p["initial_margin_fraction"]).ok()),
+        mark_price:position.zip(position_value).and_then(|(q,v)|(q>Decimal::ZERO && v>Decimal::ZERO).then(||v/q)),
+        isolated_only,
+    }
 }
 
 /// In unified account mode USDC collateral lives in spot state; the io DEX
@@ -182,6 +207,13 @@ fn bound_lighter_order(page: &Value, config: &InventoryConfig, account: i64,
     Ok(Some(BoundLighterOrder { observation, order_index, created_ms, filled_units }))
 }
 
+fn lighter_entry_rejection(status:&str)->Option<entry_margin::EntryRejection> {
+    match status {
+        "canceled-margin-not-allowed" => Some(entry_margin::EntryRejection::MarginNotAllowed),
+        "canceled-invalid-balance" => Some(entry_margin::EntryRejection::InvalidBalance),
+        _ => None,
+    }
+}
 fn lighter_order_summary(order: &BoundLighterOrder, r: &OrderRequest) -> String {
     format!("authenticated RH order; status: {}; requested_units={}; filled_units={}; limit={}; reduce_only={}",
         crate::crossvenue_a::safe_transport_error(&order.observation.venue_status).replace(['-', '_'], " "),
@@ -219,7 +251,7 @@ fn inventory_orders(value: &Value) -> Result<Vec<LighterAccountObservation>> {
 }
 fn rejected(reason: impl ToString) -> OrderResult {
     OrderResult {
-        exchange_created_ms: None,
+        rejection: None, exchange_created_ms: None,
         terminal: true,
         fills: vec![],
         reason: reason.to_string(),
@@ -464,7 +496,7 @@ impl LighterLive {
                 }
             }
             return Ok(OrderResult {
-                exchange_created_ms: None,
+                rejection: None, exchange_created_ms: None,
                 terminal: false,
                 fills: vec![],
                 reason: "client order id not yet found; do not resend".into(),
@@ -547,7 +579,7 @@ impl LighterLive {
             }
         }
         let complete = fills.iter().map(|x| x.units).sum::<i64>() == reported;
-        Ok(OrderResult { exchange_created_ms: Some(order.created_ms),
+        Ok(OrderResult { rejection: if complete { lighter_entry_rejection(&order.observation.venue_status) } else {None}, exchange_created_ms: Some(order.created_ms),
             terminal: complete
                 && matches!(
                     order.observation.state,
@@ -637,6 +669,12 @@ impl VenueBackend for LighterLive {
                 Ok(a) => a,
                 Err(e) => return Ok(rejected(e)),
             };
+            if !r.reduce_only {
+                if let Err(e)=entry_funding(&self.config,&a,&r) {
+                    let mut result=rejected(e);result.rejection=Some(entry_margin::EntryRejection::PreflightFunding);
+                    return Ok(result);
+                }
+            }
             if let Err(e) = final_risk(&self.config, &a, &r) {
                 return Ok(rejected(e));
             }
@@ -782,6 +820,7 @@ impl VenueBackend for LighterLive {
                     })
                     .unwrap_or(0) as usize,
                 authenticated: true,
+                entry_margin: Some(lighter_entry_margin(&a,p)),
                 liquidation_price: p.and_then(|p| decimal(&p["liquidation_price"]).ok()),
             })
         })
@@ -915,7 +954,7 @@ fn entropy_result(config: &InventoryConfig, r: &OrderRequest,
     let enough = fills.iter().map(|f| f.units).sum::<i64>() == expected;
     let summary = format!("status={} requested={} remaining={} expected={} observed={} rows={}",
         order.status, r.units, remaining, expected, fills.iter().map(|f| f.units).sum::<i64>(), rows.len());
-    Ok(OrderResult { exchange_created_ms: Some(created_ms), terminal: terminal && enough,
+    Ok(OrderResult { rejection: None, exchange_created_ms: Some(created_ms), terminal: terminal && enough,
         fills, reason: if terminal && !enough { format!("Entropy fill history incomplete: {summary}") }
             else { format!("Entropy order {summary}") } })
 }
@@ -953,12 +992,12 @@ impl EntropyLive {
                 return Ok(match entropy_absence_result(&self.config, r, evidence, &chain,
                     &orders, &fills, crate::domain::now_ms()) {
                     Ok(result) => result,
-                    Err(error) => OrderResult { exchange_created_ms: None, terminal: false,
+                    Err(error) => OrderResult { rejection: None, exchange_created_ms: None, terminal: false,
                         fills: vec![], reason: format!("Entropy absence not verified: {error}") },
                 });
             }
             return Ok(OrderResult {
-                exchange_created_ms: None,
+                rejection: None, exchange_created_ms: None,
                 terminal: false,
                 fills: vec![],
                 reason: "Entropy cloid not yet found".into(),
@@ -1055,6 +1094,12 @@ impl VenueBackend for EntropyLive {
                     Err(e) => return Ok(rejected(format!("{e:#}"))),
                 },
             };
+            if !r.reduce_only {
+                if let Err(e)=entry_funding(&self.config,&a,&r) {
+                    let mut result=rejected(e);result.rejection=Some(entry_margin::EntryRejection::PreflightFunding);
+                    return Ok(result);
+                }
+            }
             if let Err(e) = final_risk(&self.config, &a, &r) {
                 return Ok(rejected(e));
             }
@@ -1200,7 +1245,7 @@ impl VenueBackend for EntropyLive {
                 isolated,
                 open_orders: order_count,
                 authenticated: true,
-                liquidation_price: p
+                entry_margin: None, liquidation_price: p
                     .and_then(|p| p.position.liquidation_px.as_ref())
                     .and_then(|p| Decimal::from_str(p).ok()),
             };
@@ -1217,6 +1262,17 @@ fn require_isolated_setting(account: &AccountEvidence, leverage: u32) -> Result<
         account.isolated && account.leverage == leverage,
         "venue isolated leverage differs from the configured setting; change it manually before live trading"
     );
+    Ok(())
+}
+
+// Proven pre-dispatch funding failure has a different recovery policy from a
+// price miss. Never classify transport errors or unknown submissions this way.
+fn entry_funding(c:&InventoryConfig,a:&AccountEvidence,r:&OrderRequest)->Result<()> {
+    entry_margin::check_account(a,c,r.units,r.limit,r.side)?;
+    let notional=c.quantity(r.units)*r.limit;
+    let fee=if r.venue==Venue::Lighter {c.fee_lighter}else{c.fee_entropy};
+    ensure!(a.free_margin>=notional/Decimal::from(c.leverage)+notional*fee+c.min_free_margin,
+        "insufficient free margin for entry and reserve");
     Ok(())
 }
 
@@ -1243,6 +1299,7 @@ fn final_risk(c: &InventoryConfig, a: &AccountEvidence, r: &OrderRequest) -> Res
             a.position_units == 0 || a.position_units.signum() == r.side.sign(),
             "unexpected opposite position"
         );
+        entry_margin::check_account(a,c,r.units,r.limit,r.side)?;
         let notional = c.quantity(r.units) * r.limit;
         ensure!(
             c.quantity(a.position_units.abs() + r.units) * r.limit <= c.max_notional_per_venue,
@@ -1342,7 +1399,7 @@ pub(super) fn entropy_absence_result(
             "exchange fill differs from authenticated durable fill");
     }
     ensure!(seen.len() == known.len(), "exchange history omits known fills; completeness is unknown");
-    Ok(OrderResult { exchange_created_ms: None, terminal: true, fills: vec![],
+    Ok(OrderResult { rejection: None, exchange_created_ms: None, terminal: true, fills: vec![],
         reason: "signed request expired; chain position and complete known-fill history confirm no fill for this request".into() })
 }
 
@@ -1464,7 +1521,7 @@ mod tests {
             venue: Venue::Lighter, account: "o1".into(), observed_ms: now,
             position_units: 0, free_margin: Decimal::from(100),
             equity: Decimal::from(100), leverage: 3, isolated: false,
-            open_orders: 0, authenticated: true, liquidation_price: None,
+            open_orders: 0, authenticated: true, entry_margin: None, liquidation_price: None,
         };
         assert!(require_isolated_setting(&account, 3).is_err());
         assert!(final_risk(&config, &account, &request).is_err());
@@ -1643,3 +1700,7 @@ mod entropy_absence_tests;
 #[cfg(test)]
 #[path="live_transport_tests.rs"]
 mod transport_tests;
+
+#[cfg(test)]
+#[path="live_margin_tests.rs"]
+mod margin_tests;

@@ -4,7 +4,7 @@
 
 源码仓库：[edwardzhang0304/cross-platform-arbitrage](https://github.com/edwardzhang0304/cross-platform-arbitrage)。原仓库名为 `openai-paired-trader`。
 
-rc.22 修复 ANTH 合约逐仓模式兼容，加载失败会显示具体阶段并收入脱敏诊断；保留 rc.21 的旧单核对修复及原策略参数。Windows 原目录升级见 [rc22 升级说明](docs/rc22ANTH加载修复与升级说明.txt)。
+rc.23 区分 Lighter 逐仓账户的估值可用额与可划转保证金；新增保证金拒单保护，避免反复加仓回滚，保留减仓恢复。Windows 升级采用完整 data 复制到独立新包目录，见 [rc23 升级说明](docs/rc23保证金保护与升级说明.txt)。
 
 ## 怎么用
 
