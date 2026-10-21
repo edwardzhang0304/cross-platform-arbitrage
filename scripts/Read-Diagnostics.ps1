@@ -154,6 +154,7 @@ function Capture-Market($Profile) {
     }
     return [ordered]@{
       profile_id=$ProfileId; profile_label=(SafeText $Profile.label); market=$Market; captured_ms=$at; available=$true; loaded=($null -ne $s); flags=$flags.ToArray()
+      startup_failure=$(if ($null -ne $d.startup_failure) { [ordered]@{at_ms=$d.startup_failure.at_ms; operation=(SafeText $d.startup_failure.operation); issue=[ordered]@{stage=(SafeText $d.startup_failure.issue.stage); code=(SafeText $d.startup_failure.issue.code); message=(SafeText $d.startup_failure.issue.message)}} })
       snapshot=(Snapshot-View $s)
       recovery_policy=($d.recovery_policy | Select-Object retry_interval_ms,initial_slippage_bps,step_slippage_bps,max_slippage_bps,unknown_order_action,@{Name='entry_hedge_retry';Expression={$_.entry_hedge_retry | Select-Object retry_interval_ms,slippage_bps,after_exhaustion,unknown_order_action}})
       accounts=@($v.accounts | Select-Object venue,position_units,open_orders,authenticated,observed_ms,equity,free_margin,isolated,leverage)

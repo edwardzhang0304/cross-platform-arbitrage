@@ -18,6 +18,7 @@ use crate::{
     ws_post::WsPostClient,
 };
 use anyhow::{Context, Result, ensure};
+use super::bootstrap_diagnostics::{checked as bootstrap_checked, validate_entropy_metadata};
 use ethers::signers::{LocalWallet, Signer};
 use hyperliquid_rust_sdk::{ClientLimit, ClientOrder, ClientOrderRequest, ExchangeClient};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -269,7 +270,8 @@ pub async fn read_only_preflight(
 ) -> Result<[AccountEvidence; 2]> {
     let [mut l, mut e] = build_backends(config, lighter, entropy).await?;
     let (l, e) = tokio::join!(l.account(), e.account());
-    Ok([l?, e?])
+    Ok([bootstrap_checked(l,"lighter_account_read","Lighter 账户、持仓或授权读取失败")?,
+        bootstrap_checked(e,"entropy_account_read","Entropy 账户、持仓或授权读取失败")?])
 }
 async fn build_backends(
     config: &InventoryConfig,
@@ -285,86 +287,64 @@ async fn build_backends(
     );
     ensure!(Some(lighter.account_index) == config.lighter_account_index,
         "Lighter credential account index mismatch");
-    let client = LighterClient::official(LighterEnvironment::Robinhood)?;
-    if let Some(address)=&config.lighter_address {
-        ensure!(client.account_by_index(lighter.account_index).await?.l1_address.eq_ignore_ascii_case(address),
-            "RH account belongs to a different master address");
-    }
-    let market = client.market_by_symbol(config.market.lighter_symbol()).await?;
+    let client = bootstrap_checked(LighterClient::official(LighterEnvironment::Robinhood),
+        "lighter_client", "Lighter 连接初始化失败")?;
+    bootstrap_checked(async {
+        if let Some(address)=&config.lighter_address {
+            ensure!(client.account_by_index(lighter.account_index).await?.l1_address.eq_ignore_ascii_case(address),
+                "RH account belongs to a different master address");
+        }
+        Ok(())
+    }.await,"lighter_account_binding","Lighter 主账户绑定核验失败")?;
+    let market = bootstrap_checked(async {
+        let market=client.market_by_symbol(config.market.lighter_symbol()).await?;
         config.market.validate_lighter(&market)?;
-    ensure!(
-        market.is_active_perp() && market.market_id == config.market.lighter_market_id() && market.effective_size_decimals() == config.market.quantity_decimals(),
-        "RH OPENAI metadata mismatch"
-    );
-    // Until fee-bearing RH fills have a tested account-fee field, require the actual zero-fee market.
-    ensure!(
-        Decimal::from_str(&market.taker_fee)?.is_zero() && config.fee_lighter.is_zero(),
-        "Lighter fee contract changed"
-    );
-    let credential = Arc::new(LighterApiCredential::from_hex(
-        lighter.account_index,
-        lighter.api_key_index,
-        &lighter.private_key,
-    )?);
-    let guard = LighterNonceProcessGuard::acquire(
-        Path::new(LIGHTER_NONCE_LOCK_DIR),
-        lighter.account_index,
-        lighter.api_key_index,
-    )?;
-    credential.verify_registered_public_key(
-        &client
-            .api_key(lighter.account_index, lighter.api_key_index)
-            .await?
-            .public_key,
-    )?;
-    let nonce = LighterNonceOwner::from_venue(
-        lighter.account_index,
-        lighter.api_key_index,
-        client
-            .next_nonce(lighter.account_index, lighter.api_key_index)
-            .await?,
-    )?;
-    let hlguard = signer_guard(&entropy.private_key)?;
-    verify_entropy_fee_contract(config).await?;
-    let meta = hyperliquid::fetch_xyz_market_snapshot_cached("mainnet", "io", 0).await?;
-    let asset = meta.asset(config.market.entropy_symbol())?;
-    ensure!(
-        asset.meta.sz_decimals == 3 && asset.meta.margin_mode.as_deref() == Some(config.market.entropy_margin_mode()),
-        "OAI margin/precision changed"
-    );
-    let wallet: LocalWallet = entropy
-        .private_key
-        .parse()
-        .context("invalid Entropy API signer")?;
+        ensure!(Decimal::from_str(&market.taker_fee)?.is_zero() && config.fee_lighter.is_zero(),
+            "Lighter fee contract changed");
+        Ok(market)
+    }.await,"lighter_contract","Lighter 合约名称、精度、最小数量或费率核验失败")?;
+    let credential = Arc::new(bootstrap_checked(LighterApiCredential::from_hex(
+        lighter.account_index, lighter.api_key_index, &lighter.private_key),
+        "lighter_api_credential","Lighter API 凭据格式校验失败")?);
+    let guard = bootstrap_checked(LighterNonceProcessGuard::acquire(
+        Path::new(LIGHTER_NONCE_LOCK_DIR), lighter.account_index, lighter.api_key_index),
+        "lighter_signer_lock","Lighter API 签名锁不可用，请检查其他账户占用或目录权限")?;
+    bootstrap_checked(async {
+        credential.verify_registered_public_key(
+            &client.api_key(lighter.account_index,lighter.api_key_index).await?.public_key)
+    }.await,"lighter_api_registration","Lighter API 注册公钥核验失败")?;
+    let nonce = bootstrap_checked(async {
+        LighterNonceOwner::from_venue(lighter.account_index,lighter.api_key_index,
+            client.next_nonce(lighter.account_index,lighter.api_key_index).await?)
+    }.await,"lighter_nonce","Lighter API 订单序号读取失败")?;
+    let hlguard = bootstrap_checked(signer_guard(&entropy.private_key),
+        "entropy_signer_lock","Entropy API 签名锁不可用，请检查其他账户占用或目录权限")?;
+    bootstrap_checked(verify_entropy_fee_contract(config).await,
+        "entropy_fee_contract","Entropy 合约费率或增长模式核验失败")?;
+    let meta = bootstrap_checked(hyperliquid::fetch_xyz_market_snapshot_cached("mainnet","io",0).await,
+        "entropy_metadata_read","Entropy 合约信息读取失败")?;
+    let asset = bootstrap_checked(meta.asset(config.market.entropy_symbol()),
+        "entropy_contract_lookup","Entropy 返回的合约列表中找不到当前标的")?;
+    validate_entropy_metadata(config.market, &asset.meta)?;
+    let wallet: LocalWallet = bootstrap_checked(entropy.private_key.parse().context("invalid Entropy API signer"),
+        "entropy_api_credential","Entropy API 凭据格式校验失败")?;
     let signer_address = wallet.address();
-    let agents: Value = hyperliquid::info_client()?
-        .post(hyperliquid::effective_info_url("mainnet")?)
-        .json(&json!({"type":"extraAgents","user":config.entropy_address}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let authorized = format!("{signer_address:#x}").eq_ignore_ascii_case(&config.entropy_address)
-        || agents.as_array().is_some_and(|a| {
-            a.iter().any(|x| {
-                x["address"]
-                    .as_str()
-                    .is_some_and(|s| s.eq_ignore_ascii_case(&format!("{signer_address:#x}")))
+    bootstrap_checked(async {
+        let agents: Value = hyperliquid::info_client()?
+            .post(hyperliquid::effective_info_url("mainnet")?)
+            .json(&json!({"type":"extraAgents","user":config.entropy_address}))
+            .send().await?.error_for_status()?.json().await?;
+        let authorized = format!("{signer_address:#x}").eq_ignore_ascii_case(&config.entropy_address)
+            || agents.as_array().is_some_and(|a| a.iter().any(|x| {
+                x["address"].as_str().is_some_and(|s| s.eq_ignore_ascii_case(&format!("{signer_address:#x}")))
                     && integer(&x["validUntil"]).is_some_and(|t| t as u64 > crate::domain::now_ms())
-            })
-        });
-    ensure!(
-        authorized,
-        "Entropy API signer is not registered to expected master account"
-    );
-    let exchange = ExchangeClient::new_offline_signing_with_asset_map(
-        wallet,
-        Some(hyperliquid::sdk_base_url("mainnet")?),
-        meta.sdk_meta(),
-        meta.coin_to_asset.clone(),
-        None,
-    )?;
+            }));
+        ensure!(authorized,"Entropy API signer is not registered to expected master account");
+        Ok(())
+    }.await,"entropy_api_authorization","Entropy API 授权核验失败，请检查授权账户及有效期")?;
+    let exchange = bootstrap_checked(ExchangeClient::new_offline_signing_with_asset_map(
+        wallet, Some(hyperliquid::sdk_base_url("mainnet")?), meta.sdk_meta(), meta.coin_to_asset.clone(), None
+    ).map_err(anyhow::Error::from),"entropy_exchange_client","Entropy 交易客户端初始化失败")?;
     let lfeed = super::feed::AccountFeed::start_for(
         Venue::Lighter,
         client.endpoints().ws_url.clone(),

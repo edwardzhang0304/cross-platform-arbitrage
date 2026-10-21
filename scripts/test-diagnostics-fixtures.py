@@ -30,6 +30,9 @@ if len(sys.argv)>2 and sys.argv[2]=='--serve':
                 books=[dict(connected=True,received_ms=stamp,bids=[dict(price='2100',units=100)],asks=[dict(price='2100.1',units=200)]) for _ in range(2)]
                 risk=dict(estimated_total_pnl='-12.5',depth_complete=False,unseen_exit_units=[300,400],unexpected_secret='synthetic-credential-NOT-FOR-EXPORT')
                 value=dict(ok=True,data=dict(profile=profile,csrf='synthetic-credential-NOT-FOR-EXPORT',view=dict(snapshot=state,accounts=accounts,books=books,risk_valuation=risk,market_transport=transport,profit_accounting=dict(funding_complete=False)),notifications=dict(saved=True,unlocked=True,delivery=dict(enabled=True,pending=0,error=None))))
+                if profile['id']=='anth':
+                    value['data']['view']=None
+                    value['data']['startup_failure']=dict(at_ms=stamp,operation='launch',issue=dict(stage='entropy_contract',code='margin_mode_unsupported',message='Entropy margin mode unsupported https://private.invalid/?key=synthetic-credential-NOT-FOR-EXPORT',unexpected_secret='synthetic-credential-NOT-FOR-EXPORT'),unexpected_secret='synthetic-credential-NOT-FOR-EXPORT')
             data=json.dumps(value).encode()
             self.send_response(200)
             self.send_header('Content-Type','application/json')

@@ -18,6 +18,8 @@ pub mod emergency_exit;
 mod emergency_exit_tests;
 #[cfg(feature="openai-inventory-live")]
 pub mod live;
+#[cfg(feature="openai-inventory-live")]
+pub mod bootstrap_diagnostics;
 pub mod live_orphan;
 pub mod model;
 pub mod rules_upgrade;

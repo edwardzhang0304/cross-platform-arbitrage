@@ -25,7 +25,11 @@ impl MarketPair {
     pub fn lighter_symbol(self) -> &'static str { match self { Self::Openai => "OPENAI", Self::Anth => "ANTHROPIC" } }
     pub fn lighter_market_id(self) -> i32 { match self { Self::Openai => 42, Self::Anth => 38 } }
     pub fn entropy_symbol(self) -> &'static str { match self { Self::Openai => "io:OAI", Self::Anth => "io:ANTH" } }
-    pub fn entropy_margin_mode(self) -> &'static str { match self { Self::Openai => "noCross", Self::Anth => "strictIsolated" } }
+    /// Both venue modes allow isolated margin only. strictIsolated additionally
+    /// forbids removing margin; the strategy never removes isolated margin.
+    pub fn supports_entropy_margin_mode(self, mode: Option<&str>) -> bool {
+        matches!(mode, Some("noCross" | "strictIsolated"))
+    }
     pub fn quantity_decimals(self) -> u32 { match self { Self::Openai => 4, Self::Anth => 5 } }
     pub fn common_step(self) -> i64 { 10_i64.pow(self.quantity_decimals() - 3) }
     pub fn venue_step(self, v: Venue) -> i64 { if v == Venue::Entropy { self.common_step() } else { 1 } }

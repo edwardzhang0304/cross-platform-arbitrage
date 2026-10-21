@@ -53,6 +53,14 @@ pub async fn diagnostics()->serde_json::Value {
         "received_ms":feed.books.read().unwrap().each_ref().map(|b|b.received_ms)
     }))).collect::<Vec<_>>())
 }
+fn validate_entropy_feed_contract(pair:MarketPair,asset:&crate::hyperliquid::DexAssetMeta)->Result<()> {
+    ensure!(asset.name == pair.entropy_symbol() && asset.sz_decimals == 3
+        && pair.supports_entropy_margin_mode(asset.margin_mode.as_deref())
+        && asset.only_isolated != Some(false)
+        && asset.max_leverage.is_some_and(|v| v >= 3),
+        "Entropy instrument precision/margin/leverage metadata drift");
+    Ok(())
+}
 async fn connect(pair:MarketPair,prior_transport:[crate::crossvenue_a::MarketStreamHealth;2])->Result<PublicMarketFeed> {
         let client = LighterClient::official(LighterEnvironment::Robinhood)?;
         let market = client.market_by_symbol(pair.lighter_symbol()).await?;
@@ -68,12 +76,7 @@ async fn connect(pair:MarketPair,prior_transport:[crate::crossvenue_a::MarketStr
             .iter()
             .find(|x| x.name == pair.entropy_symbol())
             .context("Entropy instrument missing")?;
-        ensure!(
-            asset.sz_decimals == 3
-                && asset.margin_mode.as_deref() == Some(pair.entropy_margin_mode())
-                && asset.max_leverage.is_some_and(|v| v >= 3),
-            "Entropy instrument precision/margin metadata drift"
-        );
+        validate_entropy_feed_contract(pair,asset)?;
         let books = Arc::new(RwLock::new([Book::default(), Book::default()]));
         let marks=Arc::new(RwLock::new([liquidation::Mark::default(),liquidation::Mark::default()]));
         let receivers = [
@@ -175,6 +178,21 @@ async fn connect(pair:MarketPair,prior_transport:[crate::crossvenue_a::MarketStr
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn public_feed_accepts_both_isolated_modes_but_keeps_precision_and_leverage_gates() {
+        for market in [MarketPair::Openai,MarketPair::Anth] {
+            for mode in ["noCross","strictIsolated"] {
+                let mut asset:crate::hyperliquid::DexAssetMeta=serde_json::from_value(serde_json::json!({
+                    "name":market.entropy_symbol(),"szDecimals":3,"maxLeverage":6,"marginMode":mode,"onlyIsolated":true})).unwrap();
+                validate_entropy_feed_contract(market,&asset).unwrap();
+                asset.max_leverage=Some(2);assert!(validate_entropy_feed_contract(market,&asset).is_err());
+                asset.max_leverage=Some(6);asset.sz_decimals=4;assert!(validate_entropy_feed_contract(market,&asset).is_err());
+                asset.sz_decimals=3;asset.margin_mode=Some("normal".into());assert!(validate_entropy_feed_contract(market,&asset).is_err());
+                asset.margin_mode=None;assert!(validate_entropy_feed_contract(market,&asset).is_err());
+                asset.margin_mode=Some(mode.into());asset.only_isolated=Some(false);assert!(validate_entropy_feed_contract(market,&asset).is_err());
+            }
+        }
+    }
     fn fake(pair:MarketPair)->PublicMarketFeed {PublicMarketFeed{market:pair,
         books:Arc::new(RwLock::new(Default::default())),marks:Arc::new(RwLock::new(Default::default())),transport:Arc::new(RwLock::new(Default::default())),
         maintenance_rates:[Decimal::ZERO;2],max_leverage:3,tasks:vec![]}}

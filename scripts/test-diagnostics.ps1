@@ -62,6 +62,13 @@ try {
     $Extra=$OnlineReport.observations | Where-Object { $_.profile_id -eq $ExtraId }
     if ($Extra.market -ne 'openai' -or $Extra.snapshot.closed_groups -ne 99) { throw 'Same-market account observation mixed up' }
     foreach ($Observation in $OnlineReport.observations) {
+      if ($Observation.profile_id -eq 'anth') {
+        if (!$Observation.available -or $Observation.loaded -or $Observation.flags -notcontains 'ACCOUNT_NOT_LOADED') { throw 'Unloaded account state was lost' }
+        if ($Observation.startup_failure.operation -ne 'launch' -or $Observation.startup_failure.issue.stage -ne 'entropy_contract' -or $Observation.startup_failure.issue.code -ne 'margin_mode_unsupported') { throw 'Unloaded startup cause was lost' }
+        if ($Observation.startup_failure.issue.message -notmatch 'margin mode unsupported') { throw 'Safe startup explanation missing' }
+        if (!$OnlineReport.ledgers.anth.available -or $OnlineReport.ledgers.anth.snapshot.pending.first_filled -ne 700) { throw 'Unloaded account historical ledger evidence lost' }
+        continue
+      }
       if ($Observation.risk_valuation.estimated_total_pnl -ne '-12.5' -or $Observation.risk_valuation.depth_complete -or $Observation.risk_valuation.unseen_exit_units[1] -ne 400 -or $Observation.flags -notcontains 'RISK_VALUATION_THIN_DEPTH') { throw 'Thin-depth risk valuation diagnostics missing' }
       if ($Observation.books[0].bid_levels -ne 1 -or $Observation.books[0].bid_units -ne 100 -or $Observation.books[1].ask_units -ne 200) { throw 'Visible depth totals missing' }
       if ($Observation.market_transport[1].source -ne 'rest' -or $Observation.market_transport[1].rest_books -ne 60 -or $Observation.market_transport[1].last_error -notmatch 'connect/TLS failed') { throw 'Online transport diagnosis missing' }

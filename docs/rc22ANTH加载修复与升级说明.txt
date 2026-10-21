@@ -1,0 +1,47 @@
+﻿rc.22：ANTH 合约模式兼容与加载错误诊断（Windows x64）
+
+根因与修复
+
+2026-10-21 核对平台公开接口：Entropy 的 io:ANTH 返回 marginMode=noCross；rc.21 仍要求 strictIsolated，因此在加载交易适配器时被拒绝。OPENAI 本来就要求 noCross，所以两个 OPENAI 账户能正常加载。原账本和旧订单记录仍在，不需要重建账户。
+
+Hyperliquid 官方文档说明：noCross 与 strictIsolated 都仅允许逐仓；strictIsolated 额外禁止提取持仓保证金。程序不会提取持仓保证金。账户加载和公共行情连接两处均修复，新版仅接受这两种已知逐仓模式；跨仓、缺失或未知模式仍拒绝。合约名称、数量精度、账户绑定、API 授权、实际逐仓 3 倍、资金和配平保护继续校验。
+来源：https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals
+
+加载失败会说明具体阶段，例如合约模式、API 授权、公钥、签名锁或账户查询，并把脱敏后的阶段和时间放入一键诊断包；即使账户没有加载也能取到。错误原因只保留经过限定的公共字段，不输出原始响应、地址、私钥、Token 或签名内容。最近失败信息在当前进程内保存；成功检查/加载后清除，重启会清空。
+
+包含 rc.21 的部分成交旧单核对、查询退避及清仓显示修复。交易参数、开仓/加仓/平仓规则不变。只交付 Windows 包。
+
+本次升级（当前运行的是 rc.21 目录）
+
+1. 三个账户保持停止。已加载的 OPENAI 两账户应账本与平台持仓一致且无 pending；ANTH 本次仍未加载，原账本待恢复。若已出现新的交易或其他异常，先生成诊断核对。
+2. 在账户配置页点击“退出所有账户”。本次 ANTH 未加载，不需要为了退出而强行加载它。确认退出成功后，在 PowerShell 查询：
+   Get-Process -Name 'Cross-Platform-Arbitrage' -ErrorAction SilentlyContinue
+   没有输出表示后台已退出。若提示不能退出或仍有进程，先保留当前数据，发回提示。
+3. 完整备份当前 rc.21 程序目录，包含整个 data 和其中所有账户、账本、SQLite/WAL、密钥库及通知文件。不要用之前 rc.20 的旧备份覆盖当前 data。
+4. 将 rc.22 ZIP 解压到独立临时文件夹，不要在那里启动 EXE。把其中 Cross-Platform-Arbitrage-Windows-x64 文件夹内的全部公开程序文件复制到当前 rc.21 程序目录，替换同名文件。原 data 原地保留；新版包不含 data。目录名字仍是 rc21 不影响实际版本。
+5. 从原 rc.21 目录双击替换后的 EXE，只启动后台，不启动策略。下面命令明确按 UTF-8 读取，避免 Windows PowerShell 5.1 把中文路径读成乱码：
+
+& {
+  $ErrorActionPreference='Stop'
+  $p=@(Get-Process -Name 'Cross-Platform-Arbitrage' -ErrorAction Stop)
+  if ($p.Count -ne 1) { throw '后台数量不正确，请先核对' }
+  $folder=Split-Path $p[0].Path
+  $expected=Get-Content (Join-Path $folder 'build-info.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $client=New-Object Net.WebClient
+  $client.Proxy=$null
+  try {
+    $bytes=$client.DownloadData('http://127.0.0.1:18794/health')
+    $h=[Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+  } finally { $client.Dispose() }
+  if ($h.version -ne '0.2.0-rc.22' -or $h.build.runtime -ne 'live' -or $h.build.dirty -or $h.build.source_commit -ne $expected.source_commit -or $h.build.strategy_core_sha256 -ne $expected.strategy_core_sha256) { throw '版本核对失败，先不要启动策略' }
+  $active=[string]$h.data_dir
+  if ($active.StartsWith('\\?\')) { $active=$active.Substring(4) }
+  if ($active.TrimEnd('\') -ine (Join-Path $folder 'data').TrimEnd('\')) { throw '进程与数据目录不一致' }
+  [ordered]@{version=$h.version;commit=$h.build.source_commit;data_dir=$h.data_dir} | ConvertTo-Json
+}
+
+6. 解锁三个原有账户并点击“加载账户和原账本”，先不启动策略。ANTH 会继续原有紧急平仓请求的核对；真实存在剩余持仓时，旧退出流程仍可能继续减仓。正常情况下，本次已清零仓位的旧订单将核对完毕并转为已停止。
+7. 在当前程序目录运行 Run-Diagnostics.cmd，发送新 ZIP 验收。确认 ANTH 平台和账本两边都为0、pending为空、紧急退出已完成；两个 OPENAI 保持原有配对持仓、无挂单和 pending，再启动策略。若仍加载失败，页面和新诊断包会显示具体阶段，保留当前数据处理。
+8. 同时核对飞书：本次升级前诊断显示 ANTH 的飞书配置已缺失，两个 OPENAI 已启用。升级完成后单独恢复 ANTH 的通知配置并测试。
+
+不重复创建账户，不清空 pending，不手工改账本为零。新版开始核对后，不用升级前备份覆盖当前 data。网络或平台故障仍可能触发保护，本次修复不承诺所有外部异常不会再发生。

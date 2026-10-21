@@ -127,3 +127,16 @@ test('account management renders same-market accounts separately and retries cre
   assert.equal(posts[0].capital_multiplier,10);assert.equal(posts[0].confirmation,'CREATE_ACCOUNT_PROFILE');assert.equal(location.href,'/accounts/second');
   assert.equal(elements.get('add').disabled,false);assert.ok(posts.every(p=>!p.command),'creating a slot never loads or starts trading');
 });
+
+
+test('an unloaded account retains its safe bootstrap cause across refresh without starting trading',async()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../frontend/portable.html'),'utf8');
+  const elements=new Map();const element=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id)};
+  let failure={at_ms:100,operation:'launch',issue:{stage:'entropy_contract',code:'margin_mode_unsupported',message:'Entropy ANTH 保证金模式不受支持'}};
+  const ctx=vm.createContext({document:{getElementById:element,querySelectorAll:()=>[]},setInterval(){},
+    fetch:async(url,opts)=>{assert.ok(!opts?.method,'status refresh never posts a trading control');return {json:async()=>({ok:true,data:{view:null,startup_failure:failure}})}}});
+  vm.runInContext(html.match(/<script>\s*([\s\S]*?)<\/script>/)[1],ctx);
+  await ctx.refresh();assert.match(element('summary').textContent,/未加载/);
+  assert.match(element('control-status').textContent,/entropy_contract.*margin_mode_unsupported/);
+  failure=null;await ctx.refresh();assert.equal(element('control-status').textContent,'');
+});

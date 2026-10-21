@@ -9,11 +9,29 @@ use crate::{config::AppConfig, openai_inventory::{self as inventory, *}, portabl
 
 #[derive(Clone)]
 pub struct App { inner: Arc<Mutex<Session>>, token: Arc<String>, lease: Arc<AtomicBool>, root: Arc<PathBuf>, port: u16, paths:ProfilePaths, catalog:Arc<Mutex<()>>, notification_serial:Arc<Mutex<()>>, sessions:Arc<std::sync::RwLock<Vec<ProfileSession>>> }
-struct Session { settings: Option<Settings>, password: Option<Zeroizing<String>>, service: Option<InventoryService>, notification:Option<crate::notifications::FeishuSettings> }
+struct Session { settings: Option<Settings>, password: Option<Zeroizing<String>>, service: Option<InventoryService>, notification:Option<crate::notifications::FeishuSettings>, startup_failure:Option<StartupFailure> }
+#[derive(Clone, serde::Serialize)]
+struct StartupFailure {
+    at_ms:u64,
+    operation:&'static str,
+    issue:inventory::bootstrap_diagnostics::BootstrapIssue,
+}
+fn record_bootstrap_result<T>(s:&mut Session,operation:&'static str,result:Result<T>)->Result<T> {
+    match result {
+        Ok(value)=>{s.startup_failure=None;Ok(value)},
+        Err(error)=>{
+            let issue=error.downcast_ref::<inventory::bootstrap_diagnostics::BootstrapIssue>().cloned()
+                .unwrap_or_else(||inventory::bootstrap_diagnostics::BootstrapIssue {
+                    stage:"bootstrap",code:"validation_or_unavailable",message:"账户初始化校验失败".into()});
+            s.startup_failure=Some(StartupFailure{at_ms:crate::domain::now_ms(),operation,issue:issue.clone()});
+            Err(error.context(issue))
+        }
+    }
+}
 #[derive(Clone)]
 struct ProfileSession { paths:ProfilePaths, inner:Arc<Mutex<Session>>, token:Arc<String>, lease:Arc<AtomicBool>, notification_serial:Arc<Mutex<()>> }
 impl ProfileSession {
-    fn new(paths:ProfilePaths,settings:Option<Settings>)->Self {Self {paths,inner:Arc::new(Mutex::new(Session{settings,password:None,service:None,notification:None})),
+    fn new(paths:ProfilePaths,settings:Option<Settings>)->Self {Self {paths,inner:Arc::new(Mutex::new(Session{settings,password:None,service:None,notification:None,startup_failure:None})),
         token:Arc::new(uuid::Uuid::new_v4().to_string()),lease:Arc::new(AtomicBool::new(false)),notification_serial:Arc::new(Mutex::new(()))}}
 }
 #[derive(Clone)]
@@ -140,7 +158,7 @@ async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
         "build":crate::build_info::current(),"rules_fingerprint":rules,
         "live_build":cfg!(feature="openai-inventory-live"),"process_dry_run":false,"kill_switch":false,
         "vault_unlocked":s.password.is_some(),"configured":s.settings.is_some(),
-        "vault_exists":app.paths.vault.exists(),
+        "vault_exists":app.paths.vault.exists(),"startup_failure":s.startup_failure,
         "notifications":{"saved":notification_path(&app).exists(),"unlocked":s.notification.is_some(),"config":s.notification.as_ref().map(|c|c.public()),"execution_grace_ms":inventory::alerts::EXECUTION_GRACE_MS,"delivery":s.service.as_ref().map(|v|v.notifications.status())},
         "residual_recovery_version":inventory::execution::RESIDUAL_RECOVERY_VERSION,
         "recovery_policy":inventory::execution::recovery_policy(),
@@ -173,7 +191,8 @@ async fn action(State(app): State<App>, h: HeaderMap, Json(request): Json<Reques
         Ok(value) => Json(json!({"ok":true,"data":value})),
         // Do not include chained HTTP errors, response bodies or user-entered secrets.
         Err(error) => {
-            let text = error.to_string();
+            let text = error.downcast_ref::<inventory::bootstrap_diagnostics::BootstrapIssue>()
+                .map(ToString::to_string).unwrap_or_else(||error.to_string());
             let safe = if [request.password.as_str(),request.entropy_key.as_str(),request.lighter_key.as_str(),request.feishu_app_secret.as_str()]
                 .iter().any(|secret| !secret.is_empty() && text.contains(secret)) { "操作失败，请检查填写内容".to_string() } else { text };
             Json(json!({"ok":false,"error":safe}))
@@ -269,19 +288,22 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
             let l=secrets::load_lighter_secret_by_id(app.paths.vault.as_path(),password,&entry.secret_id,Some(&cfg.strategy.lighter_account)).context("Lighter 凭据与配置不一致")?;
             let e=secrets::load_account_secret(&cfg.accounts,account,Some(password)).context("Entropy 凭据与配置不一致")?;
             if r.command=="preflight" {
-                let evidence=inventory::live::read_only_preflight(&bound_strategy,l,e).await.context("账户检查未通过，请核对网络、API 授权、账户及逐仓 3 倍设置")?;
+                let result=inventory::live::read_only_preflight(&bound_strategy,l,e).await;
+                let evidence=record_bootstrap_result(&mut s,"preflight",result)?;
                 return Ok(json!({"accounts":evidence}));
             }
             ensure!(r.confirmation=="LOAD_EXCLUSIVE_ACCOUNTS", "请先确认原电脑的交易程序已关闭");
             app.paths.upgrade_rules(&mut cfg)?;
             let bound_strategy=app.paths.bound_strategy(&cfg.strategy)?;
             s.settings=Some(cfg.clone());
-            let workers=inventory::live::bootstrap(&bound_strategy,l,e,false).await.context("账户加载失败，请先运行只读检查")?;
+            let result=inventory::live::bootstrap(&bound_strategy,l,e,false).await;
+            let workers=record_bootstrap_result(&mut s,"launch",result)?;
             app.lease.store(true,Ordering::SeqCst);
             let lease=app.lease.clone();let check: Arc<dyn Fn()->bool+Send+Sync>=Arc::new(move||lease.load(Ordering::SeqCst));
             let workers=workers.map(|inner|Box::new(inventory::venue::GuardedBackend{inner,lease:check.clone()}) as Box<dyn inventory::venue::VenueBackend>);
             let result=InventoryService::launch(cfg.strategy,app.paths.database.as_path(),false,Some(workers)).await;
-            match result {Ok(service)=>{service.notifications.set_account_profile(app.paths.profile.clone());service.notifications.configure(s.notification.clone());s.service=Some(service)},Err(error)=>{app.lease.store(false,Ordering::SeqCst);return Err(error.context("账本加载失败，请检查迁移文件是否完整"));}}
+            let result=inventory::bootstrap_diagnostics::checked(result,"ledger_and_public_feed","账本或公共行情初始化失败，请查看诊断包");
+            match record_bootstrap_result(&mut s,"launch",result) {Ok(service)=>{service.notifications.set_account_profile(app.paths.profile.clone());service.notifications.configure(s.notification.clone());s.service=Some(service)},Err(error)=>{app.lease.store(false,Ordering::SeqCst);return Err(error);}}
         }
         "start" => {
             ensure!(r.confirmation==app.paths.profile.start_confirmation(),"请明确确认启动实盘策略");
@@ -363,7 +385,7 @@ mod tests {
     }
     #[tokio::test]
     async fn control_without_session_token_cannot_create_files_or_launch() {
-        let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None})),token:Arc::new("secret-test-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),MarketPair::Openai),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(vec![]))};
+        let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None,startup_failure:None})),token:Arc::new("secret-test-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),MarketPair::Openai),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(vec![]))};
         let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
         let mut r=Request::default();r.command="launch".into();r.id="test".into();
         assert!(handle(&app,&h,&r).await.is_err());assert!(!app.lease.load(Ordering::SeqCst));
@@ -386,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn manual_recovery_requires_profile_confirmation_token_and_loaded_service() {
         for market in [MarketPair::Openai,MarketPair::Anth] {
-            let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None})),token:Arc::new("synthetic-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),market),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(vec![]))};
+            let app=App{inner:Arc::new(Mutex::new(Session{settings:None,password:None,service:None,notification:None,startup_failure:None})),token:Arc::new("synthetic-token".into()),lease:Arc::new(AtomicBool::new(false)),root:Arc::new(PathBuf::new()),port:18794,paths:ProfilePaths::new(std::path::Path::new(""),market),catalog:Arc::new(Mutex::new(())),notification_serial:Arc::new(Mutex::new(())),sessions:Arc::new(std::sync::RwLock::new(vec![]))};
             let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());
             let mut r=Request::default();r.command="confirm_rollback_recovery".into();r.id="manual-ack".into();
             assert!(handle(&app,&h,&r).await.unwrap_err().to_string().contains("刷新页面"));
@@ -414,6 +436,31 @@ mod account_host_tests {
     }
     fn headers(token:&str)->HeaderMap {let mut h=HeaderMap::new();h.insert("host","127.0.0.1:18794".parse().unwrap());h.insert("x-inventory-token",token.parse().unwrap());h}
     fn request(id:&str,label:&str)->AddAccount {AddAccount{id:id.into(),label:label.into(),market:MarketPair::Openai,confirmation:"CREATE_ACCOUNT_PROFILE".into(),capital_multiplier:1}}
+    #[tokio::test]
+    async fn unloaded_bootstrap_failure_is_public_scoped_and_cleared_only_on_success() {
+        let host=host();let anth=host.app("anth").unwrap();let openai=host.app("openai").unwrap();
+        let error=inventory::bootstrap_diagnostics::checked::<()>(
+            Err(anyhow::anyhow!("secret-DO-NOT-EXPORT https://private.invalid/token")),
+            "entropy_contract","Entropy 保证金模式核验失败").unwrap_err();
+        {
+            let mut s=anth.inner.lock().await;
+            assert!(record_bootstrap_result::<()>(&mut s,"launch",Err(error)).is_err());
+            assert!(s.service.is_none());
+        }
+        let public=status(State(anth.clone()),headers(anth.token.as_str())).await.0;
+        assert!(public["data"]["view"].is_null());
+        let failure=&public["data"]["startup_failure"];
+        assert_eq!(failure["operation"],"launch");assert_eq!(failure["issue"]["stage"],"entropy_contract");
+        assert!(failure["at_ms"].as_u64().unwrap()>0);
+        assert!(!public.to_string().contains("DO-NOT-EXPORT"));assert!(!public.to_string().contains("private.invalid"));
+        assert!(status(State(openai.clone()),headers(openai.token.as_str())).await.0["data"]["startup_failure"].is_null());
+        {
+            let mut s=anth.inner.lock().await;
+            record_bootstrap_result(&mut s,"preflight",Ok(())).unwrap();
+        }
+        assert!(status(State(anth.clone()),headers(anth.token.as_str())).await.0["data"]["startup_failure"].is_null());
+        assert!(!host.root.exists());
+    }
     #[tokio::test]
     async fn create_is_authenticated_atomic_idempotent_and_survives_host_restart() {
         let host=host();let id=uuid::Uuid::new_v4().to_string();
