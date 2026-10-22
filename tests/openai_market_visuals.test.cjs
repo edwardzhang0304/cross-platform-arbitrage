@@ -37,6 +37,30 @@ function fixture({width=1300,height=186,zoom=1,left=40,top=20}={}) {
 }
 const near=(actual,expected)=>assert.ok(Math.abs(Number(actual)-expected)<1e-8,`${actual} != ${expected}`);
 
+test('chart retains eight hours at one-second resolution without overflowing JS argument limits',()=>{
+  const f=fixture(),end=1700100000000,windowMs=8*60*60*1000;
+  f.payload.chart_points=Array.from({length:28803},(_,i)=>({
+    time_ms:end-(28802-i)*1000,lighter_bid:107,lighter_ask:108,entropy_bid:99,entropy_ask:100
+  }));
+  const model=chartModel(f.payload.chart_points);
+  assert.equal(model.rows.length,28801);
+  assert.equal(model.start,end-windowMs);
+  assert.equal(model.end,end);
+  assert.equal(model.rows[0].time_ms,end-windowMs);
+  assert.doesNotThrow(()=>f.render());
+  f.move(519);
+  assert.match(f.hover.textContent,/Bid−Ask 7\.0000 · Ask−Bid 9\.0000$/);
+});
+
+test('sparse history uses elapsed time for the eight-hour cutoff and never fills missing history',()=>{
+  const end=1700100000000,hour=3600000;
+  const points=[9,8,6,1,0].map(h=>({time_ms:end-h*hour,lighter_bid:107,lighter_ask:108,entropy_bid:99,entropy_ask:100}));
+  const full=chartModel(points);
+  assert.equal(full.start,end-8*hour);assert.equal(full.rows.length,4);
+  const partial=chartModel(points.slice(-2));
+  assert.equal(partial.start,end-hour);assert.equal(partial.rows.length,2);
+});
+
 test('stale Entropy remains visible while fresh Lighter is labeled independently',()=>{
   const now=1700000000000;
   const payload={available:true,symbols:['ANTHROPIC','io:ANTH'],status:{running:true,observed_ms:now,

@@ -12,6 +12,7 @@ function fixture(profile){
   const context=vm.createContext({document:{getElementById:element},
     window:{InventoryProfile:profile,OpenaiMarketVisuals:{renderCharts(){},displayDirection(){return 'shortL'},renderQuoteCards(){},quoteRows(){return []}}},
     fetch:()=>new Promise(()=>{}),setInterval(){}});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../frontend/glass-ui.js'),'utf8'),context);
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../frontend/inventory-components.js'),'utf8'),context);
   vm.runInContext(code,context);
   const payload={ok:true,live_build:true,process_dry_run:false,view:{

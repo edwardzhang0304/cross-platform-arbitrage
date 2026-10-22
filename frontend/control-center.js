@@ -1,0 +1,39 @@
+/* Shared presentation only: no order submission, strategy decisions or credentials. */
+(function(root){
+  'use strict';
+  const common=typeof module!=='undefined'&&module.exports?require('./glass-ui.js'):root.GlassUI;
+  const {number,amount,escape,entryAvailable,state,paired}=common;
+  const api={entryAvailable,state,paired};
+  if(typeof module!=='undefined'&&module.exports)module.exports=api;
+  if(!root.document)return;
+  const $=id=>document.getElementById(id);let data=null,profile=null,profiles=[],navigation=null,disconnected=false;
+  function text(id,value){const el=$(id);if(el)el.textContent=value;}
+  function visible(id,show){const el=$(id);if(el)el.hidden=!show;}
+  function icon(name){return `<i class="ph ph-${name}" aria-hidden="true"></i>`;}
+  function renderVenues(accounts,market,now,config){const scale=market==='anth'?100000:10000,decimals=market==='anth'?5:4;const max=config?.account_max_age_ms??3000;$('venue-accounts').innerHTML=['lighter','entropy'].map(venue=>{const a=accounts.find(a=>a.venue===venue);const fresh=a?.authenticated&&now-number(a.observed_ms)<=max&&number(a.observed_ms)<=now+1000;const available=entryAvailable(a);const qty=Number.isFinite(number(a?.position_units))?(number(a.position_units)/scale).toFixed(decimals):'—';return `<div class="venue"><div class="venue-header"><span class="venue-logo">${icon(venue==='lighter'?'lightning':'intersect-three')}</span><span><strong>${venue==='lighter'?'Lighter RH':'Entropy'}</strong><small>${a?(fresh?'已认证 · 数据有效':'数据待核对'):'尚未加载账户'}</small></span><span class="badge">${a?`${a.isolated?'逐仓':'非逐仓'} ${escape(a.leverage??'—')}×`:'待核对'}</span></div><dl><div><dt>账户权益</dt><dd>${escape(amount(a?.equity))}</dd></div><div><dt title="新开一组前还需满足保证金和安全余额要求">可用于加仓</dt><dd>${escape(available.text)}</dd></div><div><dt>当前持仓</dt><dd class="position">${escape(qty)}</dd></div></dl><p class="margin-detail">${escape(available.detail)}</p></div>`;}).join('');}
+  function feed(venue,d){const view=d.view,s=view?.snapshot;const b=view?.books?.find(b=>b.venue===venue)||view?.books?.[venue==='lighter'?0:1];const now=Date.now();const fresh=b?.connected&&Number.isFinite(number(b.received_ms))&&now-number(b.received_ms)<=(s?.config?.book_max_age_ms??1500)&&b.received_ms<=now+1000;const el=$(venue+'-feed');el.innerHTML=`<span class="status-dot ${fresh?'good':'warn'}"></span>${venue==='lighter'?'Lighter RH':'Entropy'} · ${!s?'未加载':fresh?'行情已连接':'行情待更新'}`;}
+  api.render=function(d,p,list){data=d;profile=p||d.profile||{label:'当前账户',market:'openai'};profiles=list;disconnected=false;document.body.classList.remove('stale');visible('connection-alert',false);const s=d.view?.snapshot,c=s?.config||d.strategy,st=state(s),now=Date.now();
+    text('account-title',profile.label);text('strategy-badge',st.text);$('strategy-badge').className='badge '+st.tone;
+    const descriptions={running:'策略正在运行，按设定条件开仓、加仓与平仓。',stopped:'策略已停止；已有持仓仍保留。',warming:'正在积累行情数据，满足预热条件后继续。',paused_entries:'仅执行正常平仓和止损，开仓与加仓已暂停。',needs_attention:'当前需要处理，请先查看核对结果。',recovering:'正在核对订单与持仓，暂不新增交易。',closing:'正在执行平仓，请关注剩余数量。'};
+    text('status-description',!s?(d.vault_unlocked?'密钥库已解锁，检查账户后加载原账本。':'请先解锁密钥库，再检查并加载账户。'):descriptions[s.status]||'请查看当前策略状态与订单核对结果。');
+    text('ledger-summary',s?`已平 ${s.closed_groups??0} 组 · 连续回滚 ${s.consecutive_rollbacks??0} 次`:'');text('held-count',s?.lots?.length??'—');text('max-count',c?.max_groups??'—');$('holding-progress').max=c?.max_groups||20;$('holding-progress').value=s?.lots?.length||0;
+    const margin=c&&number(c.leverage)>0?number(c.group_notional)/number(c.leverage):NaN;const compact=n=>Number.isFinite(n)?n.toLocaleString('zh-CN',{maximumFractionDigits:2}):'—';
+    text('group-margin',compact(margin)+' U');text('parameter-margin',compact(margin)+' U');text('leverage-value',c?c.leverage+'×':'—');text('parameter-groups',c?c.max_groups+' 组':'—');text('parameter-interval',c?.accumulation?compact(number(c.accumulation.interval_ms)/60000)+' 分钟':'未启用');text('parameter-loss',c?compact(number(c.max_loss_usdc))+' U':'—');
+    visible('bootstrap-controls',!s);const guarded=!!s?.entry_margin_block||s?.consecutive_rollbacks>=3;visible('start-control',!!s&&!guarded&&['stopped','paused_entries','paused'].includes(s.status));visible('pause-control',!!s&&['running','warming'].includes(s.status));visible('stop-control',!!s&&s.status!=='stopped');visible('protected-exits-control',!!s?.entry_margin_block&&(s.status!=='paused_entries'||s.stop_requested));
+    text('credentials-brief',`${s?'账户已加载':'账户未加载'} · ${d.vault_unlocked?'已解锁':'未解锁'}`);
+    const n=d.notifications,delivery=n?.delivery;const enabled=!!delivery?.enabled;$('notification-switch').setAttribute('aria-checked',String(enabled));text('notification-brief',delivery?.error?'通知发送异常，请查看详情':enabled?`已启用 · ${profile.label}`:!n?.saved?'尚未配置':!n.unlocked?'已保存 · 等待解锁':'已停用或等待账户加载');
+    renderVenues(d.view?.accounts||[],profile.market,now,c);const pair=paired(d.view,now);text('pair-status',pair.text);$('pair-status').className='pair-status'+(pair.ok?'':' warn');feed('lighter',d);feed('entropy',d);text('last-updated','状态更新 '+new Date(now).toLocaleTimeString('zh-CN',{hour12:false}));
+    if(!navigation){navigation=common.createAccountNavigation($('account-tabs'),profile.id);navigation.render((list.length?list:[profile]).map(p=>({profile:p,loaded:p.id===profile.id&&!!s,status:p.id===profile.id?s?.status:null})));}navigation.refresh();
+  };
+  api.disconnected=function(){disconnected=true;document.body.classList.add('stale');visible('connection-alert',true);text('strategy-badge','连接中断');$('strategy-badge').className='badge warn';text('status-description','等待本机程序恢复连接；显示的数据可能已过期。');text('pair-status','连接中断，暂不能确认配平');$('pair-status').className='pair-status warn';for(const v of ['lighter','entropy'])text(v+'-feed',(v==='lighter'?'Lighter RH':'Entropy')+' · 状态未知');};
+  api.openSettings=function(panel){const dialog=$('settings-dialog');for(const el of document.querySelectorAll('[data-settings-panel]'))el.hidden=el.dataset.settingsPanel!==panel;for(const el of document.querySelectorAll('[data-settings-tab]'))el.setAttribute('aria-pressed',String(el.dataset.settingsTab===panel));text('settings-title',(profile?.label||'当前账户')+' · 设置');if(!dialog.open)dialog.showModal();};
+  api.closeSettings=function(){$('settings-dialog').close();};
+  api.toggleNotifications=function(){if(disconnected)return;const enabled=data?.notifications?.delivery?.enabled;if(enabled){root.act('disable_notifications','DISABLE_NOTIFICATIONS','确认关闭当前账户的飞书异常通知？');}else{api.openSettings('notifications');}};
+  api.preflight=function(accounts){const c=data?.view?.snapshot?.config||data?.strategy;renderVenues(accounts,profile?.market,Date.now(),c);};
+  new MutationObserver(()=>text('dialog-notice',$('notice').textContent)).observe($('notice'),{childList:true,characterData:true,subtree:true});
+  let confirmationResolve=null;
+  api.confirm=function(question,command){if(confirmationResolve)return Promise.resolve(false);const dialog=$('confirmation-dialog');text('confirmation-title',({close_all:'确认紧急平仓',start:'确认启动实盘策略',quit:'确认退出所有账户',confirm_rollback_recovery:'确认解除开仓保护',resume_protected_exits:'确认仅恢复平仓和止损',disable_notifications:'确认关闭飞书通知',launch:'确认加载账户'})[command]||'确认操作');text('confirmation-question',question);text('confirmation-accept',command==='close_all'?'确认平掉全部持仓':'确认执行');$('confirmation-accept').className=command==='close_all'||command==='quit'?'danger':'primary';dialog.showModal();$('confirmation-cancel').focus();return new Promise(resolve=>{confirmationResolve=resolve;});};
+  api.resolveConfirmation=function(accepted){const resolve=confirmationResolve;confirmationResolve=null;$('confirmation-dialog').close();if(resolve)resolve(accepted);};
+  $('confirmation-dialog').addEventListener('cancel',event=>{event.preventDefault();api.resolveConfirmation(false);});
+  root.ControlCenter=api;
+})(typeof window==='undefined'?globalThis:window);

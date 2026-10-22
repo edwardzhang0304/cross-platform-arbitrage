@@ -446,13 +446,16 @@ impl InventoryService {
     }
 }
 
+// Display retention only; EntryMean keeps its independent strategy window.
+const CHART_WINDOW_MS: u64 = 8 * 60 * 60 * 1000;
+
 fn append_chart_samples(points: &mut VecDeque<charts::QuotePoint>, samples: &VecDeque<charts::QuotePoint>, now: u64) {
     for sample in samples {
         if sample.time_ms <= now && points.back().is_none_or(|p| p.time_ms < sample.time_ms) {
             points.push_back(sample.clone());
         }
     }
-    let cutoff = now.saturating_sub(4 * 60 * 60 * 1000);
+    let cutoff = now.saturating_sub(CHART_WINDOW_MS);
     while points.front().is_some_and(|first| first.time_ms < cutoff) {
         points.pop_front();
     }
@@ -463,7 +466,7 @@ mod live_chart_tests {
     use super::*;
 
     #[test]
-    fn live_chart_uses_fresh_quotes_once_per_second_and_keeps_four_hours() {
+    fn live_chart_uses_fresh_quotes_once_per_second_and_keeps_eight_hours() {
         let mut points = VecDeque::new();
         let mut sampler = entry_mean::EntryMean::default();
         let books = [(105, 106), (100, 101)].map(|(bid, ask)| Book {
@@ -481,11 +484,12 @@ mod live_chart_tests {
         sampler.observe(&books, 3_000, 1_500, 300_000);
         append_chart_samples(&mut points, &sampler.points, 3_000);
         assert!(points[1].lighter_bid.is_none());
-        let end = 4 * 60 * 60 * 1_000 + 3_000;
+        let end = 8 * 60 * 60 * 1_000 + 3_000;
         sampler.observe(&books, end, 1_500, 300_000);
         append_chart_samples(&mut points, &sampler.points, end);
         assert_eq!(points.len(), 2);
         assert_eq!(points[0].time_ms, 3_000);
+        assert_eq!(sampler.points.len(), 1, "display retention must not extend MA5m samples");
     }
 }
 

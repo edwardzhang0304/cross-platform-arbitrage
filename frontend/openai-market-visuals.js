@@ -1,6 +1,8 @@
 /* Read-only live chart and quotes. No strategy controls or polling. */
 (function () {
   'use strict';
+  const CHART_WINDOW_MS=8*60*60*1000;
+  const CHART_MAX_POINTS=CHART_WINDOW_MS/1000+1;
   const stamp = t => t ? new Date(t).toLocaleString('zh-CN', {hour12:false}) : '—';
   const quotePrice = n => n == null || !Number.isFinite(Number(n)) || Number(n)<=0 ? '—' : Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});
   function chartModel(raw) {
@@ -13,14 +15,16 @@
         entropy:eb!=null&&ea!=null?(eb+ea)/2:null,
         shortL:lb!=null&&ea!=null?lb-ea:null,shortE:eb!=null&&la!=null?eb-la:null,
         closeL:la!=null&&eb!=null?la-eb:null,closeE:ea!=null&&lb!=null?ea-lb:null};
-    }).filter(p=>Number.isFinite(p.time_ms)&&p.time_ms>0).sort((a,b)=>a.time_ms-b.time_ms).slice(-14401);
+    }).filter(p=>Number.isFinite(p.time_ms)&&p.time_ms>0).sort((a,b)=>a.time_ms-b.time_ms).slice(-CHART_MAX_POINTS);
     if(!rows.some(p=>p.lighter!=null||p.entropy!=null))return null;
-    const start=Math.max(rows[0].time_ms,rows.at(-1).time_ms-14400000),end=Math.max(rows.at(-1).time_ms,start+300000);
+    const start=Math.max(rows[0].time_ms,rows.at(-1).time_ms-CHART_WINDOW_MS),end=Math.max(rows.at(-1).time_ms,start+300000);
     rows=rows.filter(p=>p.time_ms>=start);
     const range=(keys,zero)=>{
       const values=rows.flatMap(p=>keys.map(k=>p[k]).filter(v=>v!=null));
       if(!values.length)return {min:-1,max:1};
-      let min=Math.min(...values),max=Math.max(...values);
+      // Eight hours of per-second samples exceed some engines' argument limit.
+      let min=Infinity,max=-Infinity;
+      for(const value of values){min=Math.min(min,value);max=Math.max(max,value);}
       if(zero){min=Math.min(min,0);max=Math.max(max,0);}
       const pad=Math.max((max-min)*.12,.05);return {min:min-pad,max:max+pad};
     };
@@ -70,7 +74,8 @@
     const visibleValues=model.rows.flatMap(p=>[p[selected],p[closing]]).filter(v=>v!=null);
     if(chartRangeSession!==payload?.status?.started_ms){chartRanges.clear();chartRangeSession=payload?.status?.started_ms;}
     if(visibleValues.length){
-      const lo=Math.min(0,...visibleValues),hi=Math.max(0,...visibleValues);
+      let lo=0,hi=0;
+      for(const value of visibleValues){lo=Math.min(lo,value);hi=Math.max(hi,value);}
       const previous=chartRanges.get(selected);
       if(previous&&lo>=previous.min&&hi<=previous.max)model.spread=previous;
       else {const step=2;model.spread={min:Math.floor((Math.min(lo,previous?.min??lo)-.25)/step)*step,max:Math.ceil((Math.max(hi,previous?.max??hi)+.25)/step)*step};chartRanges.set(selected,model.spread);}

@@ -69,7 +69,7 @@ try {
   $CrossProfile = Invoke-RestMethod "$Base/api/anth-portable" -Method Post -ContentType 'application/json' -Headers @{'X-Inventory-Token'=$Status.csrf} -Body '{"command":"start","id":"cross-profile","confirmation":"START_ANTH_LIVE_STRATEGY"}'
   if ($CrossProfile.ok) { throw 'OPENAI token controlled ANTH' }
   $AnthPage=(Invoke-WebRequest "$Base/anth").Content
-  if ($AnthPage -notmatch 'Cross-Platform Arbitrage' -or $AnthPage -notmatch 'ANTH 账号1 实盘配置') { throw 'ANTH product/market title is incorrect' }
+  if ($AnthPage -notmatch 'Cross-Platform Arbitrage' -or $AnthPage -notmatch 'ANTH 账号1 实盘') { throw 'ANTH product/market title is incorrect' }
   if ($AnthPage -notmatch '/api/anth-portable' -or $AnthPage -notmatch 'START_ANTH_LIVE_STRATEGY') { throw 'ANTH control routing is incorrect' }
   if ($AnthPage -notmatch 'CONFIRM_ANTH_ROLLBACK_RECOVERY' -or $AnthPage -match 'CONFIRM_OPENAI_ROLLBACK_RECOVERY') { throw 'Manual recovery targets wrong market' }
   foreach ($Pair in @(@('openai',$Status,'/api/portable'),@('anth',$Anth,'/api/anth-portable'))) {
@@ -104,10 +104,17 @@ try {
   $Monitor = (Invoke-WebRequest "$Base/openai-inventory").Content
   if ($Monitor -notmatch '/assets/openai-market-visuals.js') { throw 'Chart asset missing' }
   if ($Monitor -notmatch '/assets/inventory-components.js') { throw 'Inventory components missing' }
+  if ($Monitor -notmatch '最近 8 小时' -or $Monitor -notmatch '/assets/monitor-shell.js') { throw 'Eight-hour glass monitor missing' }
+  foreach ($Asset in @('glass-ui.js','control-center.js','control-center.css','monitor-shell.js','monitor.css','brand-glass.png','glass-background.webp','phosphor/style.css','phosphor/Phosphor.woff2')) {
+    $AssetResponse=Invoke-WebRequest "$Base/assets/$Asset"
+    if ($AssetResponse.StatusCode -ne 200 -or $AssetResponse.RawContentLength -le 0) { throw "Packaged UI asset unavailable: $Asset" }
+  }
+  $ChartSource=(Invoke-WebRequest "$Base/assets/openai-market-visuals.js").Content
+  if ($ChartSource -notmatch 'CHART_WINDOW_MS=8\*60\*60\*1000') { throw 'Packaged chart window is not eight hours' }
   if ((Invoke-WebRequest "$Base/assets/inventory-components.js").Content -notmatch 'window.InventoryComponents') { throw 'Inventory component asset unavailable' }
   $ControlPage = (Invoke-WebRequest "$Base/").Content
   if ($ControlPage -notmatch '/api/portable') { throw 'Control page missing' }
-  if ($ControlPage -notmatch 'Cross-Platform Arbitrage' -or $ControlPage -notmatch 'OPENAI 账号1 实盘配置') { throw 'OPENAI product/market title is incorrect' }
+  if ($ControlPage -notmatch 'Cross-Platform Arbitrage' -or $ControlPage -notmatch 'OPENAI 账号1 实盘') { throw 'OPENAI product/market title is incorrect' }
   $Rejected = Invoke-RestMethod "$Base/api/portable" -Method Post -ContentType 'application/json' -Body '{"command":"launch","id":"csrf-probe"}'
   if ($Rejected.ok) { throw 'Missing token was accepted' }
   $CrossSite = Invoke-RestMethod "$Base/api/openai-inventory" -Headers @{Origin='https://untrusted.example'}

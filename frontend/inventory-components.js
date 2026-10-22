@@ -1,11 +1,12 @@
 /* Shared read-only inventory components. Market precision is presentation metadata. */
 (function () {
   'use strict';
+  const common=typeof module!=='undefined'&&module.exports?require('./glass-ui.js'):window.GlassUI;
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g,
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const number = value => value == null || value === '' ? NaN : Number(value);
   const money = value => Number.isFinite(number(value)) ? number(value).toFixed(2) : '—';
-  const amount = value => Number.isFinite(number(value)) ? `${money(value)} U` : '—';
+  const amount = common.amount;
   const time = value => value ? new Date(value).toLocaleString('zh-CN', {hour12:false}) : '—';
   const venueName = venue => ({lighter:'Lighter RH', entropy:'Entropy'}[venue] || '—');
   function profit(value) {
@@ -27,11 +28,8 @@
           {key:'venue', label:'平台', width:24, value:r => venueName(r.venue), className:'account-name'},
           {key:'equity', label:'权益', width:19, numeric:true, value:r => amount(r.equity)},
           {key:'free_margin', label:'可用于加仓', width:19, numeric:true, value:r => {
-            const e=r.entry_margin;
-            if(!e)return amount(r.free_margin);
-            const known=e.isolated_only && Number.isFinite(number(e.collateral)) && Number.isFinite(number(e.reported_available));
-            return {text:known?amount(Math.max(0,Math.min(number(e.collateral),number(e.reported_available)))):'待核对',
-              title:`平台显示可用 ${amount(r.free_margin)}；未划入逐仓的余额 ${amount(e.collateral)}。加仓还需预留保证金和安全余额，逐仓内资金及浮盈不能直接用于新订单。`};
+            const value=common.entryAvailable(r);
+            return {text:value.text,title:value.detail+(value.detail?'。加仓还需预留保证金和安全余额，逐仓内资金及浮盈不能直接用于新订单。':'')};
           }},
           {key:'position_units', label:'持仓数量', width:19, numeric:true, value:r => quantity(r.position_units)},
           {key:'margin', label:'保证金模式', width:19, align:'center', value:r => `${r.isolated ? '逐仓' : '非逐仓'} ${r.leverage}×`}
@@ -58,17 +56,18 @@
         ]}
     ];
     const metrics = [{id:'groups', label:'持仓/平仓组数'}, {id:'pnl', label:'净收益'}, {id:'closed-pnl', label:'平仓净收益'}];
-    const emptyRow = table => `<tr><td colspan="${table.columns.length}" class="empty">${table.empty}</td></tr>`;
+    const emptyRow = (table,loading=false) => `<tr><td colspan="${table.columns.length}" class="empty">${loading?'等待账户数据':table.empty}</td></tr>`;
     function mount() {
       get('status-metrics').innerHTML = metrics.map(m =>
-        `<div class="metric" data-metric="${m.id}"><small>${m.label}</small><strong id="${m.id}">—</strong></div>`).join('')+'<p id="emergency-progress" role="status" hidden style="grid-column:1 / -1;margin:8px 0 0"></p>';
-      get('inventory-tables').innerHTML = tables.map(t => `<section class="card" data-module="${t.id}" aria-labelledby="${t.id}-heading">
-        <h2 id="${t.id}-heading">${t.title}</h2><div class="scroll"><table class="inventory-table" style="--table-min-width:${t.minWidth}px" aria-labelledby="${t.id}-heading">
+        `<div class="metric glass" data-metric="${m.id}"><small>${m.label}</small><strong id="${m.id}">—</strong></div>`).join('')+'<p id="emergency-progress" role="status" hidden style="grid-column:1 / -1;margin:8px 0 0"></p>';
+      get('inventory-tables').innerHTML = tables.map(t => `<section class="card glass" data-module="${t.id}" aria-labelledby="${t.id}-heading">
+        <div class="section-heading"><h2 id="${t.id}-heading"><i class="ph ph-${({accounts:'wallet',lots:'stack',fills:'clock-counter-clockwise'})[t.id]}" aria-hidden="true"></i>${t.title}</h2><span id="${t.id}-count" class="badge"></span></div><div class="scroll"><table class="inventory-table" style="--table-min-width:${t.minWidth}px" aria-labelledby="${t.id}-heading">
         <colgroup>${t.columns.map(c => `<col style="width:${c.width}%">`).join('')}</colgroup>
         <thead><tr>${t.columns.map(c => `<th scope="col" data-field="${c.key}" class="${c.numeric ? 'numeric' : c.align || ''}"${c.title ? ` title="${escapeHtml(c.title)}"` : ''}>${c.label}</th>`).join('')}</tr></thead>
-        <tbody id="${t.id}">${emptyRow(t)}</tbody></table></div></section>`).join('');
+        <tbody id="${t.id}">${emptyRow(t,true)}</tbody></table></div></section>`).join('');
     }
     function renderTable(table, rows) {
+      get(table.id+'-count').textContent=rows.length+' '+(table.id==='accounts'?'个平台':table.id==='lots'?'组':'笔');
       get(table.id).innerHTML = rows.length ? rows.map(row => `<tr>${table.columns.map(column => {
         const raw = column.value(row), cell = raw != null && typeof raw === 'object' ? raw : {text:raw ?? '—'};
         const classes = [column.numeric ? 'numeric' : column.align, column.className, cell.className].filter(Boolean).join(' ');

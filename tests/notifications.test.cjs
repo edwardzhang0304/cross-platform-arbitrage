@@ -45,4 +45,7 @@ test('saving notifications clears secret inputs and status reports disabled or f
   assert.match(get('notification-status').textContent,/已丢弃最旧 2 条/);
   assert.match(get('notification-status').textContent,/发送失败/);
   assert.equal(get('feishu_app_secret').value,'');
+  ctx.renderNotificationStatus({saved:true,unlocked:true,delivery:{enabled:false,pending:0}});
+  assert.match(get('notification-status').textContent,/通知已关闭/);
+  assert.doesNotMatch(get('notification-status').textContent,/加载账户后/);
 });

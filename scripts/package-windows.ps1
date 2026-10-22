@@ -12,11 +12,12 @@ Copy-Item $Exe "$Package/Cross-Platform-Arbitrage.exe"
 Copy-Item README.md "$Package/使用说明.md"
 foreach ($File in @('Read-Diagnostics.ps1','DiagnosticsSqlite.cs','Run-Diagnostics.cmd','Confirm-Rollback-Recovery.ps1')) { Copy-Item "scripts/$File" "$Package/$File" }
 Copy-Item 'docs/故障排查与处理流程.md' "$Package/故障排查与处理流程.md"
-Copy-Item 'docs/rc25仅平仓恢复升级说明.txt' "$Package/rc25升级说明.txt"
+Copy-Item 'docs/rc26界面与8小时图表升级说明.txt' "$Package/rc26升级说明.txt"
 Copy-Item config "$Package/config-templates" -Recurse
 Copy-Item vendor/lighter-signing/licenses "$Package/licenses" -Recurse
 Copy-Item vendor/lighter-signing/LICENSE* "$Package/licenses/" -ErrorAction Stop
 Copy-Item vendor/hyperliquid_rust_sdk/LICENSE "$Package/licenses/Hyperliquid-MIT.txt"
+Copy-Item frontend/assets/phosphor/LICENSE "$Package/licenses/Phosphor-MIT.txt"
 # Only explicit public files are included. No data/, runtime/, keys or local config.
 $InfoPath = Join-Path (Resolve-Path $Package) 'build-info.json'
 $Inspect = Start-Process -FilePath (Resolve-Path "$Package/Cross-Platform-Arbitrage.exe") -ArgumentList '--build-info' -RedirectStandardOutput $InfoPath -Wait -PassThru

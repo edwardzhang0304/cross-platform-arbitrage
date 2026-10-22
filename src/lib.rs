@@ -22,5 +22,6 @@ pub mod profiles;
 pub mod account_profiles;
 pub mod market_feed;
 pub mod monitor;
+mod ui_assets;
 #[cfg(feature="paper-runtime")]
 pub mod paper_server;

@@ -70,8 +70,7 @@ pub fn router(root: PathBuf, port: u16) -> Result<Router> {
         .route("/accounts/{profile}",get(account_control_page)).route("/accounts/{profile}/monitor",get(account_monitor_page))
         .route("/api/accounts/{profile}/inventory",get(account_status)).route("/api/accounts/{profile}/control",post(account_action))
         .with_state(host);
-    Ok(router.merge(host_routes).route("/assets/openai-market-visuals.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/openai-market-visuals.js"))}))
-        .route("/assets/inventory-components.js",get(||async{([("content-type","application/javascript; charset=utf-8")],include_str!("../frontend/inventory-components.js"))}))
+    Ok(router.merge(host_routes).merge(crate::ui_assets::router())
         .layer(DefaultBodyLimit::max(64*1024))
         .layer(axum::middleware::map_response(|mut r:axum::response::Response|async{
             for (k,v) in [("cache-control","no-store"),("x-frame-options","DENY"),("x-content-type-options","nosniff")] {r.headers_mut().insert(k,v.parse().unwrap());} r
@@ -88,9 +87,10 @@ fn control_page(profile:&AccountProfile,profiles:&[AccountProfile])->String {
         .replace("每平台每组约 15U 名义仓位",&format!("每个平台每组约 {}U 保证金、{}U 持仓金额，亏损保护 {}U",5*profile.capital_multiplier,15*profile.capital_multiplier,30*profile.capital_multiplier))
         .replace("OPENAI 实盘",&format!("{} 实盘",account_profiles::html_escape(&profile.label)))
         .replace("当前 OPENAI 标的",&format!("当前 {} 账户",account_profiles::html_escape(&profile.label)))
-        .replace("/*CONTROL_PROFILE*/",&format!("const controlProfile={};",account_profiles::script_json(&profile.descriptor())));
+        .replace("/*CONTROL_PROFILE*/",&format!("const controlProfile={};",account_profiles::script_json(&profile.descriptor())))
+        .replace("/*CONTROL_PROFILES*/",&format!("const controlProfiles={};",account_profiles::script_json(&serde_json::json!(profiles.iter().map(AccountProfile::descriptor).collect::<Vec<_>>()))));
     if profile.market==MarketPair::Anth {html=html.replace("/10000","/100000");}
-    html.replace("<main>",&format!("<main>{}",account_profiles::navigation(profile,profiles,false)))
+    html
 }
 async fn account_control_page(State(host):State<Host>,RoutePath(id):RoutePath<String>)->Response {
     match host.app(&id) {Ok(app)=>Html(control_page(&app.paths.profile,&host.profiles())).into_response(),Err(_)=>(axum::http::StatusCode::NOT_FOUND,"账户不存在").into_response()}
