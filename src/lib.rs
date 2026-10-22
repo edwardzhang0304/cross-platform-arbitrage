@@ -5,6 +5,7 @@ pub mod build_info;
 pub mod domain;
 pub mod hyperliquid;
 pub mod lighter;
+mod lighter_keepalive;
 pub mod lighter_manual;
 pub mod lighter_runtime;
 pub mod lighter_reconcile;

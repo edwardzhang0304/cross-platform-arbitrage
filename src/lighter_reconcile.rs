@@ -135,9 +135,13 @@ async fn stream_private_account_once(
         .with_context(|| format!("failed to connect to Lighter private websocket {ws_url}"))?;
     let (mut writer, mut reader) = stream.split();
     let mut subscriptions_sent = false;
+    let mut keepalive = crate::lighter_keepalive::LighterKeepalive::new();
 
-    while let Some(message) = reader.next().await {
-        match message.context("Lighter private websocket read failed")? {
+    while let Some(message) = tokio::select! {
+        _ = sender.closed() => return Ok(()),
+        received = keepalive.next(&mut reader, &mut writer) => received?,
+    } {
+        match message {
             Message::Text(text) => {
                 let value: Value = serde_json::from_str(&text)
                     .context("invalid Lighter private websocket JSON")?;

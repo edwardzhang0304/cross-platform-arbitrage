@@ -107,6 +107,8 @@ for profile in profiles:
             last_error=f'websocket connect/TLS failed https://private.invalid/?key={secret} Bearer {secret}',
             history=[dict(at_ms=now,kind='ws_reconnect',detail=f'websocket L2 silent for 3000ms Bearer {secret}',unexpected_secret=secret)],
             unexpected_secret=secret) for _ in range(2)]
+        transport[0].update(source='venue_feed',last_error='Lighter public websocket closed code=Some(1000) lifetime_ms= 120115 pings= 4 pongs= 4 cause= read_timeout')
+        transport[0]['history']=[dict(at_ms=now,kind='ws_reconnect',detail=transport[0]['last_error'])]
         db.execute("INSERT INTO market_transport_state VALUES(1,?)",(json.dumps(transport),))
         db.executescript("CREATE TABLE market_notification_state(id INTEGER PRIMARY KEY,body TEXT); CREATE TABLE market_notification_history(seq INTEGER PRIMARY KEY,body TEXT);")
         evidence=dict(at_ms=now,window_ms=60000,observed_ms=60000,unavailable_ms=[50000,0],current_bad=[True,False],eligible=[True,False],received_ms=[now-2000,now],reasons=['stale','healthy'],unexpected_secret=secret)

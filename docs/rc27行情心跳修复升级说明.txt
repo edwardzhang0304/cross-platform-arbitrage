@@ -1,0 +1,80 @@
+﻿rc.27：Lighter行情主动心跳修复（Windows x64）
+
+本次变化
+1. Lighter要求客户端两分钟内至少发一条消息。原程序收到行情却未主动报在线，可能每120秒被平台关闭。本次每30秒主动发送ping，仍兼容平台主动ping和WebSocket控制帧。
+2. 主动心跳用于保持连接，不延长旧报价有效期、不伪造盘口、不放宽成交或风险保护。发送阻塞最多等待5秒，随后进入既有重连机制；重连仍重新获取完整盘口并校验序号。
+3. 公共盘口、公共成交及通用订单核对流共用保活逻辑。实盘账户状态流原已有2秒心跳，保持不变。
+4. 后续连接关闭的诊断保留关闭码、连接持续毫秒数、主动ping数、pong数与脱敏原因分类，避免关键时间被误删。
+5. 保留rc.26玻璃界面、最近8小时图表及所有原有账户、账本、密钥和策略参数。只打Windows包。
+
+升级前
+新包不带私人data。不能在旧后台运行时复制，也不能同时运行新旧两个后台。
+升级不要求清空已配平持仓，但必须没有未结束订单或未配平问题。
+
+步骤1：解压新包
+把ZIP传到Windows桌面，解压到独立的“多平台套利-rc27-Windows-x64”文件夹。先不要运行新版EXE。
+新目录中应有 Cross-Platform-Arbitrage.exe、build-info.json、Run-Diagnostics.cmd 等文件。
+
+步骤2：停止旧版策略并留存诊断
+在旧版依次停止当前已加载的账户（OPENAI账号1、OPENAI账号2、ANTH）。本来未加载的账户保持未加载，不要为了升级启动。
+记下每个账户此前是完整运行还是“仅平仓和止损”；保证金保护中的账号1不要解除保护。
+运行旧目录 Run-Diagnostics.cmd。核对各账户：已停止、没有未完成订单/挂单/孤立仓位，两平台实际数量与账本一致。
+若还在配平或需要处理，保留旧后台，把诊断包发来，先处理再迁移。
+
+步骤3：完全退出并备份
+点击“退出所有账户”。在任务管理器确认 Cross-Platform-Arbitrage 进程消失；浏览器关不关均可，关闭浏览器不等于退出后台。
+复制整个旧程序文件夹作备份，保留至升级验收通过。
+
+步骤4：复制整个data到新包
+从刚退出的旧程序目录复制完整 data 文件夹，粘贴到新包 EXE 同一层。
+正确结构：
+桌面\多平台套利-rc27-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\Cross-Platform-Arbitrage.exe
+桌面\多平台套利-rc27-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\data
+不要形成 data\data；不要只复制数据库；不要把新旧两份data混合。
+如果误启动了空白新包，先退出，保留该目录，再重新解压一份并复制旧data。
+旧程序和旧备份都不再启动。
+
+步骤5：打开新版并验证来源
+只双击新包EXE一次。出现已有程序/端口占用提示时，不要继续开多个进程。
+在新EXE所在文件夹的地址栏输入 powershell，回车后粘贴以下完整命令。它只读取健康状态，不下单。
+
+$ErrorActionPreference='Stop'
+$request=[Net.HttpWebRequest]::Create('http://127.0.0.1:18794/health')
+$request.Proxy=$null; $request.Timeout=10000; $request.ReadWriteTimeout=10000
+$response=$request.GetResponse()
+try {
+  $reader=New-Object IO.StreamReader($response.GetResponseStream(),[Text.Encoding]::UTF8)
+  try { $h=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+} finally { $response.Dispose() }
+$expected=Get-Content -LiteralPath '.\build-info.json' -Raw | ConvertFrom-Json
+$expectedData=[IO.Path]::GetFullPath((Join-Path (Get-Location).Path 'data')).TrimEnd('\')
+$actual=[string]$h.data_dir
+if ($actual.StartsWith('\\?\')) { $actual=$actual.Substring(4) }
+if ($h.version -ne '0.2.0-rc.27' -or $h.build.runtime -ne 'live' -or $h.build.dirty -or $h.build.source_commit -ne $expected.source_commit -or $h.build.strategy_core_sha256 -ne $expected.strategy_core_sha256 -or $actual.TrimEnd('\') -ine $expectedData) { throw '版本或data目录不符，先不要启动策略，把输出发来' }
+[ordered]@{version=$h.version;commit=$h.build.source_commit;data_dir=$h.data_dir;result='VERSION_OK'} | ConvertTo-Json
+
+步骤6：逐账户解锁、检查、加载
+新界面右侧“账户与密钥”中输入原密钥库密码。不要重新创建账户或重新保存钱包API。
+进行只读检查，确认独占使用，再“加载账户和原账本”。核对原持仓、历史组数、策略参数及飞书配置仍在。
+账号1应保持原来的每边每组5U、最多20组、3倍、30U亏损保护；账号2为50U、20组、3倍、300U保护。ANTH保持原配置。
+
+步骤7：恢复对应模式
+- 此前完整运行且无保护的账户：本人点击“启动策略”，阅读当前账户确认后启动。
+- 保证金保护中的账号1：在“开仓保护”区域点击“仅恢复平仓和止损（保留保护）”，确认后应显示“仅平仓和止损”，保证金保护继续保留。不要点击“核对并解除开仓保护”，不要把它改成允许开仓。
+- 暂时不用的账户继续保持停止或未加载。
+- 如检查失败、持仓不一致或有未完成订单，不要绕过入口或手改数据库，运行诊断发来。
+
+步骤8：验收
+打开每个账户的实盘监控，确认账户名称正确、行情更新、持仓与账本匹配。价差图标题显示“最近8小时”；刚重启不足8小时不属于故障。
+右侧“飞书通知”查看开关与配置，分别发送测试通知，确认手机收到对应账户名称。
+运行新包 Run-Diagnostics.cmd，把升级后的ZIP发来复查。不要发送data、私钥或密码。
+新版本产生新成交后，禁止把旧备份账本覆盖回来。旧包保留作备份，不同时运行。
+
+验证说明
+发布测试使用合成数据与无凭据Windows包，不连接用户账户交易。另以公开只读行情对照验证两分钟超时原因。此次只修复连接保活及诊断记录，不改变开仓、加仓、平仓、紧急平仓、滑点重试、保证金保护与通知条件。网络中断和平台维护仍可能触发重连，不能保证永不断线。
+
+根因依据
+Lighter官方WebSocket文档明确要求客户端两分钟内至少发送一条消息：
+https://apidocs.lighter.xyz/docs/websocket-reference#keepalive-requirements
+2026-10-22对Lighter RH公开只读行情的同时对照：旧方式在120.115秒被服务器以1000关闭，原因分类为read_timeout；每30秒主动ping的方式连续300秒没有断开，9次ping均收到pong，收到2546条盘口更新。未使用任何账户凭据或下单。
+修复后的Rust生产行情循环另行直连公开只读行情300秒：始终为同一条连接，收到3466条盘口消息，没有提前断开。

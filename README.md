@@ -4,6 +4,8 @@
 
 源码仓库：[edwardzhang0304/cross-platform-arbitrage](https://github.com/edwardzhang0304/cross-platform-arbitrage)。原仓库名为 `openai-paired-trader`。
 
+rc.27 修复 Lighter 行情连接缺少主动保活、约每两分钟被平台断开的故障：每30秒主动心跳，发送超时会交给既有重连机制。心跳不刷新行情价格或有效期，不改变交易和保护规则。Windows 按完整 data 复制到独立新包目录升级，见 [rc27 升级说明](docs/rc27行情心跳修复升级说明.txt)。
+
 rc.26 统一控制中心、账户管理和实盘监控的毛玻璃界面与共享组件；监控价差图滚动范围由4小时扩展为最近8小时。保留原有交易、保护和通知规则。Windows 按完整 data 复制到独立新包目录升级，见 [rc26 升级说明](docs/rc26界面与8小时图表升级说明.txt)。
 
 ## 怎么用

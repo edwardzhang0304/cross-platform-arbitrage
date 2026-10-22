@@ -1587,9 +1587,17 @@ async fn stream_public_trades_once(
         .await
         .context("failed to subscribe to Lighter trade stream")?;
 
-    while let Some(message) = reader.next().await {
-        match message.context("Lighter websocket read failed")? {
+    let mut keepalive = crate::lighter_keepalive::LighterKeepalive::new();
+    while let Some(message) = tokio::select! {
+        _ = sender.closed() => return Ok(()),
+        received = keepalive.next(&mut reader, &mut writer) => received?,
+    } {
+        match message {
             Message::Text(text) => {
+                if serde_json::from_str::<Value>(&text)?["type"] == "ping" {
+                    writer.send(Message::Text(json!({"type":"pong"}).to_string())).await?;
+                    continue;
+                }
                 for trade in parse_trade_stream_message(&text)? {
                     if sender.send(Ok(trade)).await.is_err() {
                         return Ok(());

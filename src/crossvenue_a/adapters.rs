@@ -43,6 +43,10 @@ const TRADE_SESSION_SETUP_TIMEOUT_MS: u64 = 4_000;
 const TRADE_MIN_CONNECTION_CYCLE_MS: u64 = 4_000;
 const FAST_BOOK_SILENCE_MS: u64 = 3_000;
 
+#[cfg(test)]
+#[path = "lighter_keepalive_tests.rs"]
+mod lighter_keepalive_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MarketVenue {
@@ -137,14 +141,17 @@ impl MarketStreamConfig {
 struct LighterRemoteClosed {
     session_lifetime_ms: u64,
     close_code: Option<u16>,
+    pings_sent: u64,
+    pongs_received: u64,
+    cause: &'static str,
 }
 
 impl fmt::Display for LighterRemoteClosed {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "Lighter public websocket closed code={:?} session_lifetime_ms={}",
-            self.close_code, self.session_lifetime_ms
+            "Lighter public websocket closed code={:?} lifetime_ms= {} pings= {} pongs= {} cause= {}",
+            self.close_code, self.session_lifetime_ms, self.pings_sent, self.pongs_received, self.cause
         )
     }
 }
@@ -245,27 +252,48 @@ async fn run_lighter_session(
     .await
     .context("timed out connecting Lighter public websocket")?
     .context("failed to connect Lighter public websocket")?;
+    read_lighter_session(stream, market_id, configured_source, config, sender,
+        last_book_at_ms, last_context_at_ms).await
+}
+
+async fn read_lighter_session<S>(
+    stream: tokio_tungstenite::WebSocketStream<S>,
+    market_id: i32,
+    configured_source: PriceSource,
+    config: &MarketStreamConfig,
+    sender: &mpsc::Sender<MarketDataEvent>,
+    last_book_at_ms: &AtomicU64,
+    last_context_at_ms: &AtomicU64,
+) -> Result<()>
+where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let (mut writer, mut reader) = stream.split();
     let connected_at = Instant::now();
     let mut subscriptions_sent = false;
     let mut assembler = LighterBookAssembler::default();
+    let mut keepalive = crate::lighter_keepalive::LighterKeepalive::new();
+    let mut pongs_received = 0;
 
     loop {
-        let message = tokio::time::timeout(
-            Duration::from_millis(config.stale_timeout_ms),
-            reader.next(),
-        )
-        .await
-        .context("Lighter market websocket became stale")?;
+        let message = tokio::select! {
+            _ = sender.closed() => return Ok(()),
+            received = tokio::time::timeout(Duration::from_millis(config.stale_timeout_ms),
+                keepalive.next(&mut reader, &mut writer)) => {
+                received.context("Lighter market websocket became stale")??
+            }
+        };
         let Some(message) = message else {
             return Err(LighterRemoteClosed {
                 close_code: None,
+                pings_sent: keepalive.sent,
+                pongs_received,
+                cause: "stream_ended",
                 session_lifetime_ms: u64::try_from(connected_at.elapsed().as_millis())
                     .unwrap_or(u64::MAX),
             }
             .into());
         };
-        match message.context("Lighter public websocket read failed")? {
+        match message {
             Message::Text(text) => {
                 let value: Value =
                     serde_json::from_str(&text).context("invalid Lighter market websocket JSON")?;
@@ -301,6 +329,7 @@ async fn run_lighter_session(
                             .await
                             .context("failed to reply to Lighter ping")?;
                     }
+                    "pong" => { pongs_received += 1; }
                     "subscribed/order_book" | "update/order_book" => {
                         match assembler.apply_value(&value) {
                             Ok(book) => {
@@ -347,8 +376,19 @@ async fn run_lighter_session(
                 .await
                 .context("failed to reply to Lighter websocket ping")?,
             Message::Close(frame) => {
+                // Only allowlisted categories, never arbitrary peer text or
+                // internal network addresses, enter the diagnostic history.
+                let cause = match frame.as_ref().map(|f| f.reason.as_ref()) {
+                    Some(reason) if reason.contains("i/o timeout") => "read_timeout",
+                    Some("server shutting down") => "server_shutdown",
+                    Some("") | None => "unspecified",
+                    _ => "other",
+                };
                 return Err(LighterRemoteClosed {
                     close_code: frame.map(|frame| u16::from(frame.code)),
+                    pings_sent: keepalive.sent,
+                    pongs_received,
+                    cause,
                     session_lifetime_ms: u64::try_from(connected_at.elapsed().as_millis())
                         .unwrap_or(u64::MAX),
                 }
@@ -1417,11 +1457,13 @@ mod tests {
         let clean = anyhow::Error::new(LighterRemoteClosed {
             close_code: Some(1000),
             session_lifetime_ms: 120_000,
+            pings_sent: 0, pongs_received: 0, cause: "read_timeout",
         });
         assert_eq!(lighter_reconnect_delay_ms(&clean, 1_000), 0);
         let unstable = anyhow::Error::new(LighterRemoteClosed {
             close_code: None,
             session_lifetime_ms: 100,
+            pings_sent: 0, pongs_received: 0, cause: "stream_ended",
         });
         assert_eq!(lighter_reconnect_delay_ms(&unstable, 1_000), 1_000);
         let transport = anyhow::anyhow!("TLS handshake failed");
