@@ -230,7 +230,7 @@ fn closed_profit_supports_reverse_direction_losses_and_late_funding() {
 }
 
 #[test]
-fn reporting_funding_does_not_change_existing_profit_exit_conditions() {
+fn settled_funding_blocks_accumulation_profit_exit_when_net_is_negative() {
     let mut s = snapshot(); open(&mut s, "a", 1000, 1000);
     s.config.shared_exit_conditions = true;
     s.config.accumulation = Some(AccumulationRules { contraction_ratio: d("0.5"),
@@ -238,7 +238,30 @@ fn reporting_funding_does_not_change_existing_profit_exit_conditions() {
     assert!(strategy::group_exit_eligible(&s, &s.lots[0], &books(10000), 1000, 10000).unwrap());
     record_funding(&mut s, funding("cost", Venue::Entropy, 2000, "-0.8")).unwrap();
     assert_eq!(report(&s).lots[0].estimated_exit_net, Some(d("-0.1")));
-    assert!(strategy::group_exit_eligible(&s, &s.lots[0], &books(10000), 1000, 10000).unwrap());
+    assert!(!strategy::group_exit_eligible(&s, &s.lots[0], &books(10000), 1000, 10000).unwrap());
+}
+
+#[test]
+fn profit_exit_funding_stays_with_its_group_and_remaining_partial_quantity() {
+    let mut s=snapshot();open(&mut s,"old",1000,1000);
+    funding_setup(&mut s);
+    record_funding(&mut s,funding("old-cost",Venue::Entropy,2000,"-0.8")).unwrap();
+    open(&mut s,"new",1000,3000);
+    assert!(!strategy::group_exit_eligible(&s,&s.lots[0],&books(10000),1000,10000).unwrap());
+    assert!(strategy::group_exit_eligible(&s,&s.lots[1],&books(10000),1000,10000).unwrap());
+    close(&mut s,"partial",&[("old",500)],5000);
+    let f=ProfitFunding::new(&s);
+    assert_eq!(f.slice(&s.lots[0],500).unwrap(),d("-0.4"));
+    assert_eq!(f.slice(&s.lots[0],250).unwrap(),d("-0.2"));
+    assert_eq!(f.slice(&s.lots[1],1000).unwrap(),Decimal::ZERO);
+    assert_eq!(s.lots[0].opened_ms,1002);
+    assert!(!strategy::group_exit_eligible(&s,&s.lots[0],&books(10000),500,10000).unwrap());
+}
+
+fn funding_setup(s:&mut Snapshot) {
+    s.config.shared_exit_conditions=true;
+    s.config.accumulation=Some(AccumulationRules{contraction_ratio:d("0.5"),entry_floor:d("5"),
+        interval_ms:900000,max_time_adds:5,quota_scope:TimeAddQuotaScope::Round});
 }
 
 #[test]

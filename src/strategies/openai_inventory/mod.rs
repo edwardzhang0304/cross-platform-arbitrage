@@ -42,5 +42,7 @@ mod liquidation_tests;
 mod live_limits_tests;
 #[cfg(test)]
 mod accounting_tests;
+#[cfg(test)]
+mod profit_decay_tests;
 
 pub mod feed;

@@ -34,15 +34,19 @@
           {key:'position_units', label:'持仓数量', width:19, numeric:true, value:r => quantity(r.position_units)},
           {key:'margin', label:'保证金模式', width:19, align:'center', value:r => `${r.isolated ? '逐仓' : '非逐仓'} ${r.leverage}×`}
         ]},
-      {id:'lots', title:'持有的配对仓位', empty:'暂无持仓', minWidth:1000,
+      {id:'lots', title:'持有的配对仓位', empty:'暂无持仓', minWidth:1120,
         columns:[
-          {key:'opened_ms', label:'开仓时间', width:22, value:r => time(r.opened_ms)},
-          {key:'direction', label:'方向', width:24, value:r => r.direction === 'lighter_short' ? '空 Lighter / 多 Entropy' : '空 Entropy / 多 Lighter'},
-          {key:'units', label:'每腿数量', width:12, numeric:true, value:r => quantity(r.units)},
-          {key:'entry_spread', label:'开仓价差', width:12, numeric:true, value:r => amount(r.entry_spread)},
-          {key:'remaining_funding', label:'资金费净收支', width:15, numeric:true, value:r => profit(r.profit?.remaining_funding),
+          {key:'opened_ms', label:'开仓时间', width:18, value:r => time(r.opened_ms)},
+          {key:'direction', label:'方向', width:20, value:r => r.direction === 'lighter_short' ? '空 Lighter / 多 Entropy' : '空 Entropy / 多 Lighter'},
+          {key:'units', label:'每腿数量', width:11, numeric:true, value:r => quantity(r.units)},
+          {key:'entry_spread', label:'开仓价差', width:11, numeric:true, value:r => amount(r.entry_spread)},
+          {key:'take_profit_contraction', label:'当前需收窄', width:12, numeric:true, value:r => ({
+            text:amount(r.profit?.take_profit_contraction),
+            title:r.profit?.exit_spread_ceiling==null?'等待后台计算':`平仓价差上限 ${r.profit.exit_spread_ceiling} U；还须扣除手续费、滑点和资金费后净收益为正。`}),
+            title:'每组独立计时：从开仓价差的一半，7天线性降低至5；这是价差目标，不是现金收益'},
+          {key:'remaining_funding', label:'资金费净收支', width:14, numeric:true, value:r => profit(r.profit?.remaining_funding),
             title:'分摊给剩余持仓的已结算资金费：收入为正，支出为负'},
-          {key:'estimated_exit_net', label:'预计净利润', width:15, numeric:true, value:r => profit(r.profit?.estimated_exit_net),
+          {key:'estimated_exit_net', label:'预计净利润', width:14, numeric:true, value:r => profit(r.profit?.estimated_exit_net),
             title:'剩余持仓按当前盘口平仓，扣除开平仓成本并计入已结算资金费的估算'}
         ]},
       {id:'fills', title:'最近成交', empty:'暂无成交', minWidth:840,

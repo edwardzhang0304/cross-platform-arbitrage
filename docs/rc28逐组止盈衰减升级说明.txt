@@ -1,0 +1,88 @@
+﻿rc.28：逐组7天线性止盈衰减（Windows x64）
+
+本次规则
+每组以账本内该组原始开仓完成时间独立计时。初始需收窄价差=max(实际开仓价差×50%,5)。
+持仓t小时后：目标=5+(初始目标-5)×max(1-t/168,0)。满7天后保持5，不继续降至0，也不强制平仓。
+例：开仓价差50，刚开仓需收窄25；3.5天需收窄15；7天及以后需收窄5，相应平仓价差上限为25、35、45。
+“5”是每单位价差，不是每组赚5U。实际收益还要乘每腿持仓数量并计入成本。
+
+成本与执行
+1. 正常逐组止盈须同时满足衰减价差目标和净收益严格大于0。
+2. 开仓采用真实成交现金流，包含开仓手续费与该次开仓修复成本；平仓采用原滑点保护下的报价和两边预计手续费。实际开仓滑点已在真实成交价内，不能重复扣。
+3. 两边已结算资金费按结算时真实持仓分摊到对应组，收入为正、支出为负；部分平仓按此次数量比例计入剩余资金费，已平部分不重复扣，不把旧组费用转嫁给新组。
+4. 资金费历史缺失或归属不明时，不把它当零来放行正常止盈。发首单前重新检查；已经发出的平仓继续原有配平/恢复流程，不因新资金费或时间变化中断另一腿。
+5. 资金费以已经同步确认的结算为准。未结算/平台尚未返回的资金费、实际成交偏差无法预先保证；后补结算仍可能修正最终收益。
+6. 止损、保证金危险减仓与5%紧急全部平仓不受止盈目标和逐组资金费完整性门槛限制；原有实际持仓、订单身份、行情和只减仓等安全检查保留。
+
+老持仓与显示
+- 不重置原开仓时间、组号、网格锚点、加仓额度、资金档位或保护状态；不重建账本。
+- 新加仓拥有自己的计时，部分平仓的剩余数量仍沿用原组开仓时间；关机和重启的时间也计入持仓年龄。
+- 已经持有超过7天的老仓，恢复策略后立即按5判断，满足成本及其他执行条件时可能开始逐组平仓。
+- 控制中心说明和实盘监控“当前需收窄”同步更新，悬停可看该组平仓价差上限；诊断包包含每组目标、资金费和预计净收益。
+- 保留rc.27 Lighter主动心跳、玻璃界面、最近8小时图表和原通知机制。只交付Windows包。
+
+升级前
+新包不带私人data。不能在旧后台运行时复制，也不能同时运行新旧两个后台。
+升级不要求清空已配平持仓，但必须没有未结束订单或未配平问题。
+
+步骤1：解压新包
+把ZIP传到Windows桌面，解压到独立的“多平台套利-rc28-Windows-x64”文件夹。先不要运行新版EXE。
+新目录中应有 Cross-Platform-Arbitrage.exe、build-info.json、Run-Diagnostics.cmd 等文件。
+
+步骤2：停止旧版策略并留存诊断
+在旧版依次停止当前已加载的账户（OPENAI账号1、OPENAI账号2、ANTH）。本来未加载的账户保持未加载，不要为了升级启动。
+记下每个账户此前是完整运行还是“仅平仓和止损”；保证金保护中的账号1不要解除保护。
+运行旧目录 Run-Diagnostics.cmd。核对各账户：已停止、没有未完成订单/挂单/孤立仓位，两平台实际数量与账本一致。
+若还在配平或需要处理，保留旧后台，把诊断包发来，先处理再迁移。
+
+步骤3：完全退出并备份
+点击“退出所有账户”。在任务管理器确认 Cross-Platform-Arbitrage 进程消失；浏览器关不关均可，关闭浏览器不等于退出后台。
+复制整个旧程序文件夹作备份，保留至升级验收通过。
+
+步骤4：复制整个data到新包
+从刚退出的旧程序目录复制完整 data 文件夹，粘贴到新包 EXE 同一层。
+正确结构：
+桌面\多平台套利-rc28-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\Cross-Platform-Arbitrage.exe
+桌面\多平台套利-rc28-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\data
+不要形成 data\data；不要只复制数据库；不要把新旧两份data混合。
+如果误启动了空白新包，先退出，保留该目录，再重新解压一份并复制旧data。
+旧程序和旧备份都不再启动。
+
+步骤5：打开新版并验证来源
+只双击新包EXE一次。出现已有程序/端口占用提示时，不要继续开多个进程。
+在新EXE所在文件夹的地址栏输入 powershell，回车后粘贴以下完整命令。它只读取健康状态，不下单。
+
+$ErrorActionPreference='Stop'
+$request=[Net.HttpWebRequest]::Create('http://127.0.0.1:18794/health')
+$request.Proxy=$null; $request.Timeout=10000; $request.ReadWriteTimeout=10000
+$response=$request.GetResponse()
+try {
+  $reader=New-Object IO.StreamReader($response.GetResponseStream(),[Text.Encoding]::UTF8)
+  try { $h=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+} finally { $response.Dispose() }
+$expected=Get-Content -LiteralPath '.\build-info.json' -Raw | ConvertFrom-Json
+$expectedData=[IO.Path]::GetFullPath((Join-Path (Get-Location).Path 'data')).TrimEnd('\')
+$actual=[string]$h.data_dir
+if ($actual.StartsWith('\\?\')) { $actual=$actual.Substring(4) }
+if ($h.version -ne '0.2.0-rc.28' -or $h.build.runtime -ne 'live' -or $h.build.dirty -or $h.build.source_commit -ne $expected.source_commit -or $h.build.strategy_core_sha256 -ne $expected.strategy_core_sha256 -or $actual.TrimEnd('\') -ine $expectedData) { throw '版本或data目录不符，先不要启动策略，把输出发来' }
+[ordered]@{version=$h.version;commit=$h.build.source_commit;data_dir=$h.data_dir;result='VERSION_OK'} | ConvertTo-Json
+
+步骤6：逐账户解锁、检查、加载
+新界面右侧“账户与密钥”中输入原密钥库密码。不要重新创建账户或重新保存钱包API。
+进行只读检查，确认独占使用，再“加载账户和原账本”。核对原持仓、历史组数、策略参数及飞书配置仍在。
+账号1应保持原来的每边每组5U、最多20组、3倍、30U亏损保护；账号2为50U、20组、3倍、300U保护。ANTH保持原配置。监控页“当前需收窄”由新版后台逐组计算；超过7天的老仓显示5。旧配置内 group_take_profit 是旧策略字段，不要手工改账本，新版同价加仓策略使用本次明确的7天/5U规则。
+
+步骤7：恢复对应模式
+- 此前完整运行且无保护的账户：本人点击“启动策略”，阅读当前账户确认后启动。
+- 若账号1仍处于保证金保护：在“开仓保护”区域点击“仅恢复平仓和止损（保留保护）”，确认后应显示“仅平仓和止损”，保证金保护继续保留。不要点击“核对并解除开仓保护”，不要把它改成允许开仓。
+- 暂时不用的账户继续保持停止或未加载。
+- 如检查失败、持仓不一致或有未完成订单，不要绕过入口或手改数据库，运行诊断发来。
+
+步骤8：验收
+打开每个账户的实盘监控，确认账户名称正确、行情更新、持仓与账本匹配。价差图标题显示“最近8小时”；刚重启不足8小时不属于故障。
+右侧“飞书通知”查看开关与配置，分别发送测试通知，确认手机收到对应账户名称。
+恢复运行5～10分钟后，运行新包 Run-Diagnostics.cmd，把升级后的ZIP发来复查。不要发送data、私钥或密码。
+新版本产生新成交后，禁止把旧备份账本覆盖回来。旧包保留作备份，不同时运行。
+
+验证说明
+发布前运行共享策略、费用分摊、双腿执行、止损/紧急平仓、前端、Windows诊断和安装包启动测试。测试使用合成数据与无凭据程序，不连接真实交易账户。测试验证规则及执行流程，不代表已证明收益优于旧策略。

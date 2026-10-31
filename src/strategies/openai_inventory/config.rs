@@ -62,6 +62,8 @@ pub struct InventoryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accumulation: Option<AccumulationRules>,
     pub exit_policy: ExitPolicy,
+    /// Legacy non-accumulation target. The approved accumulation policy uses
+    /// strategy::group_profit_target (half entry, seven-day decay, floor 5).
     pub group_take_profit: Decimal,
     pub direction_policy: super::DirectionPolicy,
     pub mode: Mode,

@@ -97,6 +97,36 @@ fn paper_and_live_share_the_same_decision_trace() {
             }
         }
     }}}
+    // Per-lot age and settlement costs are part of the same release proof.
+    for scale in [1,10] {for market in [MarketPair::Openai,MarketPair::Anth] {for reverse in [false,true] {
+        for case in ["decay_fresh","decay_half","decay_mature","decay_funding_cost","decay_funding_unknown"] {
+            let day=86_400_000;let now=20*day;
+            let age=match case {"decay_fresh"=>0,"decay_half"=>7*day/2,_=>7*day};
+            let mut paper=super::profit_decay_tests::seed(market,scale,reverse,age);
+            paper.instance_id=format!("decay-parity-{}-{scale}-{reverse}-{case}",market.id());
+            if case=="decay_funding_cost" || case=="decay_funding_unknown" {
+                accounting::record_funding(&mut paper,Funding{id:"cost".into(),venue:Venue::Entropy,
+                    time_ms:now-day,amount:-Decimal::new(7,1)*Decimal::from(scale)}).unwrap();
+                if case=="decay_funding_unknown" {paper.funding_records.clear();}
+            }
+            let mut live=paper.clone();live.config.mode=Mode::Live;
+            for offset in [0,1000] {
+                let t=now+offset;let spread=if case=="decay_half"{"34"}else{"44"};
+                let b=super::profit_decay_tests::books(&paper,spread,t);
+                let a=super::profit_decay_tests::accounts(&paper,t);
+                let p=strategy::evaluate(&mut paper,&b,&a,t).unwrap();
+                let l=strategy::evaluate(&mut live,&b,&a,t).unwrap();
+                assert_eq!(serde_json::to_value(&p).unwrap(),serde_json::to_value(&l).unwrap());
+                let expected=offset>0 && matches!(case,"decay_half"|"decay_mature");
+                assert_eq!(p.as_ref().map(|o|o.action),expected.then_some(Action::Close));
+                let mut normalized=serde_json::to_value(&live).unwrap();normalized["config"]["mode"]="paper".into();
+                assert_eq!(serde_json::to_value(&paper).unwrap(),normalized);
+                trace.push(serde_json::json!({"market":market,"capital_multiplier":scale,"reverse":reverse,
+                    "case":case,"offset":offset,"operation":p,
+                    "target":strategy::group_profit_target(&paper.config,&paper.lots[0],t)}));
+            }
+        }
+    }}}
     if let Some(path) = std::env::var_os("STRATEGY_PARITY_REPORT") {
         let mut report = crate::build_info::current();
         report["trace_sha256"] = format!("{:x}", Sha256::digest(serde_json::to_vec(&trace).unwrap())).into();

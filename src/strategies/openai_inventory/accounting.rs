@@ -1,4 +1,4 @@
-//! Reporting only. Funding attribution never participates in order/exit decisions.
+//! Settlement-time funding attribution shared by reporting and normal profit exits.
 use super::*;
 use anyhow::{Result, ensure};
 use rust_decimal::Decimal;
@@ -41,6 +41,9 @@ pub struct LotNetProfit {
     pub remaining_funding: Option<Decimal>,
     /// Open-position estimate after entry costs, close fees/protection and remaining funding.
     pub estimated_exit_net: Option<Decimal>,
+    /// Required contraction for this group's age; not a cash profit amount.
+    pub take_profit_contraction: Option<Decimal>,
+    pub exit_spread_ceiling: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,10 +94,15 @@ fn owns(order: &str, operation: &str) -> bool {
 /// Replay settlement-time exposure, not the current group's size or fetch time.
 /// Actual batch-close allocations are consumed in their recorded order, per venue.
 fn attribute(s: &Snapshot) -> Attribution {
+    attribute_with_reservation(s, false)
+}
+
+fn attribute_with_reservation(s: &Snapshot, allow_unsent_close: bool) -> Attribution {
     let mut ids: BTreeSet<String> = s.lots.iter().map(|l| l.id.clone()).collect();
     ids.extend(s.closed_lot_allocations.values().flatten().map(|a| a.lot_id.clone()));
     let mut result = Attribution { complete: funding_history_complete(s)
-        && s.pending.is_none() && s.live_orphan.is_none() && !super::emergency_exit::active(s), ..Default::default() };
+        && (s.pending.is_none() || allow_unsent_close && unsent_close(s))
+        && s.live_orphan.is_none() && !super::emergency_exit::active(s), ..Default::default() };
     for id in &ids { result.groups.insert(id.clone(), Default::default()); }
     let mut other: [Bucket; 2] = Default::default();
     let mut closed_used: BTreeMap<(String, usize), i64> = BTreeMap::new();
@@ -152,6 +160,42 @@ fn attribute(s: &Snapshot) -> Attribution {
     result.unallocated += s.positions.iter().map(|p| p.funding).sum::<Decimal>()
         - s.funding_records.values().map(|f| f.amount).sum::<Decimal>();
     result
+}
+
+// A reserved exit with no request/fill has not changed exposure. Its final
+// pre-submit profit check must use the same funding as candidate selection.
+fn unsent_close(s: &Snapshot) -> bool {
+    s.pending.as_ref().is_some_and(|p| p.action == Action::Close
+        && p.first.is_none() && p.hedge.is_none() && p.repair.is_none()
+        && p.align_close.is_none() && p.unwind_hedge.is_none()
+        && p.first_filled == 0 && p.hedge_filled == 0 && p.repair_filled == 0
+        && p.align_close_filled == 0 && p.unwind_hedge_filled == 0)
+}
+
+/// Built once for a candidate batch. Unknown attribution blocks profit-taking,
+/// never the independent loss, liquidation or emergency reducing paths.
+pub(super) struct ProfitFunding {
+    remaining: Option<BTreeMap<String, Decimal>>,
+}
+impl ProfitFunding {
+    pub fn new(s: &Snapshot) -> Self {
+        let safe = funding_history_complete(s) && (s.pending.is_none() || unsent_close(s))
+            && s.live_orphan.is_none() && !super::emergency_exit::active(s);
+        // With no settlement cash flows there is nothing to allocate. This also
+        // supports old ledgers which predate retained opening-fill detail.
+        if safe && s.funding_records.is_empty() {
+            return Self { remaining: Some(s.lots.iter().map(|l| (l.id.clone(), Decimal::ZERO)).collect()) };
+        }
+        let a = attribute_with_reservation(s, true);
+        Self { remaining: (safe && a.complete).then(|| a.groups.into_iter()
+            .map(|(id, b)| (id, b.iter().map(|x| x.remaining).sum())).collect()) }
+    }
+    pub fn slice(&self, lot: &Lot, qty: i64) -> Result<Decimal> {
+        ensure!(qty > 0 && qty <= lot.units, "invalid profit funding slice");
+        let remaining = self.remaining.as_ref().and_then(|m| m.get(&lot.id))
+            .ok_or_else(|| anyhow::anyhow!("group funding attribution unavailable; normal profit exit waiting"))?;
+        Ok(*remaining * Decimal::from(qty) / Decimal::from(lot.units))
+    }
 }
 
 fn apply_fill(f: &Fill, s: &Snapshot, ids: &BTreeSet<String>, result: &mut Attribution,
@@ -271,7 +315,10 @@ impl AccountingCache {
                 let b = a.groups.get(&lot.id);
                 let total = a.complete.then(|| b.map_or(Decimal::ZERO, |b| b.iter().map(|x| x.total).sum()));
                 let remaining = a.complete.then(|| b.map_or(Decimal::ZERO, |b| b.iter().map(|x| x.remaining).sum()));
+                let target = (s.config.exit_policy == ExitPolicy::PerGroup).then(||
+                    strategy::group_profit_target(&s.config, lot, now));
                 LotNetProfit { lot_id: lot.id.clone(), settled_funding: total, remaining_funding: remaining,
+                    take_profit_contraction: target, exit_spread_ceiling: target.map(|t| lot.entry_spread - t),
                     estimated_exit_net: remaining.and_then(|funding| estimate_lot(s, lot, books, now, funding).ok()) }
             }).collect(),
         }

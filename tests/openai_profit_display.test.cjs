@@ -25,13 +25,13 @@ function fixture(profile){
 
 test('old/incomplete accounting shows unknown group profit, not zero or a guessed total',()=>{
   const f=fixture();f.render();
-  assert.equal((f.element('lots').innerHTML.match(/>—<\/td>/g)||[]).length,4);
+  assert.equal((f.element('lots').innerHTML.match(/>—<\/td>/g)||[]).length,6);
   assert.equal(f.element('pnl').textContent,'-0.28 U');
   assert.match(f.element('pnl').title,/已结算资金费/);
   assert.equal(f.element('closed-pnl').textContent,'—');
   f.payload.view.profit_accounting={lots:[{lot_id:'a',remaining_funding:null,estimated_exit_net:null}]};
   f.render();
-  assert.equal((f.element('lots').innerHTML.match(/>—<\/td>/g)||[]).length,4);
+  assert.equal((f.element('lots').innerHTML.match(/>—<\/td>/g)||[]).length,6);
 });
 
 test('closed net profit displays independently with signed colors, zero and missing data',()=>{
@@ -114,4 +114,14 @@ test('isolated entry funds distinguish valuation, transferable collateral and un
   row.entry_margin.collateral='100';row.entry_margin.isolated_only=false;
   f.render();assert.match(f.element('accounts').innerHTML,/>待核对<\/td>/);
   row.entry_margin=null;f.render();assert.match(f.element('accounts').innerHTML,/>28.00 U<\/td>/);
+});
+
+ test('per-lot decay targets come from backend and bind by lot ID',()=>{
+  const f=fixture();f.payload.view.profit_accounting={lots:[
+    {lot_id:'b',take_profit_contraction:'15',exit_spread_ceiling:'35'},
+    {lot_id:'a',take_profit_contraction:'5',exit_spread_ceiling:'2.61'}]};
+  f.render();const rows=f.element('lots').innerHTML.split('</tr>');
+  assert.match(rows[0],/平仓价差上限 2.61 U/);
+  assert.match(rows[1],/平仓价差上限 35 U/);
+  assert.match(f.element('inventory-tables').innerHTML,/当前需收窄/);
 });

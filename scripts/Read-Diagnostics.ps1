@@ -165,7 +165,7 @@ function Capture-Market($Profile) {
       sampling=($v.sampling | Select-Object ready,continuity_active,covered_ms,required_ms); directional_means=$v.directional_means; submission_enabled=$v.submission_enabled
       warning=(SafeText $v.transient_warning); lookup_note=(SafeText $v.order_lookup_note)
       funding_complete=$v.profit_accounting.funding_complete
-      profit_accounting=($v.profit_accounting | Select-Object closed_net_profit,settled_funding,unallocated_funding,funding_complete)
+      profit_accounting=($v.profit_accounting | Select-Object closed_net_profit,settled_funding,unallocated_funding,funding_complete,@{Name='lots';Expression={@($_.lots | Select-Object lot_id,remaining_funding,estimated_exit_net,take_profit_contraction,exit_spread_ceiling)}})
       notifications=[ordered]@{saved=$d.notifications.saved; unlocked=$d.notifications.unlocked; delivery=($d.notifications.delivery | Select-Object enabled,pending,dropped,last_sent_ms,@{Name='error';Expression={SafeText $_.error}})}
     }
   } catch {
@@ -317,7 +317,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc27'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc28'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   profiles=$profiles; observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

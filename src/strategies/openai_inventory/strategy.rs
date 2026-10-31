@@ -498,6 +498,7 @@ fn evaluate_inner(
     let mut close_allocations = Vec::new();
     if held > 0 {
         if s.config.exit_policy == ExitPolicy::PerGroup && !s.close_requested {
+            let funding = accounting::ProfitFunding::new(s);
             let previous = std::mem::take(&mut s.previous_group_exit);
             let mut confirmed = Vec::new();
             for lot in &s.lots {
@@ -507,7 +508,7 @@ fn evaluate_inner(
                 qty = execution::protected_close_units(s, books, qty, now)?;
                 if qty == 0 { continue; }
                 let eligible = funding_ready && if s.config.shared_exit_conditions {
-                    shared_profit_exit_eligible(s,Some(lot),books,qty,mean,now).unwrap_or(false)
+                    shared_profit_exit_with_funding(s,Some(lot),books,qty,mean,now,&funding).unwrap_or(false)
                 } else {group_exit_eligible(s, lot, books, qty, now).unwrap_or(false)};
                 if eligible { s.previous_group_exit.insert(lot.id.clone(), now); }
                 if eligible && previous.get(&lot.id)
@@ -702,15 +703,32 @@ fn evaluate_inner(
     }))
 }
 
-/// Each group uses its actual opening cash flows and both protected exit prices.
-/// Missing legacy costs block this optional paper-only policy rather than inventing fees.
+pub const PROFIT_DECAY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Current accumulation policy: each durable lot independently relaxes its
+/// contraction target from half its entry spread to 5 over seven elapsed days.
+/// A backwards clock never makes a lot older; after day seven the floor holds.
+pub fn group_profit_target(config: &InventoryConfig, lot: &Lot, now: u64) -> Decimal {
+    if config.accumulation.is_none() { return config.group_take_profit; }
+    let floor = Decimal::from(5);
+    let initial = (lot.entry_spread / Decimal::TWO).max(floor);
+    let remaining = PROFIT_DECAY_MS - now.saturating_sub(lot.opened_ms).min(PROFIT_DECAY_MS);
+    floor + (initial - floor) * Decimal::from(remaining) / Decimal::from(PROFIT_DECAY_MS)
+}
+
+/// Actual opening cash flows, protected exit prices, and attributed settlement costs.
 pub fn group_exit_eligible(s: &Snapshot, lot: &Lot, books: &[Book; 2], qty: i64, now: u64) -> Result<bool> {
+    group_exit_with_funding(s, lot, books, qty, now, &accounting::ProfitFunding::new(s))
+}
+
+fn group_exit_with_funding(s: &Snapshot, lot: &Lot, books: &[Book; 2], qty: i64, now: u64,
+    funding: &accounting::ProfitFunding) -> Result<bool> {
     ensure!(qty > 0 && qty <= lot.units, "invalid group exit size");
     if s.config.shared_exit_conditions {
         let mean = if s.config.accumulation.is_some() { Decimal::ZERO } else {
             reference_mean_for(s,now,s.direction).ok_or_else(|| anyhow::anyhow!("missing close reference mean"))?
         };
-        return shared_profit_exit_eligible(s,Some(lot),books,qty,mean,now);
+        return shared_profit_exit_with_funding(s,Some(lot),books,qty,mean,now,funding);
     }
     let entry_net = lot.entry_net_spread.ok_or_else(|| anyhow::anyhow!("group opening costs unavailable"))?;
     let long = s.direction.long(); let short = s.direction.short();
@@ -730,13 +748,14 @@ pub fn select_close_batch(s: &Snapshot, books: &[Book; 2], candidates: &[CloseAl
     let mut selected = Vec::new();
     let mut total = 0_i64;
     let mut seen = std::collections::BTreeSet::new();
+    let funding = accounting::ProfitFunding::new(s);
     for allocation in candidates {
         ensure!(allocation.units > 0 && allocation.units % s.config.common_step() == 0 && seen.insert(&allocation.lot_id),
             "invalid or duplicate batch exit allocation");
         let lot = s.lots.iter().find(|l| l.id == allocation.lot_id)
             .ok_or_else(|| anyhow::anyhow!("selected group missing"))?;
         ensure!(allocation.units <= lot.units, "batch exit exceeds selected group inventory");
-        if !group_exit_eligible(s, lot, books, allocation.units, now).unwrap_or(false) { continue; }
+        if !group_exit_with_funding(s, lot, books, allocation.units, now, &funding).unwrap_or(false) { continue; }
         let combined = total.checked_add(allocation.units).ok_or_else(|| anyhow::anyhow!("batch quantity overflow"))?;
         if [Venue::Lighter, Venue::Entropy].into_iter().all(|v|
             execution::protected_limit(s, books, v, s.direction.side(v, Action::Close), combined, now).is_ok()) {
@@ -762,6 +781,10 @@ pub fn refresh_unsent_close_batch(s: &mut Snapshot, books: &[Book; 2], now: u64)
 }
 
 pub fn normal_exit_eligible(s: &Snapshot, books: &[Book; 2], now: u64) -> Result<bool> {
+    if s.config.exit_policy == ExitPolicy::PerGroup && s.config.accumulation.is_some() {
+        ensure!(s.funding_synced_ms > 0 && s.funding_synced_ms <= now
+            && now - s.funding_synced_ms <= 90_000, "funding reconciliation required before profit exit");
+    }
     if let Some(op) = &s.pending {
         if op.requested_units <= 0 { return Ok(false); }
         if !op.close_allocations.is_empty() {
@@ -787,6 +810,11 @@ pub fn normal_exit_eligible(s: &Snapshot, books: &[Book; 2], now: u64) -> Result
 /// Identical price, cost and threshold model. Only the inventory being evaluated differs.
 /// `None` means all remaining lots; a selected lot uses its own opening cash flow.
 fn shared_profit_exit_eligible(s: &Snapshot, lot: Option<&Lot>, books: &[Book;2], qty:i64, mean:Decimal, now:u64) -> Result<bool> {
+    shared_profit_exit_with_funding(s,lot,books,qty,mean,now,&accounting::ProfitFunding::new(s))
+}
+
+fn shared_profit_exit_with_funding(s: &Snapshot, lot: Option<&Lot>, books: &[Book;2], qty:i64,
+    mean:Decimal, now:u64, funding:&accounting::ProfitFunding) -> Result<bool> {
     ensure!(qty>0,"empty exit inventory");
     let opening = if let Some(lot)=lot {
         ensure!(qty<=lot.units,"invalid group exit size");
@@ -801,10 +829,12 @@ fn shared_profit_exit_eligible(s: &Snapshot, lot: Option<&Lot>, books: &[Book;2]
     let prices=[l?,e?];
     let exit_spread=prices[s.direction.short()]-prices[s.direction.long()];
     let fees=s.config.quantity(qty)*(prices[0]*s.config.fee_lighter+prices[1]*s.config.fee_entropy);
-    let net=opening-s.config.quantity(qty)*exit_spread-fees;
+    let settled = if s.config.accumulation.is_some() {
+        lot.map(|l| funding.slice(l,qty)).transpose()?.unwrap_or(Decimal::ZERO)
+    } else { Decimal::ZERO };
+    let net=opening-s.config.quantity(qty)*exit_spread-fees+settled;
     let target_met = lot.is_none_or(|lot| {
-        let target=s.config.accumulation.as_ref().map_or(s.config.group_take_profit,
-            |r|(lot.entry_spread*r.contraction_ratio).max(s.config.group_take_profit));
+        let target=group_profit_target(&s.config,lot,now);
         lot.entry_spread-exit_spread>=target
     });
     // Accumulation replaces the MA exit only for individual lots. A round still
