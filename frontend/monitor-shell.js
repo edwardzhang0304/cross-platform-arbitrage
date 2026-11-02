@@ -21,10 +21,6 @@
     $('monitor-state').textContent=st.text;$('monitor-state').className='badge '+st.tone;
     $('monitor-pair-status').textContent=current.mode==='paper'?'模拟账户 · 虚拟资金':pair.text;
     $('monitor-pair-status').className=pair.ok?'good':'muted';
-    const warning=s.status==='needs_attention'||s.entry_margin_block||v.transient_warning||v.order_lookup_note;
-    $('monitor-warning').hidden=!warning;
-    $('monitor-warning-title').textContent=s.entry_margin_block?'保证金保护生效，开仓与加仓已暂停':s.status==='needs_attention'?'账户需要处理，请进入控制中心查看恢复入口':'有待核对的信息';
-    $('monitor-reason').textContent=[s.reason,v.transient_warning,v.order_lookup_note].filter(Boolean).join('\n');
     lastMarket={symbols:current.symbols,available:true,status:{running:true,observed_ms:Date.now(),books:(v.books||[]).map(b=>({bid:b.bids?.[0]?{price:b.bids[0].price}:null,ask:b.asks?.[0]?{price:b.asks[0].price}:null,connected:b.connected,received_ms:b.received_ms}))},rules:{book_max_age_ms:s.config.book_max_age_ms}};
     navigation?.refresh();
   }
