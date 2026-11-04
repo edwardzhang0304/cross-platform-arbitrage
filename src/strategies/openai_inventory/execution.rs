@@ -238,7 +238,7 @@ fn protected_limit_with_slippage(s:&Snapshot,books:&[Book;2],venue:Venue,side:Si
     Ok(limit)
 }
 
-fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side,slippage:Decimal)->Result<Decimal> {
+pub(super) fn protected_price_bound(s:&Snapshot,b:&Book,venue:Venue,side:Side,slippage:Decimal)->Result<Decimal> {
     let best = if side == Side::Buy {
         b.asks[0].price
     } else {
@@ -451,7 +451,9 @@ fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult
         _ => op.unwind_hedge_terminal = result.terminal,
     };
     if result.terminal && !req.reduce_only && s.pending.as_ref().is_some_and(|p|p.action==Action::Open) {
-        if let Some(rejection)=result.rejection { entry_margin::latch(s,req,rejection); }
+        if let Some(rejection)=result.rejection {
+            entry_margin::record_rejection(s,req,rejection,req.created_ms,&result.reason);
+        }
     }
     s.reason = result.reason.clone();
     if result.terminal && s.status == Status::RecoveringExposure {
@@ -466,11 +468,15 @@ fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult
 
 /// Only a reservation with no attempt marker and no fills is safe to discard.
 /// Pause/stop must retain submitted or unknown orders so they can be reconciled.
-pub fn cancel_unsent_entry(s: &mut Snapshot) -> bool {
-    let safe = s.pending.as_ref().is_some_and(|p| p.action == Action::Open
+pub(super) fn reserved_entry(s: &Snapshot) -> bool {
+    s.pending.as_ref().is_some_and(|p| p.action == Action::Open
         && [&p.first, &p.hedge, &p.repair, &p.align_close, &p.unwind_hedge].iter().all(|r| r.is_none())
-        && [p.first_filled,p.hedge_filled,p.repair_filled,p.align_close_filled,p.unwind_hedge_filled].iter().all(|n| *n == 0));
-    if !safe { return false; }
+        && !p.first_terminal
+        && [p.first_filled,p.hedge_filled,p.repair_filled,p.align_close_filled,p.unwind_hedge_filled].iter().all(|n| *n == 0))
+}
+
+pub fn cancel_unsent_entry(s: &mut Snapshot) -> bool {
+    if !reserved_entry(s) { return false; }
     s.pending = None;
     strategy::clear_entry_confirmation(s);
     s.reason = "unsent entry cancelled by risk control".into();
@@ -502,7 +508,20 @@ pub fn cancel_close_all(s:&mut Snapshot)->Result<()> {
     Ok(())
 }
 
-/// At most one request/query per tick. On uncertain submission: query the SAME id, never resubmit.
+pub(super) fn defer_reserved_entry(s: &mut Snapshot, store: &mut Store, now: u64,
+    reason: String) -> Result<()> {
+    ensure!(reserved_entry(s), "cannot discard an attempted order");
+    let mut next = s.clone();
+    next.pending = None;
+    next.reason = format!("开仓前复查暂缓：{reason}");
+    let note = next.reason.clone();
+    entry_margin::wait(&mut next, now, note);
+    store.commit(&next, now, "entry_preflight_deferred")?;
+    *s = next;
+    Ok(())
+}
+
+/// Each attempt uses a durable order id. An unknown submission is lookup-only.
 pub async fn advance(
     s: &mut Snapshot,
     store: &mut Store,
@@ -510,6 +529,17 @@ pub async fn advance(
     books: &[Book; 2],
     now: u64,
 ) -> Result<()> {
+    if reserved_entry(s) && !(s.paused || s.stop_requested || s.close_requested || s.loss_stop.is_some()) {
+        // Replay callers use their supplied clock. The service also reloads
+        // both shared books after the account reads.
+        let (l,e) = tokio::join!(workers[0].reconcile_account(),workers[1].reconcile_account());
+        let checked = workers[0].now_ms().max(now);
+        let accounts = match l.and_then(|l| e.map(|e| [l,e])) {
+            Ok(accounts) => accounts,
+            Err(error) => return defer_reserved_entry(s,store,checked,error.to_string()),
+        };
+        return advance_with_hedge_evidence(s,store,workers,books,checked,Some(&accounts)).await;
+    }
     advance_with_hedge_evidence(s,store,workers,books,now,None).await
 }
 
@@ -523,10 +553,7 @@ pub(super) async fn advance_with_hedge_evidence(
         store.commit(s, now, "unsent_entry_cancelled")?;
         return Ok(());
     }
-    let unsent_entry = s
-        .pending
-        .as_ref()
-        .is_some_and(|op| op.action == Action::Open && op.first.is_none());
+    let unsent_entry = reserved_entry(s);
     // No attempt marker means no request could have been sent. A transient
     // stale quote must discard this intention, not strand a flat live worker.
     // Never apply this to a submitted/unknown order or to a protective close.
@@ -552,6 +579,10 @@ pub(super) async fn advance_with_hedge_evidence(
         let threshold = s.required_entry_spread(mean,op.level);
         let entry = s.direction.entry(books, op.requested_units)?;
         ensure!(entry >= threshold, "entry spread moved below threshold");
+        let [l,e] = [Venue::Lighter,Venue::Entropy].map(|v|
+            protected_limit(s,books,v,s.direction.open_side(v),op.requested_units,now));
+        ensure!((e? - l?) * Decimal::from(s.direction.sign()) >= threshold,
+            "paired protected limits no longer meet entry threshold");
         Ok(())
     };
     if unsent_entry && s.loss_stop.is_none() && entry_ready().is_err() {
@@ -580,6 +611,31 @@ pub(super) async fn advance_with_hedge_evidence(
     if changed {
         store.commit(s, now, "loss_limit_latched")?;
     }
+    if unsent_entry && s.pending.is_some() && s.loss_stop.is_none() {
+        let a = accounts.context("missing paired pre-dispatch accounts")?;
+        let op = s.pending.as_ref().unwrap();
+        // A mismatch or an outstanding order needs reconciliation. Never
+        // turn either into an ordinary retry of a new entry.
+        let ownership = s.assert_reconciled(a).and_then(|_| {
+            ensure!(s.positions[s.direction.long()].units == s.paired_units()
+                && s.positions[s.direction.short()].units == -s.paired_units(), "unpaired inventory");
+            ensure!(a.iter().all(|a| a.open_orders == 0), "unresolved venue orders before entry");
+            Ok(())
+        });
+        if let Err(error) = ownership {
+            let mut next = s.clone();
+            next.pending = None;
+            next.status = Status::NeedsAttention;
+            next.reason = error.to_string();
+            strategy::clear_entry_confirmation(&mut next);
+            store.commit(&next,now,"entry_ownership_halt")?;
+            *s = next;
+            return Ok(());
+        }
+        if let Err(error) = strategy::risk_check(s,books,a,now,op.requested_units,Action::Open) {
+            return defer_reserved_entry(s,store,now,error.to_string());
+        }
+    }
     if s.pending
         .as_ref()
         .is_some_and(|p| p.action == Action::Close && p.first.is_none())
@@ -604,7 +660,7 @@ pub(super) async fn advance_with_hedge_evidence(
             return Ok(());
         }
     }
-    if s.entry_margin_block.is_some() && s.pending.as_ref().is_some_and(|p|
+    if (s.entry_margin_block.is_some() || s.entry_funding_wait.is_some()) && s.pending.as_ref().is_some_and(|p|
         p.action==Action::Open && p.first_terminal && p.hedge.is_none() && !p.hedge_terminal) {
         let mut next=s.clone();let p=next.pending.as_mut().unwrap();
         p.hedge_terminal=true;p.failed=true;
@@ -826,6 +882,7 @@ pub(super) async fn advance_with_hedge_evidence(
         }
     };
     if is_new {
+        if which == 0 && !close { s.entry_funding_wait = None; }
         let p = s.pending.as_mut().unwrap();
         if matches!(which,2|3|4) {
             p.recovery_slippage_bps=recovery_slippage(p);

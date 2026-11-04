@@ -285,6 +285,24 @@ impl InventoryService {
                                 timeout_lookup.defer(crate::domain::now_ms(),state.fills.len()!=fill_count || state.status!=Status::NeedsAttention);
                                 order_lookup_note = match &lookup {Ok(note)=>note.clone(),Err(e)=>format!("{e:#}")};
                                 lookup?;
+                            } else if state.status != Status::NeedsAttention && execution::reserved_entry(&state)
+                                && !state.paused && !state.stop_requested && !state.close_requested && state.loss_stop.is_none() {
+                                // Confirm both legs together before Entropy can acquire exposure.
+                                let expires = state.pending.as_ref().unwrap().created_ms.saturating_add(config.operation_timeout_ms);
+                                let evidence = tokio::time::timeout(Duration::from_millis(expires.saturating_sub(now)),
+                                    venue::fresh_reconciled_accounts(&workers,config.account_max_age_ms)).await
+                                    .context("开仓前核对账户超时").and_then(|result| result);
+                                let checked_at = crate::domain::now_ms();
+                                match evidence {
+                                    Ok(verified) => {
+                                        let fresh_books = books.read().unwrap().clone();
+                                        execution::advance_with_hedge_evidence(&mut state,&mut store,&workers,
+                                            &fresh_books,checked_at,Some(&verified)).await?;
+                                        accounts = Some(verified);
+                                    }
+                                    Err(error) => execution::defer_reserved_entry(&mut state,&mut store,checked_at,error.to_string())?,
+                                }
+                                last_accounts = 0;
                             } else if execution::entry_hedge_retry::due(&state,now) {
                                 match venue::fresh_reconciled_accounts(&workers,config.account_max_age_ms).await {
                                     Ok(verified)=>{

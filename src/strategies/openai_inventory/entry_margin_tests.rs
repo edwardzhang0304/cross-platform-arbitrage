@@ -28,13 +28,42 @@ fn adverse_execution_fee_and_reserve_are_included_in_both_directions() {
         assert!(e.check(d("0.01"),limit,side,fee,reserve).is_err());
     }
 }
+
+#[test]
+fn new_cash_and_whole_position_health_are_independent() {
+    let mut e = evidence();
+    e.allocated_margin = Some(d("5"));
+    e.unrealized_pnl = Some(d("-0.1"));
+    e.position_value = Some(d("15"));
+    e.collateral = Some(d("80"));
+    for side in [Side::Buy,Side::Sell] {
+        let sign = side.sign();
+        let mut a = AccountEvidence {
+            venue: Venue::Lighter, account: "synthetic".into(), observed_ms: 1,
+            position_units: sign * 100, free_margin: d("28"), equity: d("84.9"),
+            leverage: 3, isolated: true, open_orders: 0, authenticated: true,
+            entry_margin: Some(e.clone()), liquidation_price: Some(d(if sign==1 { "1100" } else { "1900" })),
+        };
+        let config = InventoryConfig::default();
+        // Old position is slightly below initial. Incremental allocation
+        // improves its ratio, and external cash covers the new leg.
+        check_account(&a,&config,100,d("1500"),side).unwrap();
+        a.entry_margin.as_mut().unwrap().collateral = Some(d("0.1"));
+        assert!(check_account(&a,&config,100,d("1500"),side).is_err());
+        a.entry_margin = Some(e.clone());
+        a.liquidation_price = Some(d(if sign==1 { "1490" } else { "1510" }));
+        assert!(check_account(&a,&config,100,d("1500"),side).is_err());
+        a.liquidation_price = None;
+        assert!(check_account(&a,&config,100,d("1500"),side).is_err());
+    }
+}
 #[test]
 fn missing_margin_mixed_cross_risk_and_underfunded_isolated_position_fail_closed() {
     for case in 0..8 {
         let mut e=evidence();e.collateral=Some(d("100"));e.reported_available=Some(d("100"));
         match case {0=>e.collateral=None,1=>e.initial_margin_fraction=None,2=>e.position_value=None,
             3=>e.allocated_margin=None,4=>e.unrealized_pnl=None,5=>e.mark_price=None,
-            6=>e.isolated_only=false,_=>e.unrealized_pnl=Some(d("-20"))}
+            6=>e.isolated_only=false,_=>e.unrealized_pnl=Some(d("-92"))}
         assert!(e.check(d("0.01"),d("1500"),Side::Buy,Decimal::ZERO,d("10")).is_err(),"{case}");
     }
     let mut flat=evidence();flat.collateral=Some(d("100"));flat.position_value=Some(Decimal::ZERO);
@@ -47,7 +76,7 @@ fn entry_protection_is_profile_local_and_old_snapshots_remain_compatible() {
     let req=OrderRequest{id:"synthetic-margin-order".into(),venue:Venue::Lighter,side:Side::Sell,
         units:100,limit:d("1500"),arrival_mid:None,reduce_only:false,created_ms:1000,
         expires_ms:6000,signed_expires_ms:None};
-    latch(&mut a,&req,EntryRejection::MarginNotAllowed);
+    record_rejection(&mut a,&req,EntryRejection::MarginNotAllowed,1000,"venue margin rejection");
     let restored:Snapshot=serde_json::from_value(serde_json::to_value(&a).unwrap()).unwrap();
     assert!(restored.entry_margin_block.is_some() && restored.paused);
     assert!(service::start_continuous(&mut a).is_err());

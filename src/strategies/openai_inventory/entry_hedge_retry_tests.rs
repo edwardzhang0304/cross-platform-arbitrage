@@ -350,6 +350,33 @@ async fn definitive_margin_rejection_skips_price_retries_and_survives_restart() 
     }}
 }
 
+#[tokio::test]
+async fn local_funding_failure_after_first_fill_repairs_only_the_residual_after_restart() {
+    let now=crate::domain::now_ms();
+    let (mut s,_,b)=fixture(now,MarketPair::Anth,Direction::LighterLong);
+    let old_lot=s.lots[0].clone();
+    let req=s.pending.as_ref().unwrap().hedge.clone().unwrap();
+    let mut result=fill(&req,0,true);
+    result.rejection=Some(entry_margin::EntryRejection::PreflightFunding);
+    apply(&mut s,1,&req,result).unwrap();
+    let mut s: Snapshot=serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    assert!(s.entry_margin_block.is_none() && s.entry_funding_wait.is_some());
+    assert!(!due(&s,now+30_000));
+    let (w,calls)=workers(vec![]);
+    let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+    for _ in 0..2 {advance(&mut s,&mut db,&w,&b,now).await.unwrap();}
+    let sent=calls.lock().unwrap();
+    assert_eq!(sent.len(),1);
+    let (submitted,order)=&sent[0];
+    assert!(*submitted && order.reduce_only && order.venue==Venue::Entropy);
+    assert_eq!(order.units,req.units);
+    assert_eq!(s.lots.len(),1);
+    assert_eq!(s.lots[0].id,old_lot.id);
+    assert_eq!(s.positions[0].units,old_lot.units);
+    assert_eq!(s.positions[1].units,-old_lot.units);
+    assert!(s.pending.is_none() && !s.paused && s.status==Status::Running);
+}
+
 #[test]
 fn nonterminal_margin_note_never_authorizes_repair_or_resubmission() {
     let now=100_000;let (mut s,_,_)=fixture(now,MarketPair::Openai,Direction::LighterShort);
@@ -361,7 +388,7 @@ fn nonterminal_margin_note_never_authorizes_repair_or_resubmission() {
 }
 
 #[tokio::test]
-async fn depleted_transferable_cash_during_retry_latches_before_any_more_entry_submissions() {
+async fn depleted_transferable_cash_during_retry_only_unwinds_new_exposure() {
     let now=crate::domain::now_ms();let (mut s,mut a,b)=fixture(now,MarketPair::Openai,Direction::LighterShort);
     s.pending.as_mut().unwrap().entry_hedge_retry.as_mut().unwrap().after_ms=Some(now);
     a[0].entry_margin=Some(entry_margin::EntryMarginEvidence{reported_available:Some(100.into()),
@@ -370,7 +397,12 @@ async fn depleted_transferable_cash_during_retry_latches_before_any_more_entry_s
         mark_price:Some(2020.into()),isolated_only:true});
     let (w,calls)=workers(vec![]);let (mut db,_)=Store::offline_replay(&s.config).unwrap();
     advance_with_hedge_evidence(&mut s,&mut db,&w,&b,now,Some(&a)).await.unwrap();
-    assert!(s.entry_margin_block.is_some());assert!(calls.lock().unwrap().iter().all(|(_,r)|r.reduce_only));
+    assert!(s.entry_margin_block.is_none() && s.entry_funding_wait.is_some());
+    assert!(calls.lock().unwrap().iter().all(|(_,r)|r.reduce_only));
+    advance(&mut s,&mut db,&w,&b,now).await.unwrap();
+    assert!(s.pending.is_none() && s.lots.len()==1 && !s.paused);
+    assert_eq!(s.positions[0].units,-s.positions[1].units);
+    assert_eq!(s.positions[0].units.abs(),s.lots[0].units);
 }
 
 #[tokio::test]

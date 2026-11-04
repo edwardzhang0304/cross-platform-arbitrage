@@ -94,6 +94,7 @@ function Snapshot-View($s) {
     emergency_exit=(Emergency-View $s.emergency_exit)
     paused=$s.paused; stop_requested=$s.stop_requested; resume_after_recovery=$s.resume_after_recovery; close_requested=$s.close_requested; stop_after_close=$s.stop_after_close
     entry_margin_block=$(if ($null -ne $s.entry_margin_block) { [ordered]@{venue=$s.entry_margin_block.venue; at_ms=$s.entry_margin_block.at_ms; order_ref=(Ref $s.entry_margin_block.order_id); rejection=(SafeText $s.entry_margin_block.rejection)} }); consecutive_rollbacks=$s.consecutive_rollbacks; recovery_after_ms=$s.recovery_after_ms
+    entry_funding_wait=$(if ($null -ne $s.entry_funding_wait) { [ordered]@{retry_after_ms=$s.entry_funding_wait.retry_after_ms; reason=(SafeText $s.entry_funding_wait.reason)} })
     orphan=($null -ne $s.live_orphan); loss_stop=($null -ne $s.loss_stop)
     held_groups=@($s.lots).Count; closed_groups=$s.closed_groups
     lot_units_sum=($s.lots | Measure-Object units -Sum).Sum
@@ -139,6 +140,7 @@ function Capture-Market($Profile) {
     else {
       if ($null -ne $s.pending) { $flags.Add('PENDING_OPERATION') }
       if ($null -ne $s.entry_margin_block) { $flags.Add('ENTRY_MARGIN_PROTECTION') }
+      if ($null -ne $s.entry_funding_wait -and $s.entry_funding_wait.retry_after_ms -gt $at) { $flags.Add('ENTRY_FUNDING_WAIT') }
       if ($s.status -eq 'needs_attention') { $flags.Add('NEEDS_ATTENTION') }
       if ($null -ne $s.live_orphan) { $flags.Add('ORPHAN_INCIDENT') }
       if ($null -ne $s.loss_stop) { $flags.Add('LOSS_PROTECTION') }
@@ -317,7 +319,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc29'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc30'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   profiles=$profiles; observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

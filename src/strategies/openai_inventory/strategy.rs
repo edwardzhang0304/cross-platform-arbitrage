@@ -272,11 +272,10 @@ pub fn risk_check(
                 s.config.quantity(qty) * px >= Decimal::from(10),
                 "below venue minimum notional"
             );
-            if a.entry_margin.is_some() {
-                let limit=execution::protected_limit(s,books,a.venue,side,qty,now)?;
-                entry_margin::check_account(a,&s.config,qty,limit,side)?;
-            }
-            let ntl = s.config.quantity(qty) * px;
+            let limit = execution::protected_price_bound(s,&books[i],a.venue,side,s.config.execution_slippage_bps)?;
+            entry_margin::check_account(a,&s.config,qty,limit,side)?;
+            let risk_price = limit.max(px);
+            let ntl = s.config.quantity(qty) * risk_price;
             let fee = ntl
                 * if i == 0 {
                     s.config.fee_lighter
@@ -289,7 +288,7 @@ pub fn risk_check(
                 "insufficient free margin"
             );
             ensure!(
-                s.config.quantity(a.position_units.abs() + qty) * px <= s.config.max_notional_per_venue,
+                s.config.quantity(a.position_units.abs() + qty) * risk_price <= s.config.max_notional_per_venue,
                 "inventory notional cap"
             );
         } else {
@@ -562,7 +561,8 @@ fn evaluate_inner(
         }
         }
     }
-    if action.is_none()
+    let waiting = s.entry_funding_wait.as_ref().is_some_and(|w| now < w.retry_after_ms);
+    if action.is_none() && !waiting
         && funding_ready && !s.paused && s.entry_margin_block.is_none() && !s.close_requested && !s.exit_batch_active
         && s.entry_attempts_remaining != Some(0)
     {
@@ -617,7 +617,9 @@ fn evaluate_inner(
         }
     } else { clear_entry_confirmation(s); }
     let Some((action, level, qty)) = action else {
-        s.reason = if s.entry_margin_block.is_some() { entry_margin::BLOCK_MESSAGE } else if funding_ready {
+        s.reason = if s.entry_margin_block.is_some() { entry_margin::BLOCK_MESSAGE } else if waiting {
+            &s.entry_funding_wait.as_ref().unwrap().reason
+        } else if funding_ready {
             "waiting for executable spread"
         } else {
             "funding reconciliation required; automatic entry/profit exit paused"

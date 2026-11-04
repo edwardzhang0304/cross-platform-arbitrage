@@ -38,6 +38,20 @@ fn per_group_selects_profitable_lot_and_round_exits_combined_inventory() {
 }
 
 #[test]
+fn local_entry_funding_wait_allows_confirmed_profit_exit() {
+    let now=4_000_000;
+    let (mut s,mut a)=group_fixture(now,false);
+    s.paused=false;
+    entry_margin::wait(&mut s,now,"synthetic local check".into());
+    assert!(strategy::evaluate(&mut s,&books(now,12),&a,now).unwrap().is_none());
+    let next=now+15000;
+    for x in &mut a{x.observed_ms=next;}
+    let op=strategy::evaluate(&mut s,&books(next,12),&a,next).unwrap().unwrap();
+    assert_eq!(op.action,Action::Close);
+    assert_eq!(op.close_lot_id.as_deref(),Some("group-1"));
+}
+
+#[test]
 fn group_threshold_includes_costs_protected_prices_depth_and_two_signals() {
     let now=4_000_000;let(mut s,mut a)=group_fixture(now,false);let b=books(now,18);
     assert!(strategy::group_exit_eligible(&s,&s.lots[1],&b,1000,now).unwrap());

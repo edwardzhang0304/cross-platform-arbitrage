@@ -92,3 +92,10 @@ fn missing_or_empty_entry_margin_never_blocks_reduce_only_venue_submission() {
     let mut opening=r.clone();opening.side=Side::Sell;opening.reduce_only=false;
     assert!(entry_funding(&c,&a,&opening).is_err());assert!(final_risk(&c,&a,&opening).is_err());
 }
+#[test]
+fn only_explicit_entropy_margin_rejection_is_a_funding_lock() {
+    let rejected = entropy_rejection(&json!("Insufficient margin to place order. asset=123"));
+    assert!(rejected.terminal && rejected.fills.is_empty());
+    assert_eq!(rejected.rejection,Some(entry_margin::EntryRejection::MarginNotAllowed));
+    assert_eq!(entropy_rejection(&json!("IOC could not immediately match")).rejection,None);
+}

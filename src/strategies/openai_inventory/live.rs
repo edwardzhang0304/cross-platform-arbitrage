@@ -787,8 +787,10 @@ impl VenueBackend for LighterLive {
                     .get("user_stats", self.config.account_max_age_ms)?;
                 lighter_stream_account(&p,&stats)
             })();
-            let a = if self.last_rest != 0 && streamed.is_ok() {
-                streamed?
+            let (observed_ms, a) = if self.last_rest != 0 && streamed.is_ok() {
+                // AccountFeed validates continuity even when an unchanged
+                // position has no delta. REST evidence ages from request start.
+                (crate::domain::now_ms(), streamed?)
             } else {
                 let now = crate::domain::now_ms();
                 ensure!(
@@ -799,13 +801,14 @@ impl VenueBackend for LighterLive {
                 let started = crate::domain::now_ms();
                 let (server_ms, data) = self.client.inventory_dated_account(self.credential.account_index).await?;
                 self.clock_evidence = Some((started, server_ms, crate::domain::now_ms()));
-                data["accounts"]
+                let account = data["accounts"]
                     .as_array()
                     .context("missing accounts")?
                     .iter()
                     .find(|x| integer(&x["index"]) == Some(self.credential.account_index))
                     .context("RH account index mismatch")?
-                    .clone()
+                    .clone();
+                (started, account)
             };
             let p = a["positions"]
                 .as_array()
@@ -832,7 +835,7 @@ impl VenueBackend for LighterLive {
             Ok(AccountEvidence {
                 venue: Venue::Lighter,
                 account: self.config.lighter_account.clone(),
-                observed_ms: crate::domain::now_ms(),
+                observed_ms,
                 position_units,
                 free_margin: decimal(&a["available_balance"])?,
                 equity: lighter_account_equity(&a)?,
@@ -979,7 +982,9 @@ fn entropy_result(config: &InventoryConfig, r: &OrderRequest,
     let enough = fills.iter().map(|f| f.units).sum::<i64>() == expected;
     let summary = format!("status={} requested={} remaining={} expected={} observed={} rows={}",
         order.status, r.units, remaining, expected, fills.iter().map(|f| f.units).sum::<i64>(), rows.len());
-    Ok(OrderResult { rejection: None, exchange_created_ms: Some(created_ms), terminal: terminal && enough,
+    let margin_rejected = matches!(order.status.as_str(), "perpMarginRejected" | "marginCanceled");
+    Ok(OrderResult { rejection: (terminal && enough && margin_rejected)
+        .then_some(entry_margin::EntryRejection::MarginNotAllowed), exchange_created_ms: Some(created_ms), terminal: terminal && enough,
         fills, reason: if terminal && !enough { format!("Entropy fill history incomplete: {summary}") }
             else { format!("Entropy order {summary}") } })
 }
@@ -1159,10 +1164,10 @@ impl VenueBackend for EntropyLive {
                 .post_action(payload)
                 .await?;
             if response["status"] == "err" {
-                return Ok(rejected(response["response"].to_string()));
+                return Ok(entropy_rejection(&response["response"]));
             }
             if let Some(error) = response.pointer("/response/data/statuses/0/error") {
-                return Ok(rejected(error));
+                return Ok(entropy_rejection(error));
             }
             self.inspect(&r, None).await
         })
@@ -1288,6 +1293,15 @@ fn require_isolated_setting(account: &AccountEvidence, leverage: u32) -> Result<
         "venue isolated leverage differs from the configured setting; change it manually before live trading"
     );
     Ok(())
+}
+
+fn entropy_rejection(error: &Value) -> OrderResult {
+    let mut result = rejected(error);
+    if error.as_str().is_some_and(|s| s.split(" asset=").next()
+        .is_some_and(|message| message.trim_end_matches('.') == "Insufficient margin to place order")) {
+        result.rejection = Some(entry_margin::EntryRejection::MarginNotAllowed);
+    }
+    result
 }
 
 // Proven pre-dispatch funding failure has a different recovery policy from a

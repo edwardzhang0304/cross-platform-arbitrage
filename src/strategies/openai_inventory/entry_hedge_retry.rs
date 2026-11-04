@@ -107,7 +107,7 @@ pub(super) fn prepare(s:&mut Snapshot,store:&mut Store,books:&[Book;2],now:u64,
     let candidate=request(&next,books,Venue::Lighter,side,qty,false,"hedge",now);
     if let Ok(request)=&candidate {
         if let Err(error)=entry_margin::check_account(&a[0],&s.config,qty,request.limit,side) {
-            entry_margin::latch(&mut next,request,entry_margin::EntryRejection::PreflightFunding);
+            entry_margin::record_rejection(&mut next,request,entry_margin::EntryRejection::PreflightFunding,now,&error.to_string());
             next.reason=error.to_string();
             save(s,store,next,now,"entry_hedge_margin_blocked")?;
             return Ok(false);

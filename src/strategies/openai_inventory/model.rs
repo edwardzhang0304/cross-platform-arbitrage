@@ -440,6 +440,8 @@ pub struct Snapshot {
     pub consecutive_rollbacks: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_margin_block: Option<entry_margin::EntryMarginBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_funding_wait: Option<entry_margin::EntryFundingWait>,
     #[serde(default)]
     pub mean_initialized: bool,
     /// Last established reference, retained for at most one window during maintenance.
@@ -532,6 +534,7 @@ impl Snapshot {
             recovery_after_ms: None,
             consecutive_rollbacks: 0,
             entry_margin_block: None,
+            entry_funding_wait: None,
             mean_initialized: false,
             continuity_mean: None,
             entry_mean: super::entry_mean::EntryMean::default(),
@@ -851,6 +854,10 @@ impl Snapshot {
             self.recovery_after_ms = None;
             self.status = if self.stop_requested || (self.stop_after_close && self.lots.is_empty()) { Status::Stopped } else { Status::PausedEntries };
             self.reason = entry_margin::BLOCK_MESSAGE.into();
+        } else if self.entry_funding_wait.is_some() && op.action == Action::Open
+            && self.consecutive_rollbacks < 3 && !self.stop_requested && !self.stop_after_close {
+            self.status = if self.paused { Status::PausedEntries } else { Status::Running };
+            self.reason = self.entry_funding_wait.as_ref().unwrap().reason.clone();
         } else if op.failed {
             self.status = Status::NeedsAttention;
             if ((op.action == Action::Open && paired == 0) || op.action == Action::Close)

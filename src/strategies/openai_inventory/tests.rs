@@ -694,7 +694,8 @@ async fn loss_stop_cancels_unsent_entry_but_reconciles_sent_entry_then_flattens(
         .into_iter()
         .flat_map(|sent| [Venue::Lighter, Venue::Entropy].map(|v| (sent, v)))
     {
-        let now = crate::domain::now_ms();
+        // Place the second signal at the worker's current account observation.
+        let now = crate::domain::now_ms() - 15_000;
         let b = books(now, 16);
         let mut s = warmed(now);
         let mut a = accounts(now);
@@ -791,7 +792,8 @@ async fn loss_stop_cancels_unsent_entry_but_reconciles_sent_entry_then_flattens(
 async fn expired_unsent_entry_is_discarded_but_unknown_submission_is_queried() {
     use std::sync::{Arc, Mutex};
     for case in 0..4 {
-        let now = crate::domain::now_ms();
+        // Place the second signal at the worker's current account observation.
+        let now = crate::domain::now_ms() - 15_000;
         let mut s = warmed(now);
         strategy::evaluate(&mut s, &books(now, 16), &accounts(now), now).unwrap();
         let t = now + 15_000;
@@ -841,6 +843,45 @@ async fn expired_unsent_entry_is_discarded_but_unknown_submission_is_queried() {
             assert_eq!(s.status, Status::Running);
             assert_eq!(remote.lock().unwrap().submissions, 0);
         }
+    }
+}
+
+#[tokio::test]
+async fn either_leg_losing_capacity_after_reservation_discards_both_orders() {
+    use std::sync::{Arc,Mutex};
+    for short_venue in [Venue::Lighter,Venue::Entropy] {
+        let now = crate::domain::now_ms();
+        let mut s = warmed(now);
+        let b = books(now,16);
+        let mut a = accounts(now);
+        s.previous_signal = Some((now-15000,d(16),d(10)));
+        s.pending = strategy::evaluate(&mut s,&b,&a,now).unwrap();
+        let reserved = s.pending.as_ref().unwrap().id.clone();
+        a[short_venue.index()].free_margin = Decimal::ZERO;
+        let remotes = [Arc::new(Mutex::new(Remote::default())),Arc::new(Mutex::new(Remote::default()))];
+        let workers = [Venue::Lighter,Venue::Entropy].map(|v|venue::AccountWorker::spawn(v,Mode::Paper,true,
+            Box::new(FaultVenue{prices:[d(100),d(116)],venue:v,remote:remotes[v.index()].clone(),
+                unknown_once:false,fraction:1})).unwrap());
+        let (mut db,_) = store::Store::offline_replay(&s.config).unwrap();
+        execution::advance_with_hedge_evidence(&mut s,&mut db,&workers,&b,now,Some(&a)).await.unwrap();
+        assert!(s.pending.is_none() && s.entry_margin_block.is_none() && !s.paused);
+        assert_eq!(remotes.each_ref().map(|r|r.lock().unwrap().submissions),[0,0]);
+        let mut s: Snapshot = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        let due = s.entry_funding_wait.as_ref().unwrap().retry_after_ms;
+        for t in [now+15000,due,due+15000] {
+            let a = accounts(t);
+            let b = books(t,16);
+            let next = strategy::evaluate(&mut s,&b,&a,t).unwrap();
+            if t<due {assert!(next.is_none());}
+            if let Some(op)=next {
+                assert!(t>=due && op.id!=reserved);
+                s.pending=Some(op);
+                execution::advance_with_hedge_evidence(&mut s,&mut db,&workers,&b,t,Some(&a)).await.unwrap();
+                assert!(s.entry_funding_wait.is_none());
+                break;
+            }
+        }
+        assert_eq!(remotes.each_ref().map(|r|r.lock().unwrap().submissions),[0,1]);
     }
 }
 

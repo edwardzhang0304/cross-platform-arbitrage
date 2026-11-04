@@ -67,6 +67,7 @@ enum Message {
 #[derive(Clone)]
 pub struct AccountWorker {
     tx: mpsc::Sender<Message>,
+    replay_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 impl AccountWorker {
     pub fn spawn(
@@ -97,6 +98,7 @@ impl AccountWorker {
             "process dry-run blocks live account workers"
         );
         let (tx, mut rx) = mpsc::channel(16);
+        let worker_clock = replay_clock.clone();
         tokio::spawn(async move {
             let mut prepared = false;
             loop {
@@ -174,7 +176,11 @@ impl AccountWorker {
                 }
             }
         });
-        Ok(Self { tx })
+        Ok(Self { tx, replay_clock: worker_clock })
+    }
+    pub(super) fn now_ms(&self) -> u64 {
+        self.replay_clock.as_ref().map_or_else(crate::domain::now_ms,
+            |c| c.load(std::sync::atomic::Ordering::SeqCst))
     }
     pub(crate) async fn submit(&self, r: OrderRequest) -> Result<OrderResult> {
         let (tx, rx) = oneshot::channel();

@@ -20,6 +20,22 @@ pub struct EntryMarginBlock {
     pub rejection: EntryRejection,
 }
 
+/// A local preflight can expire without operator action. Exchange rejections use
+/// EntryMarginBlock instead. Keep the two distinct when loading older ledgers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryFundingWait {
+    pub retry_after_ms: u64,
+    pub reason: String,
+}
+
+pub fn wait(s: &mut Snapshot, now: u64, reason: String) {
+    s.entry_funding_wait = Some(EntryFundingWait {
+        retry_after_ms: now.saturating_add(30_000),
+        reason,
+    });
+    strategy::clear_entry_confirmation(s);
+}
+
 /// Normalized, credential-free evidence. Collateral excludes all isolated
 /// allocations on both REST and streaming paths. Missing fields stay unknown.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -49,35 +65,72 @@ impl EntryMarginEvidence {
         ensure!(mark>Decimal::ZERO && limit>Decimal::ZERO && quantity>Decimal::ZERO,"invalid margin valuation");
         let equity=self.allocated_margin.context("缺少 Lighter 逐仓保证金")?
             + self.unrealized_pnl.context("缺少 Lighter 逐仓未实现盈亏")?;
-        let current_required=self.position_value.context("缺少 Lighter 持仓价值")?*fraction;
-        ensure!(equity>=current_required,"Lighter 现有逐仓权益不足初始保证金要求；暂停新增开仓");
-        // Lighter's isolated allocation uses mark notional minus the new
-        // trade's PnL against mark, plus fees. Do not spend positive trade PnL
-        // optimistically before it exists (conservative upper bound).
-        let adverse=(Decimal::from(side.sign())*(limit-mark)).max(Decimal::ZERO);
-        let needed=quantity*(mark*fraction+adverse+limit*fee);
-        ensure!(cash>=needed+reserve,
-            "Lighter 可划转保证金不足：可用 {} U，本次需 {} U，保留 {} U（平台显示可用 {} U）",
-            cash,needed,reserve,self.reported_available.unwrap());
+        let old_value = self.position_value.context("缺少 Lighter 持仓价值")?;
+        ensure!(old_value >= Decimal::ZERO && fee >= Decimal::ZERO && reserve >= Decimal::ZERO,
+            "invalid margin evidence");
+        let added_value = quantity * mark;
+        let added_initial = added_value * fraction;
+        let trade_net = quantity * (Decimal::from(side.sign()) * (mark - limit) - limit * fee);
+        // Do not spend expected favorable execution before it exists.
+        let cash_needed = added_initial + (-trade_net).max(Decimal::ZERO);
+        ensure!(cash >= cash_needed + reserve,
+            "Lighter 可划转保证金不足：可用 {cash} U，本次需 {cash_needed} U，保留 {reserve} U");
+
+        // Same-side growth only. Lighter assigns margin to the increment;
+        // unrelated free cash does not appear in this position's equity.
+        // lighter-prover apply_trade::calculate_isolated_margin_change and
+        // RiskParameters::is_valid_risk_change (fa85b331).
+        let allocation = (added_initial - trade_net).max(Decimal::ZERO);
+        let after_equity = equity + allocation + trade_net;
+        let after_value = old_value + added_value;
+        if equity >= old_value * fraction {
+            ensure!(after_equity >= after_value * fraction, "Lighter 加仓后整仓权益不足");
+        } else {
+            // At the same mark and on the same isolated market its maintenance
+            // requirement is proportional to position value. Require strict
+            // improvement and positive equity, even if the venue allows equal.
+            ensure!(old_value > Decimal::ZERO && equity > Decimal::ZERO
+                && after_equity / after_value > equity / old_value,
+                "Lighter 加仓后整仓保证金状况未改善");
+        }
         Ok(())
     }
 }
 
 pub fn check_account(a:&AccountEvidence,c:&InventoryConfig,units:i64,limit:Decimal,side:Side)->Result<()> {
     if let Some(e)=&a.entry_margin {
+        ensure!(a.isolated && (a.position_units == 0 || a.position_units.signum() == side.sign()),
+            "Lighter 加仓需要同向逐仓持仓");
+        let cap_price = e.mark_price.unwrap_or(limit).max(limit);
+        ensure!(c.quantity(a.position_units.abs() + units) * cap_price <= c.max_notional_per_venue,
+            "Lighter 加仓后整仓超过本账户持仓额度");
+        let below_initial = e.allocated_margin.zip(e.unrealized_pnl)
+            .zip(e.position_value.zip(e.initial_margin_fraction))
+            .is_some_and(|((margin, pnl), (value, fraction))| margin + pnl < value * fraction);
+        if a.position_units != 0 && below_initial {
+            let mark = e.mark_price.context("缺少 Lighter 持仓标记价格")?;
+            let liquidation = a.liquidation_price.context("缺少 Lighter 持仓强平价")?;
+            ensure!(liquidation >= Decimal::ZERO && (liquidation.is_zero()
+                || (mark-liquidation)*Decimal::from(a.position_units.signum()) > mark*Decimal::new(5,2)),
+                "Lighter 持仓已接近强平保护线");
+        }
         e.check(c.quantity(units),limit,side,c.fee_lighter,c.min_free_margin)?;
     }
     Ok(())
 }
 
-pub fn latch(s:&mut Snapshot,r:&OrderRequest,rejection:EntryRejection) {
+pub fn record_rejection(s:&mut Snapshot,r:&OrderRequest,rejection:EntryRejection,now:u64,reason:&str) {
+    if let Some(retry)=s.pending.as_mut().and_then(|p|p.entry_hedge_retry.as_mut()) {
+        retry.abandoned=true;retry.after_ms=None;retry.reason=reason.to_owned();
+    }
+    if rejection == EntryRejection::PreflightFunding {
+        wait(s,now,reason.to_owned());
+        return;
+    }
     s.entry_margin_block=Some(EntryMarginBlock{venue:r.venue,at_ms:r.created_ms,order_id:r.id.clone(),rejection});
     s.paused=true;
     s.recovery_after_ms=None;
     strategy::clear_entry_confirmation(s);
-    if let Some(retry)=s.pending.as_mut().and_then(|p|p.entry_hedge_retry.as_mut()) {
-        retry.abandoned=true;retry.after_ms=None;retry.reason=BLOCK_MESSAGE.into();
-    }
 }
 
 #[cfg(test)]
