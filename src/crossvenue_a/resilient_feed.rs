@@ -4,7 +4,8 @@ use super::*;
 use std::{collections::VecDeque, sync::Mutex};
 
 const FALLBACK_AFTER_MS: u64 = 1_500;
-const FALLBACK_INTERVAL_MS: u64 = 1_000;
+const FALLBACK_INTERVAL_MS: u64 = 2_000;
+const FALLBACK_MAX_INTERVAL_MS: u64 = 30_000;
 const REST_DEADLINE_MS: u64 = 1_250;
 const MAX_SOURCE_AGE_MS: u64 = 1_500;
 const HISTORY_LIMIT: usize = 32;
@@ -20,6 +21,18 @@ pub struct MarketStreamHealth {
     pub rest_failures: u64,
     pub last_ws_book_ms: u64,
     pub last_rest_book_ms: u64,
+    // Transport receipt is separate from a fresh, tradable book. These fields
+    // never refresh Book timestamps or contribute to entry/alert continuity.
+    pub last_ws_message_ms: u64,
+    pub last_ws_source_ms: u64,
+    pub last_ws_source_age_ms: u64,
+    pub last_rest_response_ms: u64,
+    pub last_rest_source_ms: u64,
+    pub last_rest_source_age_ms: u64,
+    pub delayed_ws_books: u64,
+    pub delayed_rest_books: u64,
+    pub rest_unusable_streak: u32,
+    pub rest_retry_after_ms: u64,
     pub last_error_ms: u64,
     pub last_error: String,
     pub history: VecDeque<TransportIncident>,
@@ -81,6 +94,17 @@ struct Publisher {
     last_exchange_ms: u64,
     last_ws_exchange_ms: u64,
 }
+#[derive(Debug)]
+struct BookReceipt {
+    progressed: bool,
+    published: bool,
+}
+
+fn recovery_delay_ms(unusable_streak: u32) -> u64 {
+    FALLBACK_INTERVAL_MS.saturating_mul(1u64 << unusable_streak.saturating_sub(1).min(4))
+        .min(FALLBACK_MAX_INTERVAL_MS)
+}
+
 impl Publisher {
     fn health_event(&self, sender: &mpsc::Sender<MarketDataEvent>) -> Result<()> {
         try_emit(sender, MarketDataEvent::Transport { venue: MarketVenue::Trade, health: self.health.clone() })
@@ -90,23 +114,51 @@ impl Publisher {
         let _ = self.health_event(sender);
     }
     fn publish(&mut self, sender: &mpsc::Sender<MarketDataEvent>, mut book: OrderBook,
-        source: &str, at: u64) -> Result<bool> {
+        source: &str, at: u64) -> Result<BookReceipt> {
         // The exchange timestamp, not HTTP completion or a cached receive time,
         // controls freshness. Drop duplicate/backwards snapshots across sources.
         ensure!(book.exchange_timestamp_ms > 0
-            && book.exchange_timestamp_ms <= at.saturating_add(1_000)
-            && at.saturating_sub(book.exchange_timestamp_ms) <= MAX_SOURCE_AGE_MS,
-            "source book timestamp stale or in future");
+            && book.exchange_timestamp_ms <= at.saturating_add(1_000),
+            "source book timestamp missing or in future");
         TradeBookMode::Fast.limit_recovery_book(&mut book);
         TradeBookMode::Fast.validate_stream_book(&book)?;
         let ws_progress = source == "websocket" && book.exchange_timestamp_ms > self.last_ws_exchange_ms;
+        let age = at.saturating_sub(book.exchange_timestamp_ms);
+        let (previous_received, previous_age) = if source == "websocket" {
+            let previous = (self.health.last_ws_message_ms, self.health.last_ws_source_age_ms);
+            self.health.last_ws_message_ms = at;
+            self.health.last_ws_source_ms = book.exchange_timestamp_ms;
+            self.health.last_ws_source_age_ms = age;
+            previous
+        } else {
+            let previous = (self.health.last_rest_response_ms, self.health.last_rest_source_age_ms);
+            self.health.last_rest_response_ms = at;
+            self.health.last_rest_source_ms = book.exchange_timestamp_ms;
+            self.health.last_rest_source_age_ms = age;
+            previous
+        };
         if ws_progress {
             self.last_ws_exchange_ms = book.exchange_timestamp_ms;
+        }
+        if age > MAX_SOURCE_AGE_MS {
+            if source == "websocket" { self.health.delayed_ws_books += 1; }
+            else { self.health.delayed_rest_books += 1; }
+            if previous_received == 0 || previous_age <= MAX_SOURCE_AGE_MS {
+                self.health.incident(at, &format!("{source}_quote_delayed"),
+                    "source quote exceeds 1500ms; receiving continues, trading book unchanged");
+            }
+            self.health_event(sender)?;
+            return Ok(BookReceipt { progressed: ws_progress, published: false });
+        }
+        if previous_received != 0 && previous_age > MAX_SOURCE_AGE_MS {
+            self.health.incident(at, &format!("{source}_quote_recovered"), "source quote within freshness limit again");
+        }
+        if ws_progress {
             self.health.last_ws_book_ms = at;
         }
         if book.exchange_timestamp_ms <= self.last_exchange_ms {
             self.health_event(sender)?;
-            return Ok(ws_progress);
+            return Ok(BookReceipt { progressed: ws_progress, published: false });
         }
         book.received_timestamp_ms = book.exchange_timestamp_ms.min(at);
         self.health.source = source.into();
@@ -120,7 +172,7 @@ impl Publisher {
         self.health_event(sender)?;
         self.last_exchange_ms = book.exchange_timestamp_ms;
         try_emit(sender, MarketDataEvent::Book { venue: MarketVenue::Trade, book })?;
-        Ok(true)
+        Ok(BookReceipt { progressed: ws_progress, published: true })
     }
 }
 
@@ -137,7 +189,7 @@ pub(super) fn spawn(environment: &str, coin: String, source: PriceSource, config
     let request_coin = coin.clone();
     spawn_inner(url.into(), coin, source, config, move || {
         let environment=environment.clone(); let coin=request_coin.clone();
-        async move { crate::hyperliquid::trading_info(false,
+        async move { crate::hyperliquid::market_recovery_info(
             crate::hyperliquid::fetch_l2_book_snapshot(&environment,&coin)).await }
     })
 }
@@ -153,13 +205,21 @@ where F: FnMut() -> R + Send + 'static, R: std::future::Future<Output=Result<Val
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(250));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut attempted = 0;
+            let mut next_attempt = tokio::time::Instant::now();
             loop {
                 tokio::select! { _ = sender.closed() => return, _ = tick.tick() => {} }
                 let at = now_ms();
-                let last_ws = publisher.lock().unwrap().health.last_ws_book_ms.max(started);
-                if !should_attempt_recovery(last_ws, attempted, at, FALLBACK_AFTER_MS, FALLBACK_INTERVAL_MS) { continue; }
-                attempted = at;
+                {
+                    let mut p = publisher.lock().unwrap();
+                    let last_ws = p.health.last_ws_book_ms.max(started);
+                    if at.saturating_sub(last_ws) < FALLBACK_AFTER_MS {
+                        p.health.rest_unusable_streak = 0;
+                        p.health.rest_retry_after_ms = 0;
+                        next_attempt = tokio::time::Instant::now();
+                        continue;
+                    }
+                }
+                if tokio::time::Instant::now() < next_attempt { continue; }
                 // Use the shared routine budget (2 weight/request), one attempt,
                 // bounded timeout and server 429 cooldown. No execution reserve.
                 let result = tokio::select! {
@@ -174,10 +234,18 @@ where F: FnMut() -> R + Send + 'static, R: std::future::Future<Output=Result<Val
                     let book = trade_rest_book(&coin, wire, at)?;
                     publisher.lock().unwrap().publish(&sender, book, "rest", at)
                 });
+                let mut p = publisher.lock().unwrap();
+                let useful = result.as_ref().is_ok_and(|r| r.published);
+                if useful { p.health.rest_unusable_streak = 0; }
+                else { p.health.rest_unusable_streak = p.health.rest_unusable_streak.saturating_add(1); }
+                let delay = recovery_delay_ms(p.health.rest_unusable_streak);
+                next_attempt = tokio::time::Instant::now() + Duration::from_millis(delay);
+                p.health.rest_retry_after_ms = at.saturating_add(delay);
                 if let Err(error) = result {
-                    let mut p = publisher.lock().unwrap();
                     p.health.rest_failures += 1;
                     p.failure(&sender, "rest_error", &format!("{error:#}"));
+                } else {
+                    let _ = p.health_event(&sender);
                 }
             }
         });
@@ -249,7 +317,11 @@ async fn session(url: &str, coin: &str, source: PriceSource, sender: &mpsc::Send
                         let wire: TradeRestBook = serde_json::from_value(value["data"].clone()).context("websocket L2 payload invalid")?;
                         let at = now_ms(); let book = trade_rest_book(coin, wire, at)?;
                         ensure!(book.bids.len() <= 5 && book.asks.len() <= 5, "fast websocket L2 depth exceeds five");
-                        if publisher.lock().unwrap().publish(sender, book, "websocket", at)? { last_book = tokio::time::Instant::now(); }
+                        // Advancing, delayed snapshots prove the socket is alive,
+                        // but never publish a price or reset fresh-book recovery.
+                        if publisher.lock().unwrap().publish(sender, book, "websocket", at)?.progressed {
+                            last_book = tokio::time::Instant::now();
+                        }
                     }
                     "activeAssetCtx" => {
                         // A malformed context cannot repeatedly tear down a good
@@ -290,18 +362,18 @@ mod tests {
     fn fallback_snapshot_cannot_refresh_cached_future_backwards_or_invalid_prices() {
         let (tx, mut rx)=mpsc::channel(128); let mut p=publisher();
         let book=|time|trade_rest_book("io:ANTH",serde_json::from_value(wire("io:ANTH",time)).unwrap(),10_000).unwrap();
-        assert!(p.publish(&tx,book(10_000),"rest",10_100).unwrap());
-        assert!(!p.publish(&tx,book(10_000),"rest",10_600).unwrap());
-        assert!(!p.publish(&tx,book(9_999),"rest",10_700).unwrap());
-        assert!(p.publish(&tx,book(8_499),"rest",10_000).is_err());
+        assert!(p.publish(&tx,book(10_000),"rest",10_100).unwrap().published);
+        assert!(!p.publish(&tx,book(10_000),"rest",10_600).unwrap().published);
+        assert!(!p.publish(&tx,book(9_999),"rest",10_700).unwrap().published);
+        assert!(!p.publish(&tx,book(8_499),"rest",10_000).unwrap().published);
         assert!(p.publish(&tx,book(11_001),"rest",10_000).is_err());
         let mut emitted=vec![];
         while let Ok(e)=rx.try_recv() {if let MarketDataEvent::Book{book,..}=e {emitted.push(book);}}
         assert_eq!(emitted.len(),1); assert_eq!(emitted[0].received_timestamp_ms,10_000);
         // A WS snapshot overtaken by REST is valid WS progress, but never rolls
         // the displayed/tradable book backwards. Duplicate WS data is not progress.
-        assert!(p.publish(&tx,book(9_999),"websocket",10_700).unwrap());
-        assert!(!p.publish(&tx,book(9_999),"websocket",10_800).unwrap());
+        assert!(p.publish(&tx,book(9_999),"websocket",10_700).unwrap().progressed);
+        assert!(!p.publish(&tx,book(9_999),"websocket",10_800).unwrap().progressed);
         assert_eq!(p.last_exchange_ms,10_000);
         assert!(trade_rest_book("io:ANTH",serde_json::from_value(wire("io:OAI",10_000)).unwrap(),10_000).is_err());
         let mut bad=book(10_001);bad.asks.clear();assert!(p.publish(&tx,bad,"rest",10_100).is_err());
@@ -315,6 +387,96 @@ mod tests {
         assert!(!text.contains("private.invalid"));assert!(!text.contains("hidden-value"));
         assert!(text.contains("connect failure"));
         let mut next=MarketStreamHealth::default();next.preserve_history(&h);assert_eq!(next.history,h.history);
+    }
+    #[test]
+    fn advancing_delayed_books_never_refresh_tradable_prices_or_freshness() {
+        let (tx,mut rx)=mpsc::channel(128);let mut p=publisher();
+        for at in [10_000,11_000,12_000] {
+            let book=trade_rest_book("io:ANTH",serde_json::from_value(wire("io:ANTH",at-5_000)).unwrap(),at).unwrap();
+            let receipt=p.publish(&tx,book,"websocket",at).unwrap();
+            assert!(receipt.progressed);assert!(!receipt.published);
+        }
+        assert_eq!(p.health.last_ws_book_ms,0);
+        assert_eq!(p.last_exchange_ms,0);
+        assert_eq!(p.health.last_ws_source_age_ms,5000);
+        assert_eq!(p.health.delayed_ws_books,3);
+        assert_eq!(p.health.history.len(),1,"repeated delay must not erase earlier causes");
+        while let Ok(e)=rx.try_recv(){assert!(!matches!(e,MarketDataEvent::Book{..}));}
+        let fresh=trade_rest_book("io:ANTH",serde_json::from_value(wire("io:ANTH",13_000)).unwrap(),13_100).unwrap();
+        assert!(p.publish(&tx,fresh,"websocket",13_100).unwrap().published);
+        assert_eq!(p.health.last_ws_book_ms,13_100);
+        assert_eq!(p.last_exchange_ms,13_000);
+        let mut books=vec![];
+        while let Ok(e)=rx.try_recv(){if let MarketDataEvent::Book{book,..}=e{books.push(book);}}
+        assert_eq!(books.len(),1);assert_eq!(books[0].received_timestamp_ms,13_000);
+        assert_eq!((0..8).map(recovery_delay_ms).collect::<Vec<_>>(),vec![2000,2000,4000,8000,16000,30000,30000,30000]);
+        // Old persisted diagnostics deserialize with no invented receipt times.
+        let old:MarketStreamHealth=serde_json::from_str(r#"{"ws_books":2}"#).unwrap();
+        assert_eq!(old.last_ws_message_ms,0);
+    }
+    #[tokio::test]
+    async fn delayed_stream_stays_connected_backs_off_rest_and_recovers_without_reconnect() {
+        tokio::time::timeout(Duration::from_secs(14),async {
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+            let server=tokio::spawn(async move {
+                let (socket,_)=listener.accept().await.unwrap();let mut ws=tokio_tungstenite::accept_async(socket).await.unwrap();
+                for _ in 0..2{ws.next().await.unwrap().unwrap();}
+                let started=tokio::time::Instant::now();let mut tick=tokio::time::interval(Duration::from_millis(100));
+                loop {tokio::select! {
+                    frame=ws.next()=>if !matches!(frame,Some(Ok(_))){break;},
+                    _=tick.tick()=>{
+                        let t=if started.elapsed()<Duration::from_secs(8){now_ms()-5000}else{now_ms()};
+                        if ws.send(Message::Text(json!({"channel":"l2Book","data":wire("io:ANTH",t)}).to_string())).await.is_err(){break;}
+                    }
+                }}
+            });
+            let calls=Arc::new(AtomicU64::new(0));let counter=calls.clone();
+            let mut rx=spawn_inner(format!("ws://{address}"),"io:ANTH".into(),PriceSource::Unknown,MarketStreamConfig::default(),move||{
+                counter.fetch_add(1,Ordering::Relaxed);async{Ok(wire("io:ANTH",now_ms()-5000))}
+            }).unwrap();
+            let mut delayed=0;let mut accepted=0;let mut backed_off=false;
+            while accepted<10 {match rx.recv().await.unwrap(){
+                MarketDataEvent::Book{book,..}=>{
+                    assert!(now_ms()-book.exchange_timestamp_ms<1500);accepted+=1;
+                },
+                MarketDataEvent::Transport{health,..}=>{
+                    assert_eq!(health.reconnect_count,0);
+                    delayed=delayed.max(health.delayed_ws_books);
+                    backed_off|=health.rest_unusable_streak>=2;
+                    if health.ws_books==0{assert_eq!(health.last_ws_book_ms,0);}
+                },_=>{}
+            }}
+            assert!(delayed>=50);assert!(backed_off);
+            assert!((2..=3).contains(&calls.load(Ordering::Relaxed)),"delayed REST must back off");
+            let count=calls.load(Ordering::Relaxed);
+            let until=tokio::time::Instant::now()+Duration::from_secs(2);
+            while let Ok(Some(_))=tokio::time::timeout_at(until,rx.recv()).await{}
+            assert_eq!(calls.load(Ordering::Relaxed),count,"healthy WS must stop REST recovery immediately");
+            drop(rx);server.await.unwrap();
+        }).await.unwrap();
+    }
+    #[tokio::test]
+    async fn frozen_delayed_stream_still_reconnects_despite_repeated_frames() {
+        tokio::time::timeout(Duration::from_secs(7),async {
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+            let server=tokio::spawn(async move {
+                let (socket,_)=listener.accept().await.unwrap();let mut ws=tokio_tungstenite::accept_async(socket).await.unwrap();
+                for _ in 0..2{ws.next().await.unwrap().unwrap();}
+                let frozen=now_ms()-5000;let mut tick=tokio::time::interval(Duration::from_millis(100));
+                loop {tokio::select! {
+                    frame=ws.next()=>if !matches!(frame,Some(Ok(_))){break;},
+                    _=tick.tick()=>if ws.send(Message::Text(json!({"channel":"l2Book","data":wire("io:ANTH",frozen)}).to_string())).await.is_err(){break;}
+                }}
+            });
+            let mut rx=spawn_inner(format!("ws://{address}"),"io:ANTH".into(),PriceSource::Unknown,MarketStreamConfig::default(),||async{Ok(wire("io:ANTH",now_ms()-5000))}).unwrap();
+            loop {match rx.recv().await.unwrap(){
+                MarketDataEvent::Book{..}=>panic!("frozen book published"),
+                MarketDataEvent::Transport{health,..} if health.reconnect_count>0=>{
+                    assert!(health.last_error.contains("silent"));break;
+                },_=>{}
+            }}
+            drop(rx);server.await.unwrap();
+        }).await.unwrap();
     }
     #[tokio::test]
     async fn real_supervisor_recovers_silent_ws_while_rest_keeps_updating() {

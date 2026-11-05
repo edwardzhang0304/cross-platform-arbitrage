@@ -2,6 +2,40 @@ use super::*;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 #[tokio::test]
+async fn quote_recovery_has_shared_cap_and_preserves_funding_and_order_capacity() {
+    let count=Arc::new(AtomicUsize::new(0));let counted=count.clone();
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url=format!("http://{}/info",listener.local_addr().unwrap());
+    let server=tokio::spawn(async move {
+        axum::serve(listener,axum::Router::new().route("/info",axum::routing::post(move ||{
+            counted.fetch_add(1,Ordering::SeqCst);async{axum::Json(json!([]))}
+        }))).await.unwrap();
+    });
+    let mut w=InfoRateWindow::default();let now=crate::domain::now_ms();
+    assert!(reserve_info_capacity(&mut w,now,120,false,false,true));
+    INFO_RATE_WINDOWS.lock().unwrap().insert(url.clone(),w);
+    let client=info_client().unwrap();
+    let read=|kind|post_info::<Value>(&client,&url,json!({"type":kind}));
+    // Both markets and even a nested critical caller share the same cap.
+    for coin in ["io:OAI","io:ANTH"] {
+        let error=trading_info(true,market_recovery_info(post_info::<Value>(&client,&url,json!({"type":"l2Book","coin":coin})))).await.unwrap_err();
+        assert!(format!("{error:#}").contains("market_recovery=120"));
+    }
+    assert_eq!(count.load(Ordering::SeqCst),0);
+    trading_info(false,read("userFunding")).await.unwrap();
+    trading_info(true,read("orderStatus")).await.unwrap();
+    assert_eq!(count.load(Ordering::SeqCst),2);
+    let mut w=INFO_RATE_WINDOWS.lock().unwrap().remove(&url).unwrap();
+    assert_eq!(w.market_recovery_weight,120);assert_eq!(w.market_recovery_deferrals,2);
+    assert_eq!(w.routine_weight,140);assert_eq!(w.used_weight,142);
+    prune_info_rate_window(&mut w,now+60_000);
+    assert_eq!(w.market_recovery_weight,0);
+    assert!(reserve_info_capacity(&mut w,now+60_000,2,false,false,true));
+    assert!(MARKET_RECOVERY_INFO.try_with(|v|*v).is_err());
+    server.abort();
+}
+
+#[tokio::test]
 async fn saturated_routine_reads_do_not_starve_two_market_reconciliation_and_lookup() {
     let count=Arc::new(AtomicUsize::new(0));
     let counted=count.clone();
@@ -15,7 +49,7 @@ async fn saturated_routine_reads_do_not_starve_two_market_reconciliation_and_loo
     });
     let mut window=InfoRateWindow::default();
     let now=crate::domain::now_ms();
-    assert!(reserve_info_capacity(&mut window,now,300,false,false));
+    assert!(reserve_info_capacity(&mut window,now,300,false,false, false));
     INFO_RATE_WINDOWS.lock().unwrap().insert(url.clone(),window);
     let client=info_client().unwrap();
     let blocked=tokio::time::timeout(Duration::from_millis(100),trading_info(false,
@@ -37,8 +71,8 @@ async fn saturated_routine_reads_do_not_starve_two_market_reconciliation_and_loo
     let w=windows.get_mut(&url).unwrap();
     assert_eq!(w.used_weight,432);
     assert_eq!(w.routine_weight,300);
-    assert!(reserve_info_capacity(w,now,468,false,true));
-    assert!(!reserve_info_capacity(w,now,2,false,true));
+    assert!(reserve_info_capacity(w,now,468,false,true, false));
+    assert!(!reserve_info_capacity(w,now,2,false,true, false));
     drop(windows);
     let blocked=trading_info(true,post_info::<Value>(&client,&url,json!({"type":"orderStatus"}))).await.unwrap_err();
     assert!(format!("{blocked:#}").contains("local info rate budget exhausted"));
@@ -106,10 +140,10 @@ fn response_weight_and_rolling_window_do_not_erase_critical_debt() {
     assert_eq!(response_extra_weight("userFillsByTime",&json!(vec![0;2000])),100);
     assert_eq!(response_extra_weight("userFunding",&json!(vec![0;500])),25);
     let mut w=InfoRateWindow::default();
-    assert!(reserve_info_capacity(&mut w,1000,300,false,false));
-    assert!(reserve_info_capacity(&mut w,2000,600,false,true));
-    assert!(!reserve_info_capacity(&mut w,60999,1,false,true));
-    assert!(reserve_info_capacity(&mut w,61000,300,false,false));
+    assert!(reserve_info_capacity(&mut w,1000,300,false,false, false));
+    assert!(reserve_info_capacity(&mut w,2000,600,false,true, false));
+    assert!(!reserve_info_capacity(&mut w,60999,1,false,true, false));
+    assert!(reserve_info_capacity(&mut w,61000,300,false,false, false));
     assert_eq!(w.used_weight,900);
     prune_info_rate_window(&mut w,62000);
     assert_eq!(w.used_weight,300);

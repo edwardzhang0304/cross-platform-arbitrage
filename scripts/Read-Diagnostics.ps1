@@ -115,6 +115,10 @@ function Transport-View($items) {
       source=(SafeText $_.source); ws_connected=$_.ws_connected; reconnect_count=$_.reconnect_count
       ws_books=$_.ws_books; rest_books=$_.rest_books; rest_failures=$_.rest_failures
       last_ws_book_ms=$_.last_ws_book_ms; last_rest_book_ms=$_.last_rest_book_ms
+      last_ws_message_ms=$_.last_ws_message_ms; last_ws_source_ms=$_.last_ws_source_ms; last_ws_source_age_ms=$_.last_ws_source_age_ms
+      last_rest_response_ms=$_.last_rest_response_ms; last_rest_source_ms=$_.last_rest_source_ms; last_rest_source_age_ms=$_.last_rest_source_age_ms
+      delayed_ws_books=$_.delayed_ws_books; delayed_rest_books=$_.delayed_rest_books
+      rest_unusable_streak=$_.rest_unusable_streak; rest_retry_after_ms=$_.rest_retry_after_ms
       last_error_ms=$_.last_error_ms; last_error=(SafeText $_.last_error)
       history=@($_.history | Select-Object -Last 32 | ForEach-Object { [ordered]@{at_ms=$_.at_ms; kind=(SafeText $_.kind); detail=(SafeText $_.detail)} })
     }
@@ -239,7 +243,7 @@ $health=$null; $root=$DataDirectory
 try {
   $h=Read-Local '/health'
   if ($h.application -ne 'openai-paired-trader') { throw 'Unexpected application' }
-  $health=[ordered]@{version=$h.version; build=($h.build | Select-Object source_commit,strategy_core_sha256,version,runtime,target,dirty); data_dir=$h.data_dir; sleep_prevention=$h.sleep_prevention; entropy_info=($h.entropy_info | Select-Object available,limit,routine_limit,used_weight,routine_weight,local_deferrals,server_cooldown_remaining_ms)}
+  $health=[ordered]@{version=$h.version; build=($h.build | Select-Object source_commit,strategy_core_sha256,version,runtime,target,dirty); data_dir=$h.data_dir; sleep_prevention=$h.sleep_prevention; entropy_info=($h.entropy_info | Select-Object available,limit,routine_limit,used_weight,routine_weight,local_deferrals,market_recovery_limit,market_recovery_weight,market_recovery_deferrals,server_cooldown_remaining_ms)}
   $root=[string]$h.data_dir
   if ($null -ne $h.profiles) { $profiles=@(Checked-Profiles $h.profiles); $catalogFromApi=$true }
   $health.profiles=$profiles
@@ -319,7 +323,7 @@ if (!$SkipNetwork) { $clock.public_references=@((Public-Clock 'https://api.hyper
 $space=$null
 try { $drive=New-Object IO.DriveInfo([IO.Path]::GetPathRoot($root)); $space=[ordered]@{available_bytes=$drive.AvailableFreeSpace; total_bytes=$drive.TotalSize} } catch {}
 $report=[ordered]@{
-  schema=1; tool_version='rc30'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
+  schema=1; tool_version='rc31'; generated_utc=[DateTimeOffset]::UtcNow.ToString('o'); read_only=$true
   health=$health; requested_data_dir=$DataDirectory; active_data_dir=$root; processes=$processes
   profiles=$profiles; observations=$captured.ToArray(); ledgers=$disk; clock=$clock; disk_space=$space; collection_problems=$script:Problems.ToArray()
   limits='Separate readonly observations, not one atomic exchange snapshot. Event queries cap at 120 rows / 2 seconds; fills cap at 120. Null means unavailable, never zero. No private keys, wallet addresses, CSRF, notification credentials or raw ledger/config files exported.'

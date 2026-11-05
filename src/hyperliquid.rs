@@ -46,8 +46,12 @@ const INFO_RATE_LIMIT_WEIGHT_PER_MIN: u32 = 900;
 const INFO_ROUTINE_WEIGHT_PER_MIN: u32 = 300;
 // Background account seeding may not consume the entire foreground budget.
 const INFO_BACKGROUND_WEIGHT_PER_MIN: u32 = 140;
+// Shared by every instrument/account: backup quotes cannot consume the whole
+// routine allowance or borrow the order-reconciliation reserve.
+const INFO_MARKET_RECOVERY_WEIGHT_PER_MIN: u32 = 120;
 tokio::task_local! { static BACKGROUND_INFO: bool; }
 tokio::task_local! { static TRADING_INFO: bool; }
+tokio::task_local! { static MARKET_RECOVERY_INFO: bool; }
 /// Trading workers already own their retry/expiry policy. Do not hide a
 /// minute-long limiter/backoff wait inside their 3–10 second deadlines.
 pub(crate) async fn trading_info<T>(critical: bool, read: impl std::future::Future<Output = T>) -> T {
@@ -55,6 +59,9 @@ pub(crate) async fn trading_info<T>(critical: bool, read: impl std::future::Futu
 }
 pub async fn background_info<T>(read: impl std::future::Future<Output = T>) -> T {
     BACKGROUND_INFO.scope(true, read).await
+}
+pub(crate) async fn market_recovery_info<T>(read: impl std::future::Future<Output = T>) -> T {
+    MARKET_RECOVERY_INFO.scope(true, TRADING_INFO.scope(false, read)).await
 }
 const XYZ_SNAPSHOT_CACHE_TTL_MS: u64 = 15_000;
 const SPOT_SNAPSHOT_CACHE_TTL_MS: u64 = 15_000;
@@ -91,10 +98,12 @@ static INFO_COOLDOWN_UNTIL_MS: LazyLock<Mutex<HashMap<String, u64>>> =
 
 #[derive(Debug, Default)]
 struct InfoRateWindow {
-    entries: VecDeque<(u64, u32, bool, bool)>,
+    entries: VecDeque<(u64, u32, bool, bool, bool)>,
     used_weight: u32,
     background_weight: u32,
     routine_weight: u32,
+    market_recovery_weight: u32,
+    market_recovery_deferrals: u64,
     local_deferrals: u64,
 }
 
@@ -104,19 +113,25 @@ fn reserve_info_capacity(
     weight: u32,
     background: bool,
     critical: bool,
+    market_recovery: bool,
 ) -> bool {
+    let critical = critical && !market_recovery;
     prune_info_rate_window(window, now);
     if window.used_weight.saturating_add(weight) > INFO_RATE_LIMIT_WEIGHT_PER_MIN
         || (!critical && window.routine_weight.saturating_add(weight) > INFO_ROUTINE_WEIGHT_PER_MIN)
         || (background
             && window.background_weight.saturating_add(weight) > INFO_BACKGROUND_WEIGHT_PER_MIN)
+        || (market_recovery
+            && window.market_recovery_weight.saturating_add(weight) > INFO_MARKET_RECOVERY_WEIGHT_PER_MIN)
     {
         window.local_deferrals = window.local_deferrals.saturating_add(1);
+        if market_recovery { window.market_recovery_deferrals = window.market_recovery_deferrals.saturating_add(1); }
         return false;
     }
-    window.entries.push_back((now, weight, background, critical));
+    window.entries.push_back((now, weight, background, critical, market_recovery));
     window.used_weight += weight;
     if !critical { window.routine_weight += weight; }
+    if market_recovery { window.market_recovery_weight += weight; }
     if background {
         window.background_weight += weight;
     }
@@ -133,6 +148,9 @@ pub(crate) fn info_rate_diagnostics() -> Value {
     json!({"available":true,"limit":INFO_RATE_LIMIT_WEIGHT_PER_MIN,
         "routine_limit":INFO_ROUTINE_WEIGHT_PER_MIN,"used_weight":window.used_weight,
         "routine_weight":window.routine_weight,"local_deferrals":window.local_deferrals,
+        "market_recovery_limit":INFO_MARKET_RECOVERY_WEIGHT_PER_MIN,
+        "market_recovery_weight":window.market_recovery_weight,
+        "market_recovery_deferrals":window.market_recovery_deferrals,
         "server_cooldown_remaining_ms":cooldown.saturating_sub(now)})
 }
 
@@ -150,16 +168,18 @@ fn response_extra_weight(info_type: &str, value: &Value) -> u32 {
 fn charge_response_weight(info_url: &str, weight: u32) -> Result<()> {
     if weight==0 { return Ok(()); }
     let now=crate::domain::now_ms();
-    let critical=TRADING_INFO.try_with(|v|*v).unwrap_or(false);
+    let market_recovery=MARKET_RECOVERY_INFO.try_with(|v|*v).unwrap_or(false);
+    let critical=TRADING_INFO.try_with(|v|*v).unwrap_or(false) && !market_recovery;
     let background=BACKGROUND_INFO.try_with(|v|*v).unwrap_or(false);
     let mut windows=INFO_RATE_WINDOWS.lock().map_err(|_|anyhow::anyhow!("info rate lock poisoned"))?;
     let w=windows.entry(info_url.trim().to_ascii_lowercase()).or_default();
     prune_info_rate_window(w,now);
     // Response already consumed capacity: debit it even if it exceeds the
     // remaining allowance, so subsequent requests wait/fail closed.
-    w.entries.push_back((now,weight,background,critical));
+    w.entries.push_back((now,weight,background,critical,market_recovery));
     w.used_weight=w.used_weight.saturating_add(weight);
     if !critical {w.routine_weight=w.routine_weight.saturating_add(weight);}
+    if market_recovery {w.market_recovery_weight=w.market_recovery_weight.saturating_add(weight);}
     if background {w.background_weight=w.background_weight.saturating_add(weight);}
     Ok(())
 }
@@ -2056,21 +2076,22 @@ async fn acquire_info_rate_capacity(info_url: &str, weight: u32) -> Result<()> {
     let endpoint = info_url.trim().to_ascii_lowercase();
     let background = BACKGROUND_INFO.try_with(|v| *v).unwrap_or(false);
     let trading = TRADING_INFO.try_with(|v| *v).ok();
+    let market_recovery = MARKET_RECOVERY_INFO.try_with(|v| *v).unwrap_or(false);
     loop {
         let sleep_ms = {
             let now = crate::domain::now_ms();
             let mut windows = INFO_RATE_WINDOWS.lock().map_err(|_| anyhow::anyhow!("info rate lock poisoned"))?;
             let window = windows.entry(endpoint.clone()).or_default();
-            if reserve_info_capacity(window, now, weight, background, trading == Some(true)) {
+            if reserve_info_capacity(window, now, weight, background, trading == Some(true), market_recovery) {
                 None
             } else {
                 anyhow::ensure!(trading.is_none(),
-                    "local info rate budget exhausted (used={}, routine={}, limit={}); read not sent",
-                    window.used_weight, window.routine_weight, INFO_RATE_LIMIT_WEIGHT_PER_MIN);
+                    "local info rate budget exhausted (used={}, routine={}, market_recovery={}, limit={}); read not sent",
+                    window.used_weight, window.routine_weight, window.market_recovery_weight, INFO_RATE_LIMIT_WEIGHT_PER_MIN);
                 window
                     .entries
                     .front()
-                    .map(|(timestamp_ms, _, _, _)| {
+                    .map(|(timestamp_ms, _, _, _, _)| {
                         timestamp_ms
                             .saturating_add(INFO_RATE_WINDOW_MS)
                             .saturating_add(50)
@@ -2089,13 +2110,14 @@ async fn acquire_info_rate_capacity(info_url: &str, weight: u32) -> Result<()> {
 }
 
 fn prune_info_rate_window(window: &mut InfoRateWindow, now_ms: u64) {
-    while let Some((timestamp_ms, weight, background, critical)) = window.entries.front().copied() {
+    while let Some((timestamp_ms, weight, background, critical, market_recovery)) = window.entries.front().copied() {
         if now_ms.saturating_sub(timestamp_ms) < INFO_RATE_WINDOW_MS {
             break;
         }
         window.entries.pop_front();
         window.used_weight = window.used_weight.saturating_sub(weight);
         if !critical { window.routine_weight = window.routine_weight.saturating_sub(weight); }
+        if market_recovery { window.market_recovery_weight = window.market_recovery_weight.saturating_sub(weight); }
         if background {
             window.background_weight = window.background_weight.saturating_sub(weight);
         }
@@ -2171,18 +2193,18 @@ mod tests {
     fn cold_account_seeds_preserve_the_routine_budget() {
         let mut window = super::InfoRateWindow::default();
         for _ in 0..7 {
-            assert!(super::reserve_info_capacity(&mut window, 1000, 20, true, false));
+            assert!(super::reserve_info_capacity(&mut window, 1000, 20, true, false, false));
         }
-        assert!(!super::reserve_info_capacity(&mut window, 1000, 20, true, false));
+        assert!(!super::reserve_info_capacity(&mut window, 1000, 20, true, false, false));
         // Two markets can still each fetch perpDexs/meta/metaAndAssetCtxs.
         for _ in 0..6 {
-            assert!(super::reserve_info_capacity(&mut window, 1000, 20, false, false));
+            assert!(super::reserve_info_capacity(&mut window, 1000, 20, false, false, false));
         }
         assert_eq!(window.used_weight, 260);
-        assert!(super::reserve_info_capacity(&mut window, 1000, 40, false, false));
-        assert!(!super::reserve_info_capacity(&mut window, 1000, 1, false, false));
-        assert!(!super::reserve_info_capacity(&mut window, 60999, 20, true, false));
-        assert!(super::reserve_info_capacity(&mut window, 61000, 20, true, false));
+        assert!(super::reserve_info_capacity(&mut window, 1000, 40, false, false, false));
+        assert!(!super::reserve_info_capacity(&mut window, 1000, 1, false, false, false));
+        assert!(!super::reserve_info_capacity(&mut window, 60999, 20, true, false, false));
+        assert!(super::reserve_info_capacity(&mut window, 61000, 20, true, false, false));
         assert_eq!(window.used_weight, 20);
         assert_eq!(window.background_weight, 20);
     }

@@ -30,7 +30,7 @@ const n=value=>Number(value);
 const money=value=>Number.isFinite(n(value))?n(value).toFixed(2):'—';
 function marketPayload(view){
   const books=(view.books||[]).map(b=>({bid:b.bids?.[0]?{price:b.bids[0].price}:null,ask:b.asks?.[0]?{price:b.asks[0].price}:null,connected:b.connected,received_ms:b.received_ms}));
-  return {symbols:profile.symbols,available:true,status:{books,running:true,started_ms:view.snapshot.created_ms,observed_ms:Date.now()},rules:{book_max_age_ms:view.snapshot.config.book_max_age_ms},chart_points:view.chart_points||[]};
+  return {symbols:profile.symbols,available:true,status:{books,market_transport:view.market_transport,running:true,started_ms:view.snapshot.created_ms,observed_ms:Date.now()},rules:{book_max_age_ms:view.snapshot.config.book_max_age_ms},chart_points:view.chart_points||[]};
 }
 function render(payload){
   if(!payload.ok||!payload.view){throw new Error(payload.ok?'策略尚未启动':payload.error||'连接失败')}

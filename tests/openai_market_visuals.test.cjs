@@ -85,6 +85,25 @@ test('chart explains missing latest quotes and clears the message on recovery',(
   f.payload.chart_points=[];f.render();assert.equal(f.status.textContent,'等待有效行情');
 });
 
+test('delayed live transport is distinguished from fresh trading prices and disconnection',()=>{
+  const now=1700000000000;
+  const payload={available:true,status:{running:true,observed_ms:now,books:[{},{}],market_transport:[{},
+    {ws_connected:true,last_ws_message_ms:now,last_ws_source_age_ms:6000}]}};
+  let quote=quoteRows(payload,now,true)[1];
+  assert.equal(quote.state,'行情延迟 · 约 6.0 秒');assert.equal(quote.buy,'—');assert.equal(quote.fresh,false);
+  payload.status.books[1]={bid:{price:2000},ask:{price:2001},received_ms:now-60_000,connected:true};
+  quote=quoteRows(payload,now,true)[1];assert.equal(quote.state,'行情延迟 · 约 6.0 秒');assert.equal(quote.fresh,false);
+  payload.status.books[1].received_ms=now-200; // Independently fresh REST may bridge delayed WS.
+  assert.equal(quoteRows(payload,now,true)[1].fresh,true);
+  payload.status.books[1].received_ms=now-60_000;
+  assert.equal(quoteRows(payload,now,false)[1].state,'连接中断 · 旧报价');
+  payload.status.market_transport[1].ws_connected=false;
+  assert.equal(quoteRows(payload,now,true)[1].state,'报价过期');
+  payload.status.market_transport[1]={ws_connected:true,last_ws_message_ms:now,last_ws_source_age_ms:200};
+  payload.status.books[1].received_ms=now-200;
+  assert.equal(quoteRows(payload,now,true)[1].fresh,true);
+});
+
 test('quote cards keep Lighter then Entropy when the trading direction changes',()=>{
   const element=()=>({children:[],textContent:'',append(...children){this.children.push(...children)},replaceChildren(){this.children=[]}});
   const root=element();

@@ -17,7 +17,7 @@ if len(sys.argv)>2 and sys.argv[2]=='--serve':
             pass
         def do_GET(self):
             if self.path=='/health':
-                value=dict(application='openai-paired-trader',version='synthetic',data_dir=str(root),build=dict(source_commit='synthetic'),profiles=profiles,shared_market_feeds=[dict(market='openai',consumers=2,public_connections=2,received_ms=[1,1])],entropy_info=dict(available=True,limit=900,routine_limit=300,used_weight=432,routine_weight=300,local_deferrals=7,server_cooldown_remaining_ms=0,unexpected_secret='synthetic-credential-NOT-FOR-EXPORT'))
+                value=dict(application='openai-paired-trader',version='synthetic',data_dir=str(root),build=dict(source_commit='synthetic'),profiles=profiles,shared_market_feeds=[dict(market='openai',consumers=2,public_connections=2,received_ms=[1,1])],entropy_info=dict(available=True,limit=900,routine_limit=300,used_weight=432,routine_weight=300,local_deferrals=7,market_recovery_limit=120,market_recovery_weight=100,market_recovery_deferrals=3,server_cooldown_remaining_ms=0,unexpected_secret='synthetic-credential-NOT-FOR-EXPORT'))
             else:
                 profile=next(p for p in profiles if self.path == (f"/api/accounts/{p['id']}/inventory" if p['id']==extra_id else f"/api/{p['id']}-inventory"))
                 path=ledger_path(profile)
@@ -105,6 +105,9 @@ for profile in profiles:
         db.execute("CREATE TABLE market_transport_state(id INTEGER PRIMARY KEY,body TEXT)")
         transport=[dict(source='rest',ws_connected=False,reconnect_count=9,ws_books=2,rest_books=60,rest_failures=1,
             last_ws_book_ms=now-9000,last_rest_book_ms=now,last_error_ms=now-1000,
+            last_ws_message_ms=now,last_ws_source_ms=now-5000,last_ws_source_age_ms=5000,
+            last_rest_response_ms=now,last_rest_source_ms=now-6000,last_rest_source_age_ms=6000,
+            delayed_ws_books=50,delayed_rest_books=3,rest_unusable_streak=3,rest_retry_after_ms=now+8000,
             last_error=f'websocket connect/TLS failed https://private.invalid/?key={secret} Bearer {secret}',
             history=[dict(at_ms=now,kind='ws_reconnect',detail=f'websocket L2 silent for 3000ms Bearer {secret}',unexpected_secret=secret)],
             unexpected_secret=secret) for _ in range(2)]

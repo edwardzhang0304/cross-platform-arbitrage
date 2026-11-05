@@ -21,6 +21,7 @@ try {
     if ($Ledger.snapshot.entry_funding_wait.reason -ne 'synthetic funding wait' -or !$Ledger.snapshot.entry_funding_wait.retry_after_ms) { throw 'Local funding wait evidence missing' }
     if ($Ledger.snapshot.entry_margin_block.rejection -ne 'margin_not_allowed' -or !$Ledger.snapshot.entry_margin_block.order_ref) { throw 'Margin protection evidence missing' }
     if ($Ledger.market_transport.Count -ne 2 -or $Ledger.market_transport[1].reconnect_count -ne 9 -or $Ledger.market_transport[1].history[0].detail -notmatch 'L2 silent') { throw 'Offline transport diagnosis missing' }
+    if ($Ledger.market_transport[1].last_ws_source_age_ms -ne 5000 -or $Ledger.market_transport[1].delayed_ws_books -ne 50 -or $Ledger.market_transport[1].rest_unusable_streak -ne 3) { throw 'Delayed quote and backoff diagnosis missing' }
     if ($Ledger.market_transport[0].last_error -notmatch 'lifetime_ms= 120115 pings= 4 pongs= 4 cause= read_timeout' -or $Ledger.market_transport[0].history[0].detail -notmatch 'lifetime_ms= 120115') { throw 'Lighter heartbeat and connection lifetime evidence was redacted' }
     if ($Ledger.market_alerts.schema -ne 2 -or $Ledger.market_alerts.evidence.unavailable_ms[0] -ne 50000 -or $Ledger.market_alerts.history[0].kind -ne 'delivered') { throw 'Market alert evidence/history missing' }
     if ($Ledger.one_time_notices.Count -ne 1 -or !$Ledger.one_time_notices[0].incident_ref -or !$Ledger.one_time_notices[0].delivered_ms -or $Ledger.one_time_notices[0].queued) { throw 'One-time notification receipt missing' }
@@ -61,6 +62,7 @@ try {
     $OnlineText=Get-Content (Join-Path $OnlineOutput 'report/report.json') -Raw -Encoding utf8
     if ($OnlineText -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key') { throw 'Live API redaction failed' }
     $OnlineReport=$OnlineText | ConvertFrom-Json
+    if ($OnlineReport.health.entropy_info.market_recovery_limit -ne 120 -or $OnlineReport.health.entropy_info.market_recovery_weight -ne 100) { throw 'Market recovery sub-budget diagnosis missing' }
     if ($OnlineReport.health.entropy_info.limit -ne 900 -or $OnlineReport.health.entropy_info.local_deferrals -ne 7) { throw 'Info limiter diagnostics were lost' }
     if ($OnlineReport.observations.Count -ne 3 -or $OnlineReport.health.shared_market_feeds[0].consumers -ne 2) { throw 'Online multi-account discovery or shared feed diagnostics failed' }
     $Extra=$OnlineReport.observations | Where-Object { $_.profile_id -eq $ExtraId }

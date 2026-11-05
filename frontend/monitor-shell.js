@@ -21,7 +21,7 @@
     $('monitor-state').textContent=st.text;$('monitor-state').className='badge '+st.tone;
     $('monitor-pair-status').textContent=current.mode==='paper'?'模拟账户 · 虚拟资金':pair.text;
     $('monitor-pair-status').className=pair.ok?'good':'muted';
-    lastMarket={symbols:current.symbols,available:true,status:{running:true,observed_ms:Date.now(),books:(v.books||[]).map(b=>({bid:b.bids?.[0]?{price:b.bids[0].price}:null,ask:b.asks?.[0]?{price:b.asks[0].price}:null,connected:b.connected,received_ms:b.received_ms}))},rules:{book_max_age_ms:s.config.book_max_age_ms}};
+    lastMarket={symbols:current.symbols,available:true,status:{market_transport:v.market_transport,running:true,observed_ms:Date.now(),books:(v.books||[]).map(b=>({bid:b.bids?.[0]?{price:b.bids[0].price}:null,ask:b.asks?.[0]?{price:b.asks[0].price}:null,connected:b.connected,received_ms:b.received_ms}))},rules:{book_max_age_ms:s.config.book_max_age_ms}};
     navigation?.refresh();
   }
   function disconnected(message){

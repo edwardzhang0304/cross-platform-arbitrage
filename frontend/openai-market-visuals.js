@@ -142,9 +142,13 @@
     return [['Lighter RH',payload?.symbols?.[0]||'OPENAI'],['Entropy',payload?.symbols?.[1]||'io:OAI']].map(([platform,symbol],i)=>{
       const b=s.books?.[i], buy=quotePrice(b?.ask?.price), sell=quotePrice(b?.bid?.price);
       const time=Number(b?.received_ms), hasTime=Number.isFinite(time)&&time>0;
+      const transport=s.market_transport?.[i], receipt=Number(transport?.last_ws_message_ms), age=Number(transport?.last_ws_source_age_ms);
+      const delayed=transport?.ws_connected===true&&Number.isFinite(receipt)&&receipt>0&&receipt<=now&&now-receipt<=3000&&Number.isFinite(age)&&age>maxAge;
+      const bookFresh=buy!=='—'&&sell!=='—'&&b.connected&&s.running&&hasTime&&time<=now&&now-time<=maxAge&&Number.isFinite(s.observed_ms)&&now>=s.observed_ms&&now-s.observed_ms<10000;
       let state='行情有效';
-      if(buy==='—'||sell==='—')state='报价缺失';
-      else if(!connectionOk)state='连接中断 · 旧报价';
+      if(!connectionOk)state='连接中断 · 旧报价';
+      else if(delayed&&!bookFresh)state=`行情延迟 · 约 ${(age/1000).toFixed(1)} 秒`;
+      else if(buy==='—'||sell==='—')state='报价缺失';
       else if(!b.connected)state='行情断连 · 旧报价';
       else if(!s.running)state='行情已停止 · 旧报价';
       else if(!hasTime||time>now)state='报价时间异常';
