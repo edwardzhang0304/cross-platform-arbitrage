@@ -11,7 +11,7 @@
 <section class="glass monitor-health" aria-label="账户状态"><div class="monitor-health-main"><span id="monitor-state" class="badge">读取中</span><span id="monitor-pair-status" class="muted">正在核对账户与持仓…</span></div><span id="mode-tag" class="badge">检查中</span><span id="updated">等待更新</span></section>
 <section aria-label="收益概览"><div id="status-metrics"></div></section>
 <div id="comparison" class="market-layout">
-<section id="comparison-chart-panel" class="glass"><div class="section-heading"><div><h2><i class="ph ph-chart-line-up" aria-hidden="true"></i>价差走势</h2><p class="muted">最近 8 小时 · 盘口第一档 · U / 份</p></div><span id="comparison-chart-note" class="badge"></span></div><div id="comparison-candles" aria-live="off"></div><p id="comparison-chart-status" class="muted">等待有效行情</p><p id="comparison-chart-hover" class="muted"></p></section>
+<section id="comparison-chart-panel" class="glass"><div class="section-heading"><div><h2><i class="ph ph-chart-bar" aria-hidden="true"></i>价差 K 线</h2><p class="muted">最近 8 小时 · 5 分钟 / 根 · 盘口第一档 · U / 份</p></div><span id="comparison-chart-note" class="badge"></span></div><div class="chart-toolbar"><div class="chart-switch" role="group" aria-label="价差类型"><button id="comparison-chart-entry" type="button" aria-pressed="true">开仓价差</button><button id="comparison-chart-exit" type="button" aria-pressed="false">平仓价差</button></div><span class="chart-legend"><span class="candle-up">绿涨</span><span class="candle-down">红跌</span></span></div><div id="comparison-candles" aria-live="off"></div><p id="comparison-chart-status" class="muted">等待有效行情</p><p id="comparison-chart-hover" class="muted"></p></section>
 <aside class="market-quotes" aria-label="两平台买卖价"><table class="quote-table"><caption class="visually-hidden">两平台买卖价</caption><thead class="visually-hidden"><tr><th>平台 / 标的</th><th>可买入价</th><th>可卖出价</th><th>报价更新</th></tr></thead><tbody id="comparison-quotes"></tbody></table></aside>
 </div>
 <div id="inventory-tables"></div>
@@ -46,7 +46,7 @@ function render(payload){
   visuals.renderCharts(market,$);
   const direction=visuals.displayDirection(market);
   const mean=v.directional_means?.[direction==='shortL'?1:0];
-  $('comparison-chart-note').textContent=`MA5m ${mean==null?'—':money(mean)+' U'}`;
+  $('comparison-chart-note').textContent=`开仓 MA5m ${mean==null?'—':money(mean)+' U'}`;
   visuals.renderQuoteCards(visuals.quoteRows(market,Date.now(),true),direction,$);
 }
 async function refresh(){try{const r=await fetch(profile.api,{cache:'no-store'});const response=await r.json();render(response.ok?{ok:true,...response.data}:{ok:false,error:response.error})}catch(error){if(window.MonitorUI)window.MonitorUI.disconnected(error.message);$('groups').textContent='—';$('pnl').textContent='—';$('pnl').className='';$('closed-pnl').textContent='—';$('closed-pnl').className='';$('mode-tag').textContent='状态待核对';$('mode-tag').className='badge warn'}}

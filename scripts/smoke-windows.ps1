@@ -105,12 +105,14 @@ try {
   if ($Monitor -notmatch '/assets/openai-market-visuals.js') { throw 'Chart asset missing' }
   if ($Monitor -notmatch '/assets/inventory-components.js') { throw 'Inventory components missing' }
   if ($Monitor -notmatch '最近 8 小时' -or $Monitor -notmatch '/assets/monitor-shell.js') { throw 'Eight-hour glass monitor missing' }
+  if ($Monitor -notmatch '5 分钟 / 根' -or $Monitor -notmatch 'comparison-chart-entry' -or $Monitor -notmatch 'comparison-chart-exit') { throw 'Five-minute candle controls missing' }
   foreach ($Asset in @('glass-ui.js','control-center.js','control-center.css','monitor-shell.js','monitor.css','brand-glass.png','glass-background.webp','phosphor/style.css','phosphor/Phosphor.woff2')) {
     $AssetResponse=Invoke-WebRequest "$Base/assets/$Asset"
     if ($AssetResponse.StatusCode -ne 200 -or $AssetResponse.RawContentLength -le 0) { throw "Packaged UI asset unavailable: $Asset" }
   }
   $ChartSource=(Invoke-WebRequest "$Base/assets/openai-market-visuals.js").Content
   if ($ChartSource -notmatch 'CHART_WINDOW_MS=8\*60\*60\*1000') { throw 'Packaged chart window is not eight hours' }
+  if ($ChartSource -notmatch 'CANDLE_MS=5\*60\*1000' -or $ChartSource -notmatch 'data-candle' -or $ChartSource -notmatch 'function spreadAxis') { throw 'Packaged candle chart or automatic scale missing' }
   if ((Invoke-WebRequest "$Base/assets/inventory-components.js").Content -notmatch 'window.InventoryComponents') { throw 'Inventory component asset unavailable' }
   $ControlPage = (Invoke-WebRequest "$Base/").Content
   if ($ControlPage -notmatch '/api/portable') { throw 'Control page missing' }

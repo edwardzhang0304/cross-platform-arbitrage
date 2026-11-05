@@ -1,0 +1,29 @@
+多平台套利 Windows 0.2.0-rc.32
+
+本次只更新价差图：5分钟一根蜡烛，保留8小时时间框；可切换开仓、平仓价差；纵轴最小5U，随范围选择5、10、20、50U等间隔，尽量保持4到6格，不强制包含0；放大刻度文字并对齐图表与报价卡片。缺失行情不补造蜡烛。
+交易策略、仓位、下单、重试、止损、资金费、飞书通知及数据格式均未修改。模拟预览和个人诊断数据不会装入安装包。
+
+升级步骤：完整复制 data 到新包
+
+1. 将新ZIP解压到桌面独立的“多平台套利-rc32-Windows-x64”文件夹，暂时不要打开新EXE。
+
+2. 在旧后台依次停止三个账户的交易，先保留后台打开。运行旧目录的 Run-Diagnostics.cmd，确认三个账户都已停止，没有未完成订单，实际双腿持仓与账本一致。已配平的持仓可以保留，不需要为升级全部平仓。有未完成订单或不配平时，先处理完成再迁移。
+
+3. 点击“退出所有账户”，在任务管理器确认 Cross-Platform-Arbitrage 进程已消失。备份旧程序目录；关闭浏览器不等于退出后台。
+
+4. 将旧EXE旁边的整个 data 文件夹复制到新EXE旁边。包括其中所有子文件夹和文件，不能只复制某一个账户。新目录应是：
+   多平台套利-rc32-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\Cross-Platform-Arbitrage.exe
+   多平台套利-rc32-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\data
+   不要形成 data\data，也不要从另一个旧备份补文件进去。
+
+5. 只打开新目录中的 Cross-Platform-Arbitrage.exe。在 PowerShell 运行：
+   $h = Invoke-RestMethod 'http://127.0.0.1:18794/health' -TimeoutSec 10
+   $h | Select-Object version,data_dir
+   $h.build | Select-Object source_commit,runtime,dirty
+   version 应为 0.2.0-rc.32，data_dir 应指向新 rc32 目录，runtime 应为 live，dirty 应为 False。提交号也可与包内 build-info.json 对照。
+
+6. 三个账户分别使用原密码解锁、只读检查、加载原账户与账本。确认账户名称、持仓组数、双腿数量和飞书配置与升级前一致，再恢复各自原来的运行方式。原有“仅平仓和止损”等保护要继续保留，不要为了升级解除保护。
+
+7. 打开实盘监控，必要时按 Ctrl+F5 刷新。应看到5分钟蜡烛及开仓/平仓价差切换按钮。程序启动后图表按已有有效采样逐步补齐；本次没有增加历史行情下载或更改保存机制，不会凭空补满8小时。
+
+8. 在新目录运行 Run-Diagnostics.cmd，将生成的ZIP发来核对。新版本产生新交易后，不要用升级前的旧 data 覆盖它；旧程序也不要再同时启动。
