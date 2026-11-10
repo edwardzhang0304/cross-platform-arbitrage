@@ -19,7 +19,7 @@ pub mod emergency_exit;
 mod emergency_exit_tests;
 #[cfg(feature="openai-inventory-live")]
 pub mod live;
-#[cfg(feature="openai-inventory-live")]
+// Public metadata validation is shared by account bootstrap and market feeds.
 pub mod bootstrap_diagnostics;
 pub mod live_orphan;
 pub mod model;

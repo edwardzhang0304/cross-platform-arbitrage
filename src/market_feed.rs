@@ -54,12 +54,7 @@ pub async fn diagnostics()->serde_json::Value {
     }))).collect::<Vec<_>>())
 }
 fn validate_entropy_feed_contract(pair:MarketPair,asset:&crate::hyperliquid::DexAssetMeta)->Result<()> {
-    ensure!(asset.name == pair.entropy_symbol() && asset.sz_decimals == 3
-        && pair.supports_entropy_margin_mode(asset.margin_mode.as_deref())
-        && asset.only_isolated != Some(false)
-        && asset.max_leverage.is_some_and(|v| v >= 3),
-        "Entropy instrument precision/margin/leverage metadata drift");
-    Ok(())
+    crate::openai_inventory::bootstrap_diagnostics::validate_entropy_metadata(pair,asset)
 }
 async fn connect(pair:MarketPair,prior_transport:[crate::crossvenue_a::MarketStreamHealth;2])->Result<PublicMarketFeed> {
         let client = LighterClient::official(LighterEnvironment::Robinhood)?;
@@ -188,7 +183,8 @@ mod tests {
                 asset.max_leverage=Some(2);assert!(validate_entropy_feed_contract(market,&asset).is_err());
                 asset.max_leverage=Some(6);asset.sz_decimals=4;assert!(validate_entropy_feed_contract(market,&asset).is_err());
                 asset.sz_decimals=3;asset.margin_mode=Some("normal".into());assert!(validate_entropy_feed_contract(market,&asset).is_err());
-                asset.margin_mode=None;assert!(validate_entropy_feed_contract(market,&asset).is_err());
+                asset.only_isolated=None;validate_entropy_feed_contract(market,&asset).unwrap();
+                asset.margin_mode=None;validate_entropy_feed_contract(market,&asset).unwrap();
                 asset.margin_mode=Some(mode.into());asset.only_isolated=Some(false);assert!(validate_entropy_feed_contract(market,&asset).is_err());
             }
         }

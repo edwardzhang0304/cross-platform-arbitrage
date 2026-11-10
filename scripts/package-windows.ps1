@@ -12,7 +12,7 @@ Copy-Item $Exe "$Package/Cross-Platform-Arbitrage.exe"
 Copy-Item README.md "$Package/使用说明.md"
 foreach ($File in @('Read-Diagnostics.ps1','DiagnosticsSqlite.cs','Run-Diagnostics.cmd','Confirm-Rollback-Recovery.ps1')) { Copy-Item "scripts/$File" "$Package/$File" }
 Copy-Item 'docs/故障排查与处理流程.md' "$Package/故障排查与处理流程.md"
-Copy-Item 'docs/rc33旧平仓配平与升级步骤.txt' "$Package/rc33升级说明.txt"
+Copy-Item 'docs/rc34账户加载兼容与升级步骤.txt' "$Package/rc34升级说明.txt"
 Copy-Item config "$Package/config-templates" -Recurse
 Copy-Item vendor/lighter-signing/licenses "$Package/licenses" -Recurse
 Copy-Item vendor/lighter-signing/LICENSE* "$Package/licenses/" -ErrorAction Stop

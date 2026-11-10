@@ -38,3 +38,37 @@ fn reused_evidence_still_enforces_reduce_only_actual_position_and_open_orders() 
     r.units=700;r.side=Side::Buy;assert!(final_risk(&c,&a,&r).is_err());
     r.side=Side::Sell;let mut a=a;a.open_orders=1;assert!(final_risk(&c,&a,&r).is_err());
 }
+
+#[test]
+fn optional_contract_flags_never_replace_actual_account_margin_evidence() {
+    for market in [MarketPair::Openai,MarketPair::Anth] {
+        let mut c=InventoryConfig::default();c.market=market;
+        let meta:hyperliquid::DexAssetMeta=serde_json::from_value(json!({
+            "name":market.entropy_symbol(),"szDecimals":3,"maxLeverage":6
+        })).unwrap();
+        validate_entropy_metadata(market,&meta).unwrap();
+        let now=crate::domain::now_ms();
+        for position_units in [0,market.units(Decimal::new(1,2)).unwrap()] {
+            let mut e=account(&c,now);e.position_units=position_units;
+            let mut l=e.clone();l.venue=Venue::Lighter;l.account=c.lighter_account.clone();
+            let accounts=[l,e];
+            validate_preflight_settings(&accounts,3).unwrap();
+            for venue in [Venue::Lighter,Venue::Entropy] {
+                let idx=if venue==Venue::Lighter {0}else{1};
+                let r=OrderRequest {id:"synthetic-metadata-setting".into(),venue,
+                    side:Side::Buy,units:market.units(Decimal::new(1,2)).unwrap(),
+                    limit:Decimal::from(1500),arrival_mid:None,reduce_only:false,
+                    created_ms:now,expires_ms:now+5000,signed_expires_ms:None};
+                final_risk(&c,&accounts[idx],&r).unwrap();
+                for (isolated,leverage) in [(false,3),(false,0),(true,0),(true,2),(true,6)] {
+                    let mut wrong=accounts.clone();wrong[idx].isolated=isolated;wrong[idx].leverage=leverage;
+                    let err=validate_preflight_settings(&wrong,3).unwrap_err();
+                    let issue=err.downcast_ref::<super::super::bootstrap_diagnostics::BootstrapIssue>().unwrap();
+                    assert_eq!(issue.stage,if idx==0 {"lighter_account_setting"}else{"entropy_account_setting"});
+                    assert!(require_isolated_setting(&wrong[idx],3).is_err());
+                    assert!(final_risk(&c,&wrong[idx],&r).is_err());
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,26 @@
+多平台套利 Windows 0.2.0-rc.34
+
+本次修复：Entropy 的合约信息省略 marginMode/onlyIsolated 时，原程序会把它当成不支持逐仓，导致账户和公共行情都不能加载。现在将合约限制与账户实际设置分开核验；仍要求账户实际使用逐仓及配置的3倍杠杆，不自动修改平台设置，不用配置值代替平台证据。未知模式、相互矛盾的字段、精度不符及下架合约仍拦截。
+接口说明：https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals
+保证金说明：https://hyperliquid.gitbook.io/hyperliquid-docs/trading/margining
+
+包含 rc.33 的旧平仓配平修复：确认旧单终态、实际持仓与账本一致后，补平原交易预留范围内尚未完成的数量；只按真实成交结算，不扩大到其他组，不调用全部平仓，不删除pending。没有合法最小订单可用时保留待处理状态，未知订单只核对不重复下单。
+
+升级：完整复制 data 到新包
+
+1. 解压新ZIP到独立的“多平台套利-rc34-Windows-x64”目录，先不要打开新EXE。
+2. 三个账户保持停止。若截图一样都显示“未加载”，不需要再加载旧版。当前正在使用的data才是迁移来源，不要拿更早的备份覆盖它。
+3. 点击“退出所有账户”，在任务管理器确认 Cross-Platform-Arbitrage.exe 已消失，然后备份当前程序目录。
+   常规升级必须等待未完成操作结束。本次专门接续已知失败的旧平仓：仅在已核对该笔旧请求都有终态、实际持仓与已记录成交一致、其他账户已停止且无未完成操作时，允许将该笔pending随整个data迁移。如果退出按钮因此拒绝，可在任务管理器“详细信息”中结束该旧进程，确认进程消失后再复制。若有结果未知、挂单、人工买卖或新持仓变化，先核对最新诊断，不套用旧数量。
+4. 将刚退出的EXE旁边整个data文件夹，复制到新EXE旁边，包含全部子目录及SQLite伴随文件。不要形成data\data，不删除pending，不单独修改数据库。
+   新目录结构：
+   多平台套利-rc34-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\Cross-Platform-Arbitrage.exe
+   多平台套利-rc34-Windows-x64\Cross-Platform-Arbitrage-Windows-x64\data
+5. 只打开rc34的新EXE，程序信息确认版本0.2.0-rc.34，实际数据目录指向rc34，三个原账户仍在。需要时可用以下只读命令核对：
+   $h = Invoke-RestMethod 'http://127.0.0.1:18794/health' -TimeoutSec 10
+   $h | Select-Object version,data_dir
+   $h.build | Select-Object source_commit,runtime,dirty
+   source_commit应与包内build-info.json一致，runtime为live，dirty为False。
+6. 先只解锁OPENAI账号1，运行只读检查，再点击“加载账户和原账本”。不点启动策略、不点全部平仓。加载后可能自动发送旧交易的保护性减仓订单；这是接续原平仓，不会自动开启新仓。
+7. 在新目录运行Run-Diagnostics.cmd，把生成的ZIP用于确认真实成交：pending清空、两边实际持仓分别与账本一致、绝对数量相等且方向相反、只扣除实际完成的原预留组。若仍有错误或pending，保留当前data继续检查，不用旧备份覆盖。
+8. 完成账号1核对后再恢复其他账户原运行方式。保留当前包和最近一次完整备份；旧后台不再启动。新程序发生新成交后不可回拷升级前data。

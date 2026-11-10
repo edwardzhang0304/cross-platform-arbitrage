@@ -25,10 +25,12 @@ impl MarketPair {
     pub fn lighter_symbol(self) -> &'static str { match self { Self::Openai => "OPENAI", Self::Anth => "ANTHROPIC" } }
     pub fn lighter_market_id(self) -> i32 { match self { Self::Openai => 42, Self::Anth => 38 } }
     pub fn entropy_symbol(self) -> &'static str { match self { Self::Openai => "io:OAI", Self::Anth => "io:ANTH" } }
-    /// Both venue modes allow isolated margin only. strictIsolated additionally
-    /// forbids removing margin; the strategy never removes isolated margin.
+    /// Contract capabilities are not the user's selected margin setting.
+    /// Public metadata may omit the restriction fields for ordinary contracts.
+    /// Admission here still requires actual isolated leverage evidence at
+    /// preflight/worker preparation and again before opening exposure.
     pub fn supports_entropy_margin_mode(self, mode: Option<&str>) -> bool {
-        matches!(mode, Some("noCross" | "strictIsolated"))
+        matches!(mode, None | Some("normal" | "noCross" | "strictIsolated"))
     }
     pub fn quantity_decimals(self) -> u32 { match self { Self::Openai => 4, Self::Anth => 5 } }
     pub fn common_step(self) -> i64 { 10_i64.pow(self.quantity_decimals() - 3) }

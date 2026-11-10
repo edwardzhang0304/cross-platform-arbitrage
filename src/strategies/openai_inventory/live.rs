@@ -335,8 +335,16 @@ pub async fn read_only_preflight(
 ) -> Result<[AccountEvidence; 2]> {
     let [mut l, mut e] = build_backends(config, lighter, entropy).await?;
     let (l, e) = tokio::join!(l.account(), e.account());
-    Ok([bootstrap_checked(l,"lighter_account_read","Lighter 账户、持仓或授权读取失败")?,
-        bootstrap_checked(e,"entropy_account_read","Entropy 账户、持仓或授权读取失败")?])
+    let accounts=[bootstrap_checked(l,"lighter_account_read","Lighter 账户、持仓或授权读取失败")?,
+        bootstrap_checked(e,"entropy_account_read","Entropy 账户、持仓或授权读取失败")?];
+    validate_preflight_settings(&accounts,config.leverage)?;
+    Ok(accounts)
+}
+fn validate_preflight_settings(accounts:&[AccountEvidence;2],leverage:u32)->Result<()> {
+    bootstrap_checked(require_isolated_setting(&accounts[0],leverage),
+        "lighter_account_setting","Lighter 账户未确认逐仓及配置杠杆，请核对平台设置")?;
+    bootstrap_checked(require_isolated_setting(&accounts[1],leverage),
+        "entropy_account_setting","Entropy 账户未确认逐仓及配置杠杆，请核对平台设置")
 }
 async fn build_backends(
     config: &InventoryConfig,
