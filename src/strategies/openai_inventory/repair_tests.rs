@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "close_minimum_tests.rs"]
+mod close_minimum_tests;
+
 fn d(v: i64) -> Decimal { Decimal::from(v) }
 
 // Sep 25 incident shape: ten old pairs (850), extra Entropy 90, terminal
@@ -694,12 +697,15 @@ async fn partially_filled_close_alignment_keeps_only_remaining_quantity_then_pai
     let now=crate::domain::now_ms();
     for direction in [Direction::LighterShort,Direction::LighterLong] {
         let (mut s,mut a,b)=close_incident(now,direction);
-        s.fills.get_mut("Lighter:close-first").unwrap().units=223;
-        s.positions[0].units=direction.open_side(Venue::Lighter).sign()*(1120-223);
-        let p=s.pending.as_mut().unwrap();p.first_filled=223;p.first_value=d(1651)*d(223);
+        s.fills.get_mut("Lighter:close-first").unwrap().units=123;
+        s.positions[0].units=direction.open_side(Venue::Lighter).sign()*(1120-123);
+        let p=s.pending.as_mut().unwrap();p.first_filled=123;p.first_value=d(1651)*d(123);
         p.hedge_terminal=false;p.repair_terminal=false;
-        let r=request(&s,&b,Venue::Lighter,direction.open_side(Venue::Lighter).opposite(),
-            7,true,"align-close",now).unwrap();
+        // A persisted legacy request can be below today's partial-order guard;
+        // retain its real partial fill, but never generate it again.
+        let r=OrderRequest{id:"close-19-v2-align-close".into(),venue:Venue::Lighter,
+            side:direction.open_side(Venue::Lighter).opposite(),units:7,limit:d(1651),
+            arrival_mid:None,reduce_only:true,created_ms:now,expires_ms:now+5000,signed_expires_ms:None};
         s.pending.as_mut().unwrap().align_close=Some(r.clone());
         apply(&mut s,4,&r,result(&r,3,true)).unwrap();
         s.status=Status::NeedsAttention;s.reason=ALIGNMENT_HALT.into();
@@ -713,14 +719,14 @@ async fn partially_filled_close_alignment_keeps_only_remaining_quantity_then_pai
         for _ in 0..3 {advance(&mut s,&mut db,&workers,&b,now).await.unwrap();}
         let sent=requests.lock().unwrap();
         assert_eq!(sent.len(),2);
-        assert_eq!((sent[0].venue,sent[0].units),(Venue::Lighter,4));
+        assert_eq!((sent[0].venue,sent[0].units),(Venue::Lighter,144));
         assert_eq!(sent[0].id,"close-19-v2-align-close-1");
-        assert_eq!((sent[1].venue,sent[1].units),(Venue::Entropy,230));
+        assert_eq!((sent[1].venue,sent[1].units),(Venue::Entropy,270));
         assert!(sent.iter().all(|r|r.reduce_only));
-        assert!(s.pending.is_none());assert_eq!(s.paired_units(),890);
+        assert!(s.pending.is_none());assert_eq!(s.paired_units(),850);
         assert_eq!(s.positions[0].units,-s.positions[1].units);
-        assert_eq!(s.positions[0].units.abs(),890);
-        assert_eq!(s.lots.last().unwrap().units,40);
+        assert_eq!(s.positions[0].units.abs(),850);
+        assert_eq!(s.lots.len(),10);
     }
 }
 

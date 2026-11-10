@@ -1542,7 +1542,7 @@ impl venue::VenueBackend for PartialCloseVenue {
     }
 }
 #[tokio::test]
-async fn partial_close_aligns_within_original_budget_before_entropy_hedge() {
+async fn partial_close_without_legal_reserved_tail_holds_without_fake_settlement() {
     use std::sync::{Arc, Mutex};
     for reverse in [false, true] {
     let sign = if reverse { -1 } else { 1 };
@@ -1586,19 +1586,21 @@ async fn partial_close_aligns_within_original_budget_before_entropy_hedge() {
     assert_ne!(s.status, Status::NeedsAttention);
     assert_eq!(l.lock().unwrap().submissions, 0);
     for step in 0..8 {
-        if s.pending.is_none() {
+        if s.pending.is_none() || s.status==Status::NeedsAttention {
             break;
         }
         execution::advance(&mut s, &mut db, &workers, &b, now + step)
             .await
             .unwrap();
     }
-    assert!(s.pending.is_none());
-    assert_eq!(s.positions[0].units, sign * (10000 - requested));
-    assert_eq!(s.positions[1].units, -sign * (10000 - requested));
-    assert_eq!(s.paired_units(), 10000 - requested);
-    assert_eq!(l.lock().unwrap().submissions, 2);
-    assert_eq!(e.lock().unwrap().submissions, 1);
+    assert!(s.pending.is_some());
+    assert_eq!(s.status,Status::NeedsAttention);
+    assert!(s.reason.contains("below venue minimum"));
+    assert_eq!(s.positions[0].units, sign * (10000 - requested + 5));
+    assert_eq!(s.positions[1].units, -sign * 10000);
+    assert_eq!(s.paired_units(), 10000,"unmatched fills must not remove reserved lots");
+    assert_eq!(l.lock().unwrap().submissions, 1);
+    assert_eq!(e.lock().unwrap().submissions, 0);
 }
 }
 

@@ -19,8 +19,9 @@ try {
   }
   $Status = (Invoke-RestMethod "$Base/api/openai-inventory").data
   if ($Status.vault_unlocked -or $Status.configured -or $Status.view) { throw 'Clean package contains account state' }
-  if ($Status.residual_recovery_version -ne 3) { throw 'Residual recovery version is incorrect' }
+  if ($Status.residual_recovery_version -ne 4) { throw 'Residual recovery version is incorrect' }
   $Policy=$Status.recovery_policy
+  if ($Policy.close_alignment -ne 'remaining_original_close_budget' -or $Policy.minimum_order_failure -ne 'hold_without_resubmission') { throw 'Minimum-size recovery policy is incorrect' }
   if ($Policy.retry_interval_ms -ne 3000 -or $Policy.initial_slippage_bps -ne 2 -or $Policy.step_slippage_bps -ne 1 -or $Policy.max_slippage_bps -ne 5 -or $Policy.unknown_order_action -ne 'lookup_only') { throw 'Recovery policy is incorrect' }
   # Add a second OPENAI slot, without credentials or any trading/network bootstrap.
   $List=(Invoke-RestMethod "$Base/api/accounts").data

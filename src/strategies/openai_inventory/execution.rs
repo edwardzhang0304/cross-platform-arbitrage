@@ -10,18 +10,53 @@ pub(super) const REPAIR_RETRY_DELAY_MS: u64 = 3_000;
 pub const RECOVERY_INITIAL_SLIPPAGE_BPS: u32 = 2;
 pub const RECOVERY_MAX_SLIPPAGE_BPS: u32 = 5;
 /// Read-only capability used to verify that a user-requested reload took effect.
-pub const RESIDUAL_RECOVERY_VERSION: u32 = 3;
+pub const RESIDUAL_RECOVERY_VERSION: u32 = 4;
 pub fn recovery_policy() -> serde_json::Value {
     serde_json::json!({"retry_interval_ms":REPAIR_RETRY_DELAY_MS,
         "initial_slippage_bps":RECOVERY_INITIAL_SLIPPAGE_BPS,
         "step_slippage_bps":1,"max_slippage_bps":RECOVERY_MAX_SLIPPAGE_BPS,
         "unknown_order_action":"lookup_only",
+        "close_alignment":"remaining_original_close_budget",
+        "minimum_order_failure":"hold_without_resubmission",
         "entry_hedge_retry":{"retry_interval_ms":3000,"slippage_bps":[2,3,4,5],
             "after_exhaustion":"reduce_unpaired_exposure","unknown_order_action":"lookup_only"}})
 }
 const RESIDUAL_HALT: &str = "residual could not be neutralized within protected execution; manual attention required";
 const ALIGNMENT_HALT: &str = "close precision alignment incomplete; residual review required";
 const UNWIND_HALT: &str = "non-common hedge fill could not be fully unwound; reconciliation required";
+const MINIMUM_CLOSE_HALT: &str = "remaining reserved close is below venue minimum; manual reconciliation required";
+
+fn minimum_order_failure(reason: &str) -> bool {
+    reason.contains("below Lighter minimum") || reason.contains("below Entropy minimum")
+        || reason.contains("Order must have minimum value") || reason == MINIMUM_CLOSE_HALT
+}
+
+// Finish only the quantity already reserved for this close. Rounding a tiny
+// partial fill to the next common step can itself create an illegal dust order.
+fn close_alignment_units(s: &Snapshot) -> Result<i64> {
+    let p=s.pending.as_ref().context("missing close operation")?;
+    ensure!(p.action==Action::Close && p.first_venue==Venue::Lighter
+        && p.first_terminal && p.first_filled>0 && p.hedge.is_none()
+        && p.hedge_filled==0 && p.repair.is_none() && p.repair_filled==0,
+        "close alignment cannot change an existing hedge or repair");
+    let remaining=p.requested_units.checked_sub(p.first_filled).context("close alignment quantity overflow")?;
+    ensure!(remaining>0 && remaining<=s.positions[0].units.abs(),"close alignment exceeds original quantity");
+    Ok(remaining)
+}
+
+fn close_alignment_needed(s: &Snapshot, p: &Operation, books: &[Book;2]) -> bool {
+    if p.action!=Action::Close {return false;}
+    if p.align_close.is_some() && !p.align_close_terminal {return true;}
+    if p.first_filled%s.config.common_step()!=0 {return true;}
+    // A common-size partial fill can still be too small for the other venue.
+    // Do not expand an already submitted hedge, or touch any unreserved group.
+    let side=s.direction.side(Venue::Entropy,Action::Close);
+    let limit=books[1].mid().and_then(|_|protected_price_bound(s,&books[1],Venue::Entropy,
+        side,s.config.execution_slippage_bps).ok());
+    p.first_filled<p.requested_units && p.hedge.is_none() && p.repair.is_none()
+        && p.first_filled<s.positions[1].units.abs()
+        && limit.is_some_and(|px|s.config.quantity(p.first_filled)*px<Decimal::from(10))
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum RecoveryPhase { Repair, Alignment, Unwind }
@@ -44,7 +79,7 @@ fn recovery_phase(s: &Snapshot) -> Option<RecoveryPhase> {
         && p.first_filled > p.paired_filled() + p.repair_filled {
         Some(RecoveryPhase::Repair)
     } else if s.reason == ALIGNMENT_HALT && p.action == Action::Close
-        && p.align_close_terminal && p.first_filled % s.config.common_step() != 0
+        && p.align_close_terminal && p.first_filled < p.requested_units
         && p.hedge.is_none() && p.hedge_filled == 0 && p.repair.is_none() && p.repair_filled == 0 {
         Some(RecoveryPhase::Alignment)
     } else if s.reason == UNWIND_HALT && p.action == Action::Open
@@ -108,7 +143,10 @@ pub fn resume_terminal_repair(
 pub(super) fn automatic_repair_due(s: &Snapshot, now: u64) -> bool {
     s.config.auto_neutralize && s.live_orphan.is_none()
         && s.status == Status::NeedsAttention && recovery_phase(s).is_some()
-        && s.pending.as_ref().is_some_and(|p| p.repair_retry_after_ms.is_some_and(|after| now >= after))
+        && s.pending.as_ref().is_some_and(|p| p.repair_retry_after_ms.is_some_and(|after| now >= after)
+            && (!minimum_order_failure(&p.recovery_wait_reason)
+                || (recovery_phase(s)==Some(RecoveryPhase::Alignment)
+                    && p.align_close.as_ref().is_some_and(|r|r.units<p.requested_units-p.first_filled))))
 }
 
 fn recovery_target(s:&Snapshot,phase:RecoveryPhase)->Result<(Venue,i64,&'static str)> {
@@ -117,9 +155,7 @@ fn recovery_target(s:&Snapshot,phase:RecoveryPhase)->Result<(Venue,i64,&'static 
         RecoveryPhase::Repair=>(if p.action==Action::Close {p.hedge_venue()}else{p.first_venue},
             p.first_filled-p.paired_filled()-p.repair_filled,"repair"),
         RecoveryPhase::Alignment=>{
-            let remaining=s.config.common_step()-p.first_filled%s.config.common_step();
-            ensure!(p.first_filled+remaining<=p.requested_units,"close alignment exceeds original quantity");
-            (Venue::Lighter,remaining,"align-close")
+            (Venue::Lighter,close_alignment_units(s)?,"align-close")
         },
         RecoveryPhase::Unwind=>(Venue::Lighter,p.hedge_filled-p.unwind_hedge_filled,"unwind-hedge"),
     })
@@ -133,6 +169,13 @@ pub(super) fn defer_unfillable_recovery(s:&mut Snapshot,books:&[Book;2],now:u64)
     let bps=next_recovery_slippage(s.pending.as_ref().unwrap());
     match request_with_slippage(s,books,venue,s.direction.open_side(venue).opposite(),qty,true,suffix,now,Decimal::from(bps)) {
         Ok(_)=>Ok(false),
+        Err(e) if e.to_string()==MINIMUM_CLOSE_HALT=>{
+            s.reason=MINIMUM_CLOSE_HALT.into();
+            let p=s.pending.as_mut().unwrap();
+            p.recovery_wait_reason=MINIMUM_CLOSE_HALT.into();
+            p.repair_retry_after_ms=None;
+            Ok(true)
+        },
         Err(e) if price_unavailable(&e)=>{
             let p=s.pending.as_mut().unwrap();
             p.repair_attempt=p.repair_attempt.checked_add(1).context("recovery retry counter overflow")?;
@@ -342,6 +385,11 @@ fn request_with_slippage(s:&Snapshot,books:&[Book;2],venue:Venue,side:Side,qty:i
         );
     }
     let mut limit = protected_limit_with_slippage(s, books, venue, side, qty, now,slippage)?;
+    if reduce && suffix=="align-close" && qty<s.positions[venue.index()].units.abs() {
+        let submitted_limit=s.config.market.protected_price(venue,limit,side==Side::Buy)?;
+        ensure!(qty>=s.config.market.minimum_units(venue)
+            && s.config.quantity(qty)*submitted_limit>=Decimal::from(10),MINIMUM_CLOSE_HALT);
+    }
     let op = s
         .pending
         .as_ref()
@@ -450,6 +498,9 @@ fn apply(s: &mut Snapshot, which: usize, req: &OrderRequest, result: OrderResult
         4 => op.align_close_terminal = result.terminal,
         _ => op.unwind_hedge_terminal = result.terminal,
     };
+    if result.terminal && request_filled==0 && req.reduce_only && minimum_order_failure(&result.reason) {
+        op.recovery_wait_reason=result.reason.clone();
+    }
     if result.terminal && !req.reduce_only && s.pending.as_ref().is_some_and(|p|p.action==Action::Open) {
         if let Some(rejection)=result.rejection {
             entry_margin::record_rejection(s,req,rejection,req.created_ms,&result.reason);
@@ -698,12 +749,10 @@ pub(super) async fn advance_with_hedge_evidence(
         s.finish_operation(now)?;
         store.commit(s, now, "operation_empty")?;
         return Ok(());
-    } else if close
-        && (op.first_filled % s.config.common_step() != 0 || (op.align_close.is_some() && !op.align_close_terminal))
+    } else if close_alignment_needed(s,&op,books)
     {
-        // A finer-precision IOC may close 0.0195 of the requested 0.0200.
-        // Close the remaining 0.0005 on Lighter first, never exceed the original
-        // common-size close budget, then reduce the same 0.0200 on Entropy.
+        // Preserve unknown request identities. A new reducing alignment uses
+        // the unfilled original reservation, then hedges the actual total fill.
         if op.align_close_terminal {
             s.status = Status::NeedsAttention;
             s.reason = ALIGNMENT_HALT.into();
@@ -712,11 +761,6 @@ pub(super) async fn advance_with_hedge_evidence(
             store.commit(s, now, "unresolved_close_alignment")?;
             return Ok(());
         }
-        let remaining = s.config.common_step() - op.first_filled % s.config.common_step();
-        ensure!(
-            op.first_filled + remaining <= op.requested_units || op.align_close.is_some(),
-            "close alignment exceeds original quantity"
-        );
         (
             4,
             op.align_close.clone(),
@@ -726,7 +770,7 @@ pub(super) async fn advance_with_hedge_evidence(
                     books,
                     Venue::Lighter,
                     s.direction.open_side(Venue::Lighter).opposite(),
-                    remaining,
+                    close_alignment_units(s)?,
                     true,
                     "align-close",
                     now,
@@ -837,6 +881,14 @@ pub(super) async fn advance_with_hedge_evidence(
         match new.unwrap() {
             Ok(req) => req,
             Err(error) => {
+                if error.to_string()==MINIMUM_CLOSE_HALT {
+                    let p=s.pending.as_mut().unwrap();
+                    p.align_close_terminal=true;p.recovery_wait_reason=MINIMUM_CLOSE_HALT.into();
+                    p.repair_retry_after_ms=None;
+                    s.status=Status::NeedsAttention;s.reason=MINIMUM_CLOSE_HALT.into();
+                    store.commit(s,now,"close_minimum_requires_reconciliation")?;
+                    return Ok(());
+                }
                 if which == 0 && close && error.to_string() == "book disconnected or stale" {
                     s.reason = "protective close waiting for fresh first-leg book".into();
                     store.commit(s, now, "waiting_close_quote")?;
