@@ -12,8 +12,8 @@ pub fn current_config(previous: &InventoryConfig) -> Result<InventoryConfig> {
     let mut next = previous.clone();
     let rules = next.accumulation.as_mut().context("升级需要现有同价加仓策略配置")?;
     if next.grid == Decimal::from(5) && rules.quota_scope == TimeAddQuotaScope::GridStage
-        && [CURRENT_TIME_ADD_INTERVAL_MS, 3_600_000].contains(&rules.interval_ms) {
-        // rc.6 -> rc.7 changes only the interval, including for a smaller quota.
+        && [1_800_000, CURRENT_TIME_ADD_INTERVAL_MS].contains(&rules.interval_ms) {
+        // Interval-only migration preserves smaller quotas and every held lot.
         rules.interval_ms = CURRENT_TIME_ADD_INTERVAL_MS;
         next.validate()?;
         return Ok(next);
@@ -75,7 +75,7 @@ pub fn migrate_snapshot(state: &mut Snapshot, desired: &InventoryConfig) -> Resu
     strategy::clear_entry_confirmation(state);
     state.entry_attempts_remaining = Some(0);
     state.resume_after_recovery = false;
-    state.reason = format!("已升级：5U 网格、同价至少 30 分钟、每档最多 {} 次；原持仓、已用次数和上次成交时间保留，等待账户核对后启动",
+    state.reason = format!("已升级：5U 网格、同价至少 60 分钟、每档最多 {} 次；原持仓、已用次数和上次成交时间保留，等待账户核对后启动",
         desired.accumulation.as_ref().unwrap().max_time_adds);
     Ok(true)
 }
@@ -102,7 +102,7 @@ pub fn migrate_ledger(path: &Path, desired: &InventoryConfig) -> Result<bool> {
         "from_interval_ms":old_interval,"to_interval_ms":CURRENT_TIME_ADD_INTERVAL_MS,
         "quota_scope":"grid_stage","time_adds_used":state.time_adds_used,
         "groups":state.lots.len(),"kept_positions":true});
-    tx.execute("INSERT INTO events(at_ms,kind,body) VALUES(?1,'rules_interval_30m_v1',?2)",
+    tx.execute("INSERT INTO events(at_ms,kind,body) VALUES(?1,'rules_interval_60m_v1',?2)",
         params![crate::domain::now_ms(),event.to_string()])?;
     tx.commit()?;
     Ok(true)

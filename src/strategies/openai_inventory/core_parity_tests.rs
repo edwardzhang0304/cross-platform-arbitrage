@@ -19,10 +19,10 @@ fn paper_and_live_share_the_same_decision_trace() {
                 paper.config.grid = d(5); paper.config.entry_offset = Decimal::ZERO;
                 paper.config.entry_confirmation_ms = Some(5000);
                 let rules = paper.config.accumulation.as_mut().unwrap();
-                rules.interval_ms = 1_800_000; rules.max_time_adds = 5;
+                rules.interval_ms = 3_600_000; rules.max_time_adds = 5;
                 rules.quota_scope = TimeAddQuotaScope::GridStage;
                 paper.instance_id = format!("parity-{}-{capital_multiplier}-{reverse}-{case}", market.id());
-                paper.last_open_completed = Some((now - 1_800_000, d(10)));
+                paper.last_open_completed = Some((now - 3_600_000, d(10)));
                 paper.funding_synced_ms = match case {
                     "missing_funding" | "emergency" => 0,
                     "stale_funding" => now - 90_001,
@@ -125,6 +125,25 @@ fn paper_and_live_share_the_same_decision_trace() {
                     "case":case,"offset":offset,"operation":p,
                     "target":strategy::group_profit_target(&paper.config,&paper.lots[0],t)}));
             }
+        }
+    }}}
+    for scale in [1,10] {for market in [MarketPair::Openai,MarketPair::Anth] {for reverse in [false,true] {
+        let now=4_000_000;
+        let (mut paper,mut accounts,_)=thin_group_fixture(now,market,scale,reverse);
+        paper.paused=false;
+        paper.instance_id=format!("availability-parity-{}-{scale}-{reverse}",market.id());
+        let mut live=paper.clone();live.config.mode=Mode::Live;
+        for offset in 0..=12 {
+            let t=now+offset*1000;
+            for a in &mut accounts {a.observed_ms=t;a.free_margin=if offset==0 {Decimal::ZERO}else{d(1000)};}
+            let b=thin_books(t,12,reverse,2_000_000);
+            entry_availability::update(&mut paper,&b,&accounts,t);
+            entry_availability::update(&mut live,&b,&accounts,t);
+            let mut normalized=serde_json::to_value(&live).unwrap();normalized["config"]["mode"]="paper".into();
+            assert_eq!(serde_json::to_value(&paper).unwrap(),normalized);
+            assert_eq!(entry_availability::active(&paper),offset<11);
+            trace.push(serde_json::json!({"case":"automatic_funding_recovery","market":market,
+                "scale":scale,"reverse":reverse,"offset":offset,"status":paper.status,"pause":paper.automatic_entry_pause}));
         }
     }}}
     if let Some(path) = std::env::var_os("STRATEGY_PARITY_REPORT") {

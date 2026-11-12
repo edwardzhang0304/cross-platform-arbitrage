@@ -1940,9 +1940,12 @@ fn depleted_cash_prevents_reserving_first_leg_without_consuming_entry_quota() {
             position_value:Some(Decimal::ZERO),initial_margin_fraction:Some(Decimal::new(3333,4)),
             mark_price:None,isolated_only:true});
         match strategy::evaluate(&mut s,&books(t,27),&a,t) {
-            Ok(op)=>assert!(op.is_none()),
+            Ok(op)=>{assert!(op.is_none());blocked=entry_availability::active(&s);
+                assert!(s.automatic_entry_pause.as_ref().unwrap().reason.contains("可划转保证金不足"));},
             Err(e)=>{assert!(e.to_string().contains("可划转保证金不足"),"{e}");blocked=true;}
         }
     }
     assert!(blocked);assert_eq!(s.sequence,0);assert_eq!(s.entry_attempts_remaining,Some(1));assert!(s.pending.is_none());
 }
+
+include!("entry_availability_tests.rs");

@@ -18,6 +18,7 @@ try {
   if ($Text -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key|vault-secret|profile-secret') { throw 'Diagnostic leaked synthetic private content' }
   foreach ($Market in $ProfileIds) {
     $Ledger=$Report.ledgers.$Market
+    if (!$Ledger.snapshot.automatic_entry_pause.active -or $Ledger.snapshot.automatic_entry_pause.cause -ne 'funding' -or $Ledger.snapshot.automatic_entry_pause.reason -ne 'synthetic entry pause') { throw 'Automatic entry pause evidence missing' }
     if ($Ledger.snapshot.entry_funding_wait.reason -ne 'synthetic funding wait' -or !$Ledger.snapshot.entry_funding_wait.retry_after_ms) { throw 'Local funding wait evidence missing' }
     if ($Ledger.snapshot.entry_margin_block.rejection -ne 'margin_not_allowed' -or !$Ledger.snapshot.entry_margin_block.order_ref) { throw 'Margin protection evidence missing' }
     if ($Ledger.market_transport.Count -ne 2 -or $Ledger.market_transport[1].reconnect_count -ne 9 -or $Ledger.market_transport[1].history[0].detail -notmatch 'L2 silent') { throw 'Offline transport diagnosis missing' }

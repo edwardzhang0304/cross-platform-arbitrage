@@ -2,7 +2,7 @@
 (function(root){
   'use strict';
   const common=typeof module!=='undefined'&&module.exports?require('./glass-ui.js'):root.GlassUI;
-  const {number,amount,escape,entryAvailable,state,paired}=common;
+  const {number,amount,escape,entryAvailable,state,paired,automaticPause,entryPauseDescription}=common;
   const api={entryAvailable,state,paired};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   if(!root.document)return;
@@ -15,11 +15,12 @@
   api.render=function(d,p,list){data=d;profile=p||d.profile||{label:'当前账户',market:'openai'};profiles=list;disconnected=false;document.body.classList.remove('stale');visible('connection-alert',false);const s=d.view?.snapshot,c=s?.config||d.strategy,st=state(s),now=Date.now();
     text('account-title',profile.label);text('strategy-badge',st.text);$('strategy-badge').className='badge '+st.tone;
     const descriptions={running:'策略正在运行，按设定条件开仓、加仓与平仓。',stopped:'策略已停止；已有持仓仍保留。',warming:'正在积累行情数据，满足预热条件后继续。',paused_entries:'仅执行正常平仓和止损，开仓与加仓已暂停。',needs_attention:'当前需要处理，请先查看核对结果。',recovering:'正在核对订单与持仓，暂不新增交易。',closing:'正在执行平仓，请关注剩余数量。'};
-    text('status-description',!s?(d.vault_unlocked?'密钥库已解锁，检查账户后加载原账本。':'请先解锁密钥库，再检查并加载账户。'):descriptions[s.status]||'请查看当前策略状态与订单核对结果。');
+    text('status-description',!s?(d.vault_unlocked?'密钥库已解锁，检查账户后加载原账本。':'请先解锁密钥库，再检查并加载账户。'):entryPauseDescription(s)||descriptions[s.status]||'请查看当前策略状态与订单核对结果。');
     text('ledger-summary',s?`已平 ${s.closed_groups??0} 组 · 连续回滚 ${s.consecutive_rollbacks??0} 次`:'');text('held-count',s?.lots?.length??'—');text('max-count',c?.max_groups??'—');$('holding-progress').max=c?.max_groups||20;$('holding-progress').value=s?.lots?.length||0;
     const margin=c&&number(c.leverage)>0?number(c.group_notional)/number(c.leverage):NaN;const compact=n=>Number.isFinite(n)?n.toLocaleString('zh-CN',{maximumFractionDigits:2}):'—';
     text('group-margin',compact(margin)+' U');text('parameter-margin',compact(margin)+' U');text('leverage-value',c?c.leverage+'×':'—');text('parameter-groups',c?c.max_groups+' 组':'—');text('parameter-interval',c?.accumulation?compact(number(c.accumulation.interval_ms)/60000)+' 分钟':'未启用');text('parameter-loss',c?compact(number(c.max_loss_usdc))+' U':'—');
-    visible('bootstrap-controls',!s);const guarded=!!s?.entry_margin_block||s?.consecutive_rollbacks>=3;visible('start-control',!!s&&!guarded&&['stopped','paused_entries','paused'].includes(s.status));visible('pause-control',!!s&&['running','warming'].includes(s.status));visible('stop-control',!!s&&s.status!=='stopped');visible('protected-exits-control',!!s?.entry_margin_block&&(s.status!=='paused_entries'||s.stop_requested));
+    visible('bootstrap-controls',!s);const guarded=!!s?.entry_margin_block||s?.consecutive_rollbacks>=3;visible('start-control',!!s&&!guarded&&!automaticPause(s)&&['stopped','paused_entries','paused'].includes(s.status));visible('pause-control',!!s&&(['running','warming'].includes(s.status)||automaticPause(s)));visible('stop-control',!!s&&s.status!=='stopped');visible('protected-exits-control',!!s?.entry_margin_block&&(s.status!=='paused_entries'||s.stop_requested));
+    text('pause-title',automaticPause(s)?'保持暂停':'暂停新增开仓');text('pause-detail',automaticPause(s)?'改为手动恢复，平仓与止损继续':'平仓与止损继续执行');
     text('credentials-brief',`${s?'账户已加载':'账户未加载'} · ${d.vault_unlocked?'已解锁':'未解锁'}`);
     const n=d.notifications,delivery=n?.delivery;const enabled=!!delivery?.enabled;$('notification-switch').setAttribute('aria-checked',String(enabled));text('notification-brief',delivery?.error?'通知发送异常，请查看详情':enabled?`已启用 · ${profile.label}`:!n?.saved?'尚未配置':!n.unlocked?'已保存 · 等待解锁':'已停用或等待账户加载');
     renderVenues(d.view?.accounts||[],profile.market,now,c);const pair=paired(d.view,now);text('pair-status',pair.text);$('pair-status').className='pair-status'+(pair.ok?'':' warn');feed('lighter',d);feed('entropy',d);text('last-updated','状态更新 '+new Date(now).toLocaleTimeString('zh-CN',{hour12:false}));

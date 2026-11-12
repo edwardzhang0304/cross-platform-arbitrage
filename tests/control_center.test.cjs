@@ -42,7 +42,7 @@ test('shared account navigation preserves account scope on both screens and esca
 test('styled confirmation cancels without a request and submits exactly once only after acceptance',async()=>{
  const fs=require('node:fs'),vm=require('node:vm');const elements=new Map();
  const get=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',open:false,attrs:{},dataset:{},classList:{add(){},remove(){}},setAttribute(k,v){this.attrs[k]=v},addEventListener(){},focus(){this.focused=true},showModal(){this.open=true},close(){this.open=false}});return elements.get(id)};
- const posts=[];const ctx=vm.createContext({document:{getElementById:get,querySelectorAll:()=>[],body:{classList:{add(){},remove(){}}}},MutationObserver:class{observe(){}},setInterval(){},crypto:{randomUUID:()=> 'synthetic-confirm-id'},fetch:async(url,opts)=>{if(opts?.method==='POST')posts.push(JSON.parse(opts.body));return {json:async()=>({ok:true,data:{csrf:'synthetic',profile:{id:'second'},message:'accepted'}})}}});
+ const posts=[];const ctx=vm.createContext({document:{getElementById:get,createElement:()=>({setAttribute(){}}),querySelectorAll:()=>[],body:{classList:{add(){},remove(){}}}},MutationObserver:class{observe(){}},setInterval(){},crypto:{randomUUID:()=> 'synthetic-confirm-id'},fetch:async(url,opts)=>{if(opts?.method==='POST')posts.push(JSON.parse(opts.body));return {json:async()=>({ok:true,data:{csrf:'synthetic',profile:{id:'second'},message:'accepted'}})}}});
  vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../frontend/glass-ui.js'),'utf8'),ctx);
  vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../frontend/control-center.js'),'utf8'),ctx);ctx.ControlCenter.render=()=>{};
  let script=fs.readFileSync(require('node:path').join(__dirname,'../frontend/portable.html'),'utf8').match(/<script>\s*([\s\S]*?)<\/script>/)[1].replace('/*CONTROL_PROFILE*/','const controlProfile={id:"second",label:"OPENAI 账号2"};');
@@ -55,4 +55,28 @@ test('styled confirmation cancels without a request and submits exactly once onl
  ctx.ControlCenter.resolveConfirmation(true);ctx.ControlCenter.resolveConfirmation(true);await accepted;
  assert.equal(posts.length,1);assert.equal(posts[0].command,'close_all');assert.equal(posts[0].confirmation,'CLOSE_ALL_POSITIONS');
  assert.equal(get('confirmation-dialog').open,false);
+});
+test('automatic funding/depth pause is distinct from manual stop and protection',()=>{
+ const shared=require('../frontend/glass-ui.js');
+ const s={status:'paused_entries',paused:false,stop_requested:false,automatic_entry_pause:{active:true,cause:'funding'}};
+ assert.equal(shared.automaticPause(s),true);
+ assert.match(shared.entryPauseDescription(s),/资金或保证金不足.*自动解除/);
+ s.automatic_entry_pause.cause='depth';assert.match(shared.entryPauseDescription(s),/本组盘口/);
+ s.paused=true;assert.equal(shared.automaticPause(s),false);assert.equal(shared.entryPauseDescription(s),'');
+ s.paused=false;s.status='stopped';assert.equal(shared.automaticPause(s),false);
+ s.status='needs_attention';assert.equal(shared.entryPauseDescription(s),'');
+});
+test('automatic pause keeps manual hold available without a misleading resume button',()=>{
+ const fs=require('node:fs'),vm=require('node:vm');const elements=new Map();
+ const get=id=>{if(!elements.has(id))elements.set(id,{textContent:'',innerHTML:'',hidden:false,style:{},classList:{add(){},remove(){}},setAttribute(){},addEventListener(){},replaceChildren(){},append(){},querySelector(){return null}});return elements.get(id)};
+ const ctx=vm.createContext({document:{getElementById:get,createElement:()=>({setAttribute(){}}),querySelectorAll:()=>[],body:{classList:{add(){},remove(){}}}},fetch:()=>new Promise(()=>{}),setInterval(){},MutationObserver:class{observe(){}}});
+ for(const f of ['glass-ui.js','control-center.js'])vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../frontend',f),'utf8'),ctx);
+ const s={status:'paused_entries',paused:false,automatic_entry_pause:{active:true,cause:'funding'},lots:[],config:{}};
+ const d={view:{snapshot:s,accounts:[],books:[]}};
+ ctx.ControlCenter.render(d,{id:'synthetic',label:'测试',market:'openai'},[]);
+ assert.equal(get('pause-control').hidden,false);assert.equal(get('start-control').hidden,true);assert.equal(get('stop-control').hidden,false);
+ assert.match(get('status-description').textContent,/自动暂停/);assert.equal(get('pause-title').textContent,'保持暂停');
+ s.paused=true;ctx.ControlCenter.render(d,{id:'synthetic',label:'测试',market:'openai'},[]);
+ assert.equal(get('pause-control').hidden,true);assert.equal(get('start-control').hidden,false);
+ assert.doesNotMatch(get('status-description').textContent,/自动解除/);
 });

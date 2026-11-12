@@ -79,11 +79,11 @@ fn thin_depth_risk_mark_preserves_costs_but_is_not_an_executable_profit_estimate
 }
 
 #[test]
-fn thin_depth_estimate_never_weakens_entry_or_invalid_quote_gates() {
+fn thin_depth_values_whole_inventory_but_requires_only_the_new_group() {
     let now=4_000_000;let (s,a,group)=thin_group_fixture(now,MarketPair::Openai,10,false);
     let b=thin_books(now,12,false,group);
     assert!(s.risk_valuation(&b,now).unwrap().estimated_total_pnl>Decimal::ZERO);
-    assert!(strategy::risk_check(&s,&b,&a,now,group,Action::Open).is_err());
+    assert!(strategy::risk_check(&s,&b,&a,now,group,Action::Open).is_ok());
     for bad in ["stale","future","disconnected","empty","crossed","invalid","unsorted"] {
         let mut b=b.clone();match bad {
             "stale"=>b[0].received_ms=now-s.config.book_max_age_ms-1,
@@ -220,8 +220,8 @@ async fn thin_depth_after_entry_reservation_cancels_before_any_new_exposure() {
     let t=now+1000;for account in &mut a {account.observed_ms=t;}
     s.pending=strategy::evaluate(&mut s,&books(t,12),&a,t).unwrap();
     let op=s.pending.as_ref().unwrap();assert_eq!(op.action,Action::Open);
-    let b=thin_books(t,12,false,s.paired_units()-s.config.common_step());
-    assert!(b[0].vwap(s.direction.open_side(Venue::Lighter),op.requested_units).is_ok());
+    let b=thin_books(t,12,false,op.requested_units-s.config.common_step());
+    assert!(b[0].vwap(s.direction.open_side(Venue::Lighter),op.requested_units).is_err());
     assert!(s.total_pnl(&b).is_err());
     let before=s.positions.iter().map(|p|p.units).collect::<Vec<_>>();
     let shared=Arc::new(RwLock::new(b.clone()));let clock=Arc::new(AtomicU64::new(t));
@@ -232,4 +232,25 @@ async fn thin_depth_after_entry_reservation_cancels_before_any_new_exposure() {
     assert!(s.pending.is_none());assert!(s.fills.is_empty());
     let (l,e)=tokio::join!(workers[0].account(),workers[1].account());
     assert_eq!(vec![l.unwrap().position_units,e.unwrap().position_units],before);
+}
+
+#[tokio::test]
+async fn thin_whole_inventory_does_not_cancel_an_executable_reserved_entry() {
+    use std::sync::{Arc,RwLock,atomic::AtomicU64};
+    let now=4_000_000;let (mut s,mut a)=accumulation_fixture(now,false);
+    for p in &mut s.positions {p.units*=10;}
+    for lot in &mut s.lots {lot.units*=10;}
+    for (i,account) in a.iter_mut().enumerate() {account.position_units=s.positions[i].units;}
+    strategy::evaluate(&mut s,&books(now,12),&a,now).unwrap();
+    let t=now+1000;for account in &mut a {account.observed_ms=t;}
+    s.pending=strategy::evaluate(&mut s,&books(t,12),&a,t).unwrap();
+    let qty=s.pending.as_ref().unwrap().requested_units;
+    let b=thin_books(t,12,false,qty);
+    assert!(s.total_pnl(&b).is_err());
+    let shared=Arc::new(RwLock::new(b.clone()));let clock=Arc::new(AtomicU64::new(t));
+    let workers=[Venue::Lighter,Venue::Entropy].map(|v|venue::AccountWorker::spawn_replay(v,
+        venue::PaperBackend::new(v,s.config.clone(),s.positions[v.index()].clone(),shared.clone()),clock.clone()).unwrap());
+    let (mut store,_)=store::Store::offline_replay(&s.config).unwrap();
+    execution::advance(&mut s,&mut store,&workers,&b,t).await.unwrap();
+    assert!(s.pending.as_ref().unwrap().first.is_some(),"this group must reach the existing guarded worker");
 }

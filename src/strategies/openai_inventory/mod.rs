@@ -10,6 +10,7 @@ mod comparison;
 pub mod charts;
 pub mod entry_mean;
 pub mod entry_margin;
+pub mod entry_availability;
 pub mod accounting;
 pub mod alerts;
 pub mod liquidation;

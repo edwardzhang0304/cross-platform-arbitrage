@@ -599,7 +599,7 @@ pub(super) async fn advance_with_hedge_evidence(
     s:&mut Snapshot, store:&mut Store, workers:&[AccountWorker;2], books:&[Book;2],
     now:u64, accounts:Option<&[AccountEvidence;2]>,
 ) -> Result<()> {
-    if (s.paused || s.stop_requested || s.close_requested || s.loss_stop.is_some())
+    if (s.paused || s.stop_requested || s.close_requested || s.loss_stop.is_some() || s.automatic_entry_pause.is_some())
         && cancel_unsent_entry(s) {
         store.commit(s, now, "unsent_entry_cancelled")?;
         return Ok(());
@@ -612,10 +612,9 @@ pub(super) async fn advance_with_hedge_evidence(
         for b in books {
             b.validate(now, s.config.book_max_age_ms)?;
         }
-        // A risk-only thin-book estimate can trigger reducing protection, but
-        // cannot replace the original full-depth gate for new exposure. Check
-        // again here because the book may have thinned since reservation.
-        s.total_pnl(books)?;
+        // Revalue all holdings, then require executable depth only for this order.
+        s.risk_valuation(books, now)?;
+        // The loss latch below must run even when the new valuation breaches it.
         let op = s.pending.as_ref().unwrap();
         ensure!(
             now.saturating_sub(op.created_ms) <= s.config.operation_timeout_ms,

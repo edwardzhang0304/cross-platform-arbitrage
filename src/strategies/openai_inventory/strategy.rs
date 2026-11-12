@@ -228,7 +228,7 @@ pub fn risk_check(
             "loss limit latched; new entries disabled"
         );
         ensure!(
-            s.total_pnl(books)? > -s.config.max_loss_usdc,
+            s.risk_valuation(books, now)?.estimated_total_pnl > -s.config.max_loss_usdc,
             "total loss limit breached"
         );
     }
@@ -266,14 +266,14 @@ pub fn risk_check(
         let side = s.direction.side(a.venue, action);
         ensure!(a.position_units == 0 || (a.position_units.signum() == side.sign()) == (action == Action::Open),
             "order side conflicts with owned position direction");
-        let (px, _) = books[i].vwap(side, qty)?;
+        let (px, _) = books[i].vwap(side, qty).map_err(|e| entry_availability::classify(e, entry_availability::Obstacle::Depth))?;
         if action == Action::Open {
             ensure!(
                 s.config.quantity(qty) * px >= Decimal::from(10),
                 "below venue minimum notional"
             );
             let limit = execution::protected_price_bound(s,&books[i],a.venue,side,s.config.execution_slippage_bps)?;
-            entry_margin::check_account(a,&s.config,qty,limit,side)?;
+            entry_margin::check_account(a,&s.config,qty,limit,side).map_err(|e| entry_availability::classify(e, entry_availability::Obstacle::Funding))?;
             let risk_price = limit.max(px);
             let ntl = s.config.quantity(qty) * risk_price;
             let fee = ntl
@@ -282,11 +282,9 @@ pub fn risk_check(
                 } else {
                     s.config.fee_entropy
                 };
-            ensure!(
-                a.free_margin - ntl / Decimal::from(s.config.leverage) - fee
-                    >= s.config.min_free_margin,
-                "insufficient free margin"
-            );
+            if a.free_margin - ntl / Decimal::from(s.config.leverage) - fee < s.config.min_free_margin {
+                return Err(anyhow::Error::new(entry_availability::Obstacle::Funding).context("insufficient free margin"));
+            }
             ensure!(
                 s.config.quantity(a.position_units.abs() + qty) * risk_price <= s.config.max_notional_per_venue,
                 "inventory notional cap"
@@ -362,7 +360,7 @@ pub fn evaluate(
     let result = evaluate_inner(s, books, accounts, now);
     // Errors can occur before candidate selection (for example while valuing
     // held positions against thin books). No entry clock may bridge that gap.
-    if result.is_err() { clear_entry_confirmation(s); }
+    if result.is_err() { clear_entry_confirmation(s); entry_availability::invalidate(s); }
     result
 }
 
@@ -417,6 +415,7 @@ fn evaluate_inner(
         s.stop_after_close = true;
         s.reason = "liquidation distance reserve breached; protected exit requested".into();
     }
+    entry_availability::update(s, books, accounts, now);
     if !margin_emergency && !s.close_requested {
         let due = s.config.decision_ms.map_or_else(|| sample_due(s, now), |interval| {
             s.decision_observation.is_none_or(|(at, _)| now >= at && now - at >= interval)
@@ -475,7 +474,7 @@ fn evaluate_inner(
     let per_group_accumulation = s.config.accumulation.is_some() && s.config.exit_policy == ExitPolicy::PerGroup;
     if ((!warm && !per_group_accumulation) || (!entry_progress.ready && s.paired_units() == 0)) && !s.close_requested {
         clear_entry_confirmation(s);
-        s.status = if s.paused {
+        s.status = if s.paused || entry_availability::active(s) {
             Status::PausedEntries
         } else {
             Status::Warming
@@ -562,7 +561,7 @@ fn evaluate_inner(
         }
     }
     let waiting = s.entry_funding_wait.as_ref().is_some_and(|w| now < w.retry_after_ms);
-    if action.is_none() && !waiting
+    if action.is_none() && !waiting && s.automatic_entry_pause.is_none()
         && funding_ready && !s.paused && s.entry_margin_block.is_none() && !s.close_requested && !s.exit_batch_active
         && s.entry_attempts_remaining != Some(0)
     {
@@ -617,7 +616,7 @@ fn evaluate_inner(
         }
     } else { clear_entry_confirmation(s); }
     let Some((action, level, qty)) = action else {
-        s.reason = if s.entry_margin_block.is_some() { entry_margin::BLOCK_MESSAGE } else if waiting {
+        s.reason = if s.entry_margin_block.is_some() { entry_margin::BLOCK_MESSAGE } else if let Some(p) = s.automatic_entry_pause.as_ref().filter(|_| !s.paused) { &p.reason } else if waiting {
             &s.entry_funding_wait.as_ref().unwrap().reason
         } else if funding_ready {
             "waiting for executable spread"

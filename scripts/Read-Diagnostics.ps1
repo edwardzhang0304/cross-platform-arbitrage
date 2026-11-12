@@ -94,6 +94,7 @@ function Snapshot-View($s) {
     emergency_exit=(Emergency-View $s.emergency_exit)
     paused=$s.paused; stop_requested=$s.stop_requested; resume_after_recovery=$s.resume_after_recovery; close_requested=$s.close_requested; stop_after_close=$s.stop_after_close
     entry_margin_block=$(if ($null -ne $s.entry_margin_block) { [ordered]@{venue=$s.entry_margin_block.venue; at_ms=$s.entry_margin_block.at_ms; order_ref=(Ref $s.entry_margin_block.order_id); rejection=(SafeText $s.entry_margin_block.rejection)} }); consecutive_rollbacks=$s.consecutive_rollbacks; recovery_after_ms=$s.recovery_after_ms
+    automatic_entry_pause=$(if ($null -ne $s.automatic_entry_pause) { [ordered]@{cause=(SafeText $s.automatic_entry_pause.cause); since_ms=$s.automatic_entry_pause.since_ms; active=$s.automatic_entry_pause.active; reason=(SafeText $s.automatic_entry_pause.reason)} })
     entry_funding_wait=$(if ($null -ne $s.entry_funding_wait) { [ordered]@{retry_after_ms=$s.entry_funding_wait.retry_after_ms; reason=(SafeText $s.entry_funding_wait.reason)} })
     orphan=($null -ne $s.live_orphan); loss_stop=($null -ne $s.loss_stop)
     held_groups=@($s.lots).Count; closed_groups=$s.closed_groups
@@ -143,6 +144,7 @@ function Capture-Market($Profile) {
     if ($null -eq $s) { $flags.Add('ACCOUNT_NOT_LOADED') }
     else {
       if ($null -ne $s.pending) { $flags.Add('PENDING_OPERATION') }
+      if ($s.automatic_entry_pause.active -eq $true) { $flags.Add('AUTOMATIC_ENTRY_PAUSE') }
       if ($null -ne $s.entry_margin_block) { $flags.Add('ENTRY_MARGIN_PROTECTION') }
       if ($null -ne $s.entry_funding_wait -and $s.entry_funding_wait.retry_after_ms -gt $at) { $flags.Add('ENTRY_FUNDING_WAIT') }
       if ($s.status -eq 'needs_attention') { $flags.Add('NEEDS_ATTENTION') }

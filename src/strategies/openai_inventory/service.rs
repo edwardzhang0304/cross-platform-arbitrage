@@ -385,6 +385,7 @@ impl InventoryService {
                                         state=resumed;
                                     }
                                     complete_reconciled_recovery(&mut state, a)?;
+                                    let prior_entry_pause=state.automatic_entry_pause.as_ref().map(|p|(p.active,p.cause));
                                     let prior=state.last_sample_ms;
                                     let prior_decision=state.decision_observation;
                                     let prior_loss_stop=state.loss_stop.is_some();
@@ -392,6 +393,7 @@ impl InventoryService {
                                     if let Some(operation)=strategy::evaluate(&mut state,&decision_books,a,decision_now)? {
                                         state.pending=Some(operation);store.commit(&state,decision_now,"operation_reserved")?;
                                     } else if !prior_loss_stop && state.loss_stop.is_some() {store.commit(&state,decision_now,"loss_limit_latched")?;}
+                                    else if prior_entry_pause!=state.automatic_entry_pause.as_ref().map(|p|(p.active,p.cause)) {store.commit(&state,now,"automatic_entry_availability_changed")?;}
                                     else if state.last_sample_ms!=prior || state.decision_observation!=prior_decision {store.commit(&state,now,"sample")?;}
                                 }
                             }

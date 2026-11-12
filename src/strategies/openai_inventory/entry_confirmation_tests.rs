@@ -37,7 +37,11 @@ fn timed_entries_restart_after_failure_staleness_depth_or_direction_change() {
         if failure!="timeout" {let result=strategy::evaluate(&mut s,&b,&a,now+2000);assert!(result.is_err()||result.unwrap().is_none());}
         let t=now+if failure=="timeout"{31000}else{5000};
         assert!(strategy::evaluate(&mut s,&books(t,16),&accounts(t),t).unwrap().is_none(),"{failure}");
-        assert!(strategy::evaluate(&mut s,&books(t+5000,16),&accounts(t+5000),t+5000).unwrap().is_some(),"{failure}");
+        let delay=if failure=="account" {15000}else{5000};
+        for offset in (1000..=delay).step_by(1000) {
+            let op=strategy::evaluate(&mut s,&books(t+offset,16),&accounts(t+offset),t+offset).unwrap();
+            assert_eq!(op.is_some(),offset==delay,"{failure}/{offset}");
+        }
     }
 }
 

@@ -24,26 +24,26 @@ fn legacy_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Snaps
     s
 }
 
-fn hourly_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Snapshot {
+fn half_hour_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Snapshot {
     let mut s = legacy_rules_snapshot(market, reverse, mode);
     s.config = rules_upgrade::current_config(&s.config).unwrap();
-    s.config.accumulation.as_mut().unwrap().interval_ms = 3_600_000;
+    s.config.accumulation.as_mut().unwrap().interval_ms = 1_800_000;
     // A slot may already have re-armed while its older lot still exists.
     s.armed[0] = true;
     s
 }
 
 #[test]
-fn hourly_upgrade_changes_only_interval_preserving_slots_quota_and_completion_clock() {
+fn half_hour_upgrade_changes_only_interval_preserving_slots_quota_and_completion_clock() {
     for market in [MarketPair::Openai, MarketPair::Anth] {
         for reverse in [false, true] { for mode in [Mode::Paper, Mode::Live] {
             for used in [0, 4, 5] {
-                let mut s = hourly_rules_snapshot(market, reverse, mode);
+                let mut s = half_hour_rules_snapshot(market, reverse, mode);
                 s.time_adds_used = used;
                 let before = serde_json::to_value(&s).unwrap();
                 let desired = rules_upgrade::current_config(&s.config).unwrap();
                 let mut expected_config = s.config.clone();
-                expected_config.accumulation.as_mut().unwrap().interval_ms = 1_800_000;
+                expected_config.accumulation.as_mut().unwrap().interval_ms = 3_600_000;
                 assert_eq!(desired, expected_config);
                 assert!(rules_upgrade::migrate_snapshot(&mut s, &desired).unwrap());
                 let mut actual = serde_json::to_value(&s).unwrap();
@@ -60,8 +60,8 @@ fn hourly_upgrade_changes_only_interval_preserving_slots_quota_and_completion_cl
 }
 
 #[test]
-fn hourly_upgrade_preserves_smaller_quota_and_rejects_unknown_interval_or_running_state() {
-    let mut s = hourly_rules_snapshot(MarketPair::Openai, false, Mode::Live);
+fn half_hour_upgrade_preserves_smaller_quota_and_rejects_unknown_interval_or_running_state() {
+    let mut s = half_hour_rules_snapshot(MarketPair::Openai, false, Mode::Live);
     s.config.accumulation.as_mut().unwrap().max_time_adds = 3;
     let desired = rules_upgrade::current_config(&s.config).unwrap();
     assert_eq!(desired.accumulation.as_ref().unwrap().max_time_adds, 3);
@@ -82,7 +82,7 @@ fn rule_upgrade_preserves_money_inventory_and_used_quota_for_both_markets_and_mo
             let desired=rules_upgrade::current_config(&s.config).unwrap();
             assert_eq!(desired.grid,d(5));
             let r=desired.accumulation.as_ref().unwrap();
-            assert_eq!((r.interval_ms,r.max_time_adds,r.quota_scope),(1_800_000,5,TimeAddQuotaScope::GridStage));
+            assert_eq!((r.interval_ms,r.max_time_adds,r.quota_scope),(3_600_000,5,TimeAddQuotaScope::GridStage));
             assert!(rules_upgrade::migrate_snapshot(&mut s,&desired).unwrap());
             assert_eq!(s.lots.iter().map(|l|l.level).collect::<Vec<_>>(),vec![0,0,0,1,24]);
             assert_eq!(s.time_adds_used,4);
@@ -155,7 +155,7 @@ fn rule_upgrade_transaction_is_locked_idempotent_and_recovers_between_ledger_and
     for market in [MarketPair::Openai, MarketPair::Anth] {
         let root=std::env::temp_dir().join(format!("rule-upgrade-{}",uuid::Uuid::new_v4()));
         let paths=ProfilePaths::new(&root,market);
-        let s=hourly_rules_snapshot(market,false,Mode::Live);
+        let s=half_hour_rules_snapshot(market,false,Mode::Live);
         let cfg=s.config.clone();let desired=rules_upgrade::current_config(&cfg).unwrap();
         let (mut db,_)=store::Store::open(&paths.database,&cfg).unwrap();
         db.commit(&s,1,"synthetic-stopped").unwrap();
@@ -178,12 +178,12 @@ fn rule_upgrade_transaction_is_locked_idempotent_and_recovers_between_ledger_and
         assert_eq!(paths.load().unwrap().unwrap().strategy,desired);
         paths.upgrade_rules(&mut settings).unwrap();
         let raw=rusqlite::Connection::open(&paths.database).unwrap();
-        let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_interval_30m_v1'",[],|r|r.get(0)).unwrap();
+        let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_interval_60m_v1'",[],|r|r.get(0)).unwrap();
         assert_eq!(count,1);
-        let event:String=raw.query_row("SELECT body FROM events WHERE kind='rules_interval_30m_v1'",[],|r|r.get(0)).unwrap();
+        let event:String=raw.query_row("SELECT body FROM events WHERE kind='rules_interval_60m_v1'",[],|r|r.get(0)).unwrap();
         let event:serde_json::Value=serde_json::from_str(&event).unwrap();
-        assert_eq!(event["from_interval_ms"],3_600_000);
-        assert_eq!(event["to_interval_ms"],1_800_000);
+        assert_eq!(event["from_interval_ms"],1_800_000);
+        assert_eq!(event["to_interval_ms"],3_600_000);
         let body:String=raw.query_row("SELECT body FROM state WHERE id=1",[],|r|r.get(0)).unwrap();
         let restored:Snapshot=serde_json::from_str(&body).unwrap();
         assert_eq!(restored.config,desired);assert_eq!(restored.time_adds_used,4);assert_eq!(restored.closed_groups,7);

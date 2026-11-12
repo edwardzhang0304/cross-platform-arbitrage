@@ -7,6 +7,8 @@
   const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   function entryAvailable(a){const m=a?.entry_margin;if(!m)return {text:amount(a?.free_margin),detail:''};const known=m.isolated_only&&Number.isFinite(number(m.collateral))&&Number.isFinite(number(m.reported_available));return {text:known?amount(Math.max(0,Math.min(number(m.collateral),number(m.reported_available)))):'待核对',detail:`平台显示可用 ${amount(a.free_margin)} · 未划入逐仓 ${amount(m.collateral)}`};}
   function state(s){if(!s)return {text:'未加载',tone:'neutral'};if(s.emergency_exit?.flat_confirmed_ms&&!s.emergency_exit.completed_ms)return {text:'已清仓，账本核对中',tone:'warn'};return {text:labels[s.status]||s.status||'未知状态',tone:s.status==='running'?'good':['stopped','paused'].includes(s.status)?'neutral':s.status==='needs_attention'?'bad':'warn'};}
+  function automaticPause(s){return s?.status==='paused_entries'&&!s.paused&&!s.stop_requested&&!!s.automatic_entry_pause?.active;}
+  function entryPauseDescription(s){if(!automaticPause(s))return '';return (s.automatic_entry_pause.cause==='funding'?'本组加仓资金或保证金不足':'本组盘口深度或滑点条件不足')+'，已自动暂停新增开仓；平仓与止损继续，条件持续恢复后自动解除。';}
   function paired(view,now){const s=view?.snapshot,a=view?.accounts||[];if(!s||a.length!==2)return {text:'加载账户后核对两边持仓',ok:false};const by=v=>a.find(a=>a.venue===v),l=by('lighter'),e=by('entropy');const max=s.config?.account_max_age_ms??3000;const fresh=r=>r&&r.authenticated&&number(r.observed_ms)<=now+1000&&now-number(r.observed_ms)<=max;const ledger=s.positions||[];
     if(!fresh(l)||!fresh(e))return {text:'账户数据待更新，暂不能确认配平',ok:false};
     if(s.pending||s.orphan||s.orphan_exposure||s.emergency_exit&&!s.emergency_exit.completed_ms)return {text:'订单或持仓仍在核对，以实盘监控为准',ok:false};
@@ -20,7 +22,7 @@
     async function refresh(){if(busy||Date.now()-last<5000)return;busy=true;last=Date.now();try{const r=await(await fetch('/api/accounts',{cache:'no-store'})).json();if(r.ok&&Array.isArray(r.data?.profiles))render(r.data.profiles);}catch{/* Current account remains independently readable. */}finally{busy=false;}}
     return {render,refresh};
   }
-  const api={number,amount,escape,entryAvailable,state,paired,createAccountNavigation};
+  const api={number,amount,escape,entryAvailable,state,automaticPause,entryPauseDescription,paired,createAccountNavigation};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   root.GlassUI=api;
 })(typeof window==='undefined'?globalThis:window);

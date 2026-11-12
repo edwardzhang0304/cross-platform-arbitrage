@@ -67,12 +67,13 @@ fn independent_confirmations_keep_freshness_depth_risk_and_spread_resets() {
             assert!(result.is_err() || result.unwrap().is_none());
             assert_eq!(s.entry_confirmations, [None; 2], "{bad}");
             assert_eq!(s.time_entry_confirmations, [None; 2], "{bad}");
-            for offset in [5000, 10000] {
+            let ready=if bad=="funds" {20000}else{10000};
+            for offset in (5000..=ready).step_by(1000) {
                 let t = now + offset;
                 a = accounts(t);
                 for i in 0..2 { a[i].position_units = s.positions[i].units; }
                 let op = strategy::evaluate(&mut s, &bidir_books(t, 12, reverse), &a, t).unwrap();
-                assert_eq!(op.is_some(), offset == 10000, "{bad}");
+                assert_eq!(op.is_some(), offset == ready, "{bad}/{offset}");
             }
         }
     }
