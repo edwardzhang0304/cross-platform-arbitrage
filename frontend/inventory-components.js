@@ -90,10 +90,11 @@
       get('groups').title = emergency?.flat_confirmed_ms && !emergency.completed_ms ? '账本组数待核对，实际持仓以上方账户和最近核对时间为准' : '账本持仓组数 / 已平组数';
       for (const [id, value] of [['pnl', view.net_pnl], ['closed-pnl', view.profit_accounting?.closed_net_profit]]) {
         const cell = profit(value);
-        get(id).textContent = cell.text;
+        get(id).textContent = cell.text + (id === 'pnl' && view.net_pnl_estimated === true && Number.isFinite(number(value)) ? '（估算）' : '');
         get(id).className = cell.className;
       }
       get('pnl').title = '累计已实现盈亏＋剩余仓位平仓估算－交易手续费＋已结算资金费净收支；包含滑点预留，未结算资金费不计入';
+      if (view.net_pnl_estimated === true && Number.isFinite(number(view.net_pnl))) get('pnl').title += '。可见盘口未覆盖全部持仓，超出部分按末档价格估值，实际平仓收益可能更低';
       get('closed-pnl').title = `${paper ? '已完成双腿模拟平仓部分的收益' : '已完成双腿平仓部分的实际收益'}－对应开平仓手续费＋${paper ? '对应资金费模拟估算' : '对应已结算资金费'}；不含未平仓浮动盈亏`;
       const accounts = ['lighter', 'entropy'].map(venue => (view.accounts || []).find(a => a.venue === venue)).filter(Boolean);
       const profits = new Map((view.profit_accounting?.lots || []).map(p => [p.lot_id, p]));
