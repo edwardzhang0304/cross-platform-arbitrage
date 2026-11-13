@@ -49,24 +49,6 @@ test('closed net profit displays independently with signed colors, zero and miss
   }
 });
 
-test('thin-depth total is explicitly estimated without substituting closed or per-lot profit',()=>{
-  const f=fixture();
-  f.payload.view.net_pnl_estimated=true;
-  f.payload.view.profit_accounting={closed_net_profit:'12.34',lots:[]};
-  for(const [value,text,color] of [['8.123','8.12 U（估算）','good'],['-2.5','-2.50 U（估算）','badtext'],['0','0.00 U（估算）',''],[null,'—','']]){
-    f.payload.view.net_pnl=value;f.render();
-    assert.equal(f.element('pnl').textContent,text);
-    assert.equal(f.element('pnl').className,color);
-    assert.equal(f.element('closed-pnl').textContent,'12.34 U');
-    if(value!==null)assert.match(f.element('pnl').title,/末档价格估值/);
-  }
-  f.payload.view.net_pnl='8.123';f.payload.view.net_pnl_estimated=false;f.render();
-  assert.equal(f.element('pnl').textContent,'8.12 U');
-  assert(!f.element('pnl').title.includes('末档价格估值'));
-  f.payload.view.net_pnl=null;f.payload.view.risk_valuation={estimated_total_pnl:'99'};f.render();
-  assert.equal(f.element('pnl').textContent,'—','frontend must not bypass backend reconciliation guards');
-});
-
 test('group rows bind by ID, use signed funding and never subtract it again from total',()=>{
   const f=fixture();
   f.payload.view.profit_accounting={lots:[

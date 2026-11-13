@@ -173,7 +173,6 @@ function Capture-Market($Profile) {
       sampling=($v.sampling | Select-Object ready,continuity_active,covered_ms,required_ms); directional_means=$v.directional_means; submission_enabled=$v.submission_enabled
       warning=(SafeText $v.transient_warning); lookup_note=(SafeText $v.order_lookup_note)
       funding_complete=$v.profit_accounting.funding_complete
-      net_pnl=$v.net_pnl; net_pnl_estimated=$v.net_pnl_estimated; estimated_exit_net=$v.estimated_exit_net
       profit_accounting=($v.profit_accounting | Select-Object closed_net_profit,settled_funding,unallocated_funding,funding_complete,@{Name='lots';Expression={@($_.lots | Select-Object lot_id,remaining_funding,estimated_exit_net,take_profit_contraction,exit_spread_ceiling)}})
       notifications=[ordered]@{saved=$d.notifications.saved; unlocked=$d.notifications.unlocked; delivery=($d.notifications.delivery | Select-Object enabled,pending,dropped,last_sent_ms,@{Name='error';Expression={SafeText $_.error}})}
     }
