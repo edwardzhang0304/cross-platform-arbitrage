@@ -1,6 +1,19 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const ui=require('../frontend/control-center.js');
+test('a verified zero balance is shown while stale or failed evidence stays unknown',()=>{
+ const shared=require('../frontend/glass-ui.js');
+ const fresh={equity:'0',free_margin:'0',authenticated:true,observed_ms:10000};
+ assert.equal(ui.entryAvailable(shared.accountForDisplay(fresh,10001)).text,'0.00 U');
+ for(const a of [{...fresh,observed_ms:1},{...fresh,authenticated:false},{...fresh,observed_ms:20000}]){
+   a.equity='197.57';a.free_margin='197.57';
+   const display=shared.accountForDisplay(a,10001);
+   assert.equal(display.equity,null);assert.equal(ui.entryAvailable(display).text,'—');
+   assert.equal(a.equity,'197.57');
+ }
+ const deposited={...fresh,equity:'100',free_margin:'100'};
+ assert.equal(ui.entryAvailable(shared.accountForDisplay(deposited,10001)).text,'100.00 U');
+});
 test('display never treats isolated floating profit as funding for a new entry',()=>{
  const a={free_margin:'28.60',entry_margin:{isolated_only:true,collateral:'0.10',reported_available:'28.60'}};
  assert.equal(ui.entryAvailable(a).text,'0.10 U');

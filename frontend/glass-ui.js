@@ -6,6 +6,8 @@
   const amount=v=>Number.isFinite(number(v))?number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})+' U':'—';
   const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   function entryAvailable(a){const m=a?.entry_margin;if(!m)return {text:amount(a?.free_margin),detail:''};const known=m.isolated_only&&Number.isFinite(number(m.collateral))&&Number.isFinite(number(m.reported_available));return {text:known?amount(Math.max(0,Math.min(number(m.collateral),number(m.reported_available)))):'待核对',detail:`平台显示可用 ${amount(a.free_margin)} · 未划入逐仓 ${amount(m.collateral)}`};}
+  function accountFresh(a,now,maxAge=3000){const at=number(a?.observed_ms);return !!a?.authenticated&&Number.isFinite(at)&&at>0&&at<=now&&now-at<=maxAge;}
+  function accountForDisplay(a,now,maxAge=3000){return accountFresh(a,now,maxAge)?a:{...a,equity:null,free_margin:null,entry_margin:null};}
   function state(s){if(!s)return {text:'未加载',tone:'neutral'};if(s.emergency_exit?.flat_confirmed_ms&&!s.emergency_exit.completed_ms)return {text:'已清仓，账本核对中',tone:'warn'};return {text:labels[s.status]||s.status||'未知状态',tone:s.status==='running'?'good':['stopped','paused'].includes(s.status)?'neutral':s.status==='needs_attention'?'bad':'warn'};}
   function automaticPause(s){return s?.status==='paused_entries'&&!s.paused&&!s.stop_requested&&!!s.automatic_entry_pause?.active;}
   function entryPauseDescription(s){if(!automaticPause(s))return '';return (s.automatic_entry_pause.cause==='funding'?'本组加仓资金或保证金不足':'本组盘口深度或滑点条件不足')+'，已自动暂停新增开仓；平仓与止损继续，条件持续恢复后自动解除。';}
@@ -22,7 +24,7 @@
     async function refresh(){if(busy||Date.now()-last<5000)return;busy=true;last=Date.now();try{const r=await(await fetch('/api/accounts',{cache:'no-store'})).json();if(r.ok&&Array.isArray(r.data?.profiles))render(r.data.profiles);}catch{/* Current account remains independently readable. */}finally{busy=false;}}
     return {render,refresh};
   }
-  const api={number,amount,escape,entryAvailable,state,automaticPause,entryPauseDescription,paired,createAccountNavigation};
+  const api={number,amount,escape,entryAvailable,accountFresh,accountForDisplay,state,automaticPause,entryPauseDescription,paired,createAccountNavigation};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   root.GlassUI=api;
 })(typeof window==='undefined'?globalThis:window);

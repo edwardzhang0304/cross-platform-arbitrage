@@ -14,6 +14,10 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+#[cfg(test)]
+#[path = "activation_evidence_tests.rs"]
+mod activation_evidence_tests;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct InventoryView {
     pub entry_first_venue: Venue,
@@ -188,6 +192,10 @@ impl InventoryService {
                                 Ok(a)=>{accounts=Some(a);last_accounts=crate::domain::now_ms();Ok(())},
                                 Err(e)=>Err(e),
                             }
+                        } else if matches!(command.control, Control::StartLiveStrategy | Control::StartOneEntry) {
+                            let result=refresh_activation_evidence(&mut state,&mut store,&workers,&mut accounts).await;
+                            if result.is_ok() {last_accounts=crate::domain::now_ms();funding_warning.clear();}
+                            result
                         } else { Ok(()) };
                         let outcome=if matches!(command.control, Control::ConfirmRollbackRecovery) {
                             super::manual_recovery::confirm(&mut state,&mut store,&workers,&command.id,Some(&books)).await.map(|fresh| {
@@ -739,10 +747,11 @@ pub(super) fn start_one_entry(
     );
     let accounts = accounts.context("account evidence required")?;
     s.assert_reconciled(accounts)?;
+    validate_activation_accounts(s,accounts,now)?;
     ensure!(
         s.config.mode == Mode::Paper
             || (s.funding_synced_ms > 0 && now.saturating_sub(s.funding_synced_ms) <= 90_000),
-        "funding evidence stale"
+        "资金费记录尚未核对完成，请稍后重试；这不是账户余额不足"
     );
     let qty = s.config.common_units(
         s.config.group_notional,
@@ -778,16 +787,11 @@ pub(super) fn start_live_strategy(
         && s.consecutive_rollbacks < 3, "reconcile pending operation or risk lock before activation");
     let a = accounts.context("account evidence required")?;
     s.assert_reconciled(a)?;
+    validate_activation_accounts(s,a,now)?;
     ensure!(s.funding_synced_ms > 0 && s.funding_synced_ms <= now
-        && now - s.funding_synced_ms <= 90_000, "funding evidence stale");
+        && now - s.funding_synced_ms <= 90_000, "资金费记录尚未核对完成，请稍后重试；这不是账户余额不足");
     for i in 0..2 {
         books[i].validate(now, s.config.book_max_age_ms)?;
-        let expected_account = if i == 0 { &s.config.lighter_account } else { &s.config.entropy_account };
-        ensure!(a[i].authenticated && a[i].venue.index() == i
-            && &a[i].account == expected_account
-            && a[i].observed_ms <= now && now - a[i].observed_ms <= s.config.account_max_age_ms
-            && a[i].open_orders == 0 && a[i].isolated && a[i].leverage == s.config.leverage,
-            "fresh reconciled isolated accounts without orders required");
     }
     // Preserve lots, anchor, grid arming, add counters, PnL and loss history.
     strategy::clear_decision_confirmation(s);
@@ -797,6 +801,57 @@ pub(super) fn start_live_strategy(
     s.resume_after_recovery = true;
     s.status = Status::Running;
     s.reason = "continuous strategy enabled; existing inventory and risk checks retained".into();
+    Ok(())
+}
+
+fn validate_activation_accounts(s:&Snapshot,a:&[AccountEvidence;2],now:u64)->Result<()> {
+    for (i,a) in a.iter().enumerate() {
+        let expected=if i==0 {&s.config.lighter_account}else{&s.config.entropy_account};
+        ensure!(a.authenticated && a.venue.index()==i && &a.account==expected
+            && a.observed_ms>0 && a.observed_ms<=now && now-a.observed_ms<=s.config.account_max_age_ms
+            && a.open_orders==0 && a.isolated && a.leverage==s.config.leverage,
+            "fresh reconciled isolated accounts without orders required");
+    }
+    // A funded hedge must still be able to resume its reducing controls.
+    // Only an empty account is rejected here; ongoing entry admission retains
+    // its complete per-group margin and reserve checks.
+    if s.positions.iter().all(|p|p.units==0) && s.lots.is_empty() {
+        for a in a {
+            ensure!(a.equity>Decimal::ZERO && a.free_margin>Decimal::ZERO,
+                "{} 账户资金不足：权益 {} U，可用于开仓 {} U；充值到账后再启动",
+                if a.venue==Venue::Lighter {"Lighter RH"}else{"Entropy"},a.equity,a.free_margin);
+        }
+    }
+    Ok(())
+}
+
+/// Explicit activation obtains fresh read-only evidence; it never removes a
+/// funding gate or submits an order to discover whether an account is funded.
+async fn refresh_activation_evidence(s:&mut Snapshot,store:&mut Store,workers:&[AccountWorker;2],
+    accounts:&mut Option<[AccountEvidence;2]>)->Result<()> {
+    let fresh=venue::fresh_reconciled_accounts(workers,s.config.account_max_age_ms).await
+        .context("启动前账户余额核对失败，请稍后重试")?;
+    *accounts=Some(fresh);
+    let now=crate::domain::now_ms();let a=accounts.as_ref().unwrap();
+    s.assert_reconciled(a)?;
+    validate_activation_accounts(s,a,now)?;
+    if s.funding_synced_ms==0 || s.funding_synced_ms>now || now-s.funding_synced_ms>60_000 {
+        let start=if accounting::funding_history_complete(s) {
+            s.funding_synced_ms.saturating_sub(3_600_000).max(s.created_ms)
+        }else{s.created_ms};
+        let (l,e)=tokio::join!(workers[0].funding(start,now),workers[1].funding(start,now));
+        let mut next=s.clone();
+        for f in l.context("启动前 Lighter 资金费核对失败")?.into_iter()
+            .chain(e.context("启动前 Entropy 资金费核对失败")?) {accounting::record_funding(&mut next,f)?;}
+        next.funding_synced_ms=now;
+        store.commit(&next,crate::domain::now_ms(),"activation_funding_reconciled")?;*s=next;
+        // Funding history can take seconds; do not activate with the old
+        // account snapshot captured before that await.
+        *accounts=Some(venue::fresh_reconciled_accounts(workers,s.config.account_max_age_ms).await
+            .context("资金费核对后的账户余额刷新失败")?);
+        let a=accounts.as_ref().unwrap();s.assert_reconciled(a)?;
+        validate_activation_accounts(s,a,crate::domain::now_ms())?;
+    }
     Ok(())
 }
 

@@ -30,7 +30,12 @@ function checkArchitecture() {
   const walk = dir => fs.readdirSync(dir, {withFileTypes:true}).flatMap(e => e.isDirectory() ? walk(path.join(dir,e.name)) : [path.join(dir,e.name)]);
   const sources = walk(path.join(root, 'src')).filter(f=>f.endsWith('.rs')).map(f=>fs.readFileSync(f,'utf8')).join('\n');
   for (const name of ['timed_entry_candidates','group_exit_eligible','evaluate_inner']) assert.equal([...sources.matchAll(new RegExp(`\\bfn\\s+${name}\\s*\\(`,'g'))].length, 1, `duplicate strategy implementation: ${name}`);
-  assert.deepEqual(strategyParameters(JSON.parse(read('config/strategy.example.json'))), strategyParameters(JSON.parse(read('config/strategy.anth.example.json'))));
+  const openai=strategyParameters(JSON.parse(read('config/strategy.example.json')));
+  const anth=strategyParameters(JSON.parse(read('config/strategy.anth.example.json')));
+  assert.equal(openai.entry_slippage_bps,'4');
+  assert.equal(anth.entry_slippage_bps??anth.execution_slippage_bps,'1');
+  delete openai.entry_slippage_bps;delete anth.entry_slippage_bps;
+  assert.deepEqual(openai,anth);
   return coreHash();
 }
 if (require.main === module) console.log(`PASS: one shared core ${checkArchitecture()}`);

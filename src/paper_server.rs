@@ -38,7 +38,7 @@ async fn status(State(app):State<PaperApp>,h:HeaderMap,market:MarketPair)->Json<
     Json(json!({"ok":true,"data":{"view":view,"build":crate::build_info::current(),"rules_fingerprint":rules,
         "profile":{"market":market,"mode":"paper"},"csrf":app.tokens.get(&market),"paper_build":true,
         "live_build":false,"process_dry_run":true,"residual_recovery_version":RESIDUAL_RECOVERY_VERSION,
-        "recovery_policy":execution::recovery_policy()}}))
+        "recovery_policy":execution::recovery_policy(view.as_ref().map(|v|&v.snapshot.config))}}))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -103,10 +103,10 @@ test('stale Entropy remains visible while fresh Lighter is labeled independently
   assert(quoteRows(payload,now,false).every(q=>!q.fresh));
 });
 
-test('chart explains missing latest quotes and clears the message on recovery',()=>{
+test('chart keeps missing latest quotes silent and still renders available history',()=>{
   const f=fixture();f.payload.chart_points.at(-1).entropy_bid=null;
   f.payload.chart_points.at(-1).entropy_ask=null;
-  f.render();assert.match(f.status.textContent,/行情缺失或过期/);
+  f.render();assert.equal(f.status.textContent,'');assert.equal(f.candleNodes().length,1);
   f.payload.chart_points.at(-1).entropy_bid=99;f.payload.chart_points.at(-1).entropy_ask=100;
   f.render();assert.equal(f.status.textContent,'');
   f.payload.chart_points=[];f.render();assert.equal(f.status.textContent,'等待有效行情');

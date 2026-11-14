@@ -40,6 +40,22 @@ fn evidence(s: &Snapshot, now: u64) -> ([AccountEvidence; 2], [Book; 2]) {
 }
 
 #[test]
+fn empty_account_activation_reports_zero_balance_before_stale_funding_without_arming() {
+    let now=100_000;let (_,config)=profiles();let mut s=held(config,now);
+    s.positions=Default::default();s.lots.clear();s.funding_synced_ms=1;
+    let (mut a,b)=evidence(&s,now);a[1].equity=Decimal::ZERO;a[1].free_margin=Decimal::ZERO;
+    let before=serde_json::to_value(&s).unwrap();
+    assert!(service::start_live_strategy(&mut s,Some(&a),&b,now).unwrap_err().to_string().contains("Entropy 账户资金不足"));
+    assert_eq!(serde_json::to_value(&s).unwrap(),before);
+    a[1].equity=Decimal::from(100);a[1].free_margin=Decimal::from(100);
+    assert!(service::start_live_strategy(&mut s,Some(&a),&b,now).unwrap_err().to_string().contains("资金费记录尚未核对完成"));
+    assert_eq!(serde_json::to_value(&s).unwrap(),before);
+    s.funding_synced_ms=now;
+    service::start_live_strategy(&mut s,Some(&a),&b,now).unwrap();
+    assert!(!s.paused && !s.stop_requested);
+}
+
+#[test]
 fn profile_restores_only_approved_bounds() {
     let (old, new) = profiles();
     new.validate_live_limit_upgrade(&old).unwrap();

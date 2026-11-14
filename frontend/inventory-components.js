@@ -95,7 +95,9 @@
       }
       get('pnl').title = '累计已实现盈亏＋剩余仓位平仓估算－交易手续费＋已结算资金费净收支；包含滑点预留，未结算资金费不计入';
       get('closed-pnl').title = `${paper ? '已完成双腿模拟平仓部分的收益' : '已完成双腿平仓部分的实际收益'}－对应开平仓手续费＋${paper ? '对应资金费模拟估算' : '对应已结算资金费'}；不含未平仓浮动盈亏`;
-      const accounts = ['lighter', 'entropy'].map(venue => (view.accounts || []).find(a => a.venue === venue)).filter(Boolean);
+      const now=Date.now();
+      const accounts = ['lighter', 'entropy'].map(venue => (view.accounts || []).find(a => a.venue === venue)).filter(Boolean)
+        .map(a=>common.accountForDisplay(a,now,snapshot.config?.account_max_age_ms??3000));
       const profits = new Map((view.profit_accounting?.lots || []).map(p => [p.lot_id, p]));
       const lots = (snapshot.lots || []).map(lot => ({...lot, direction:snapshot.direction, profit:profits.get(lot.id)}));
       const fills = Object.values(snapshot.fills || {}).sort((a, b) => number(b.time_ms) - number(a.time_ms)).slice(0, 20);

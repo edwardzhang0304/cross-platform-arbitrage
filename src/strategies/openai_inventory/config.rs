@@ -98,6 +98,9 @@ pub struct InventoryConfig {
     pub fee_entropy: Decimal,
     pub fee_lighter: Decimal,
     pub execution_slippage_bps: Decimal,
+    /// Entry-only guard; absent ledgers retain their original execution guard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_slippage_bps: Option<Decimal>,
     pub exit_profit_reserve: Decimal,
     pub close_slice_notional: Decimal,
     pub book_max_age_ms: u64,
@@ -139,6 +142,7 @@ impl Default for InventoryConfig {
             fee_entropy: Decimal::new(9, 5),
             fee_lighter: Decimal::ZERO,
             execution_slippage_bps: Decimal::ONE,
+            entry_slippage_bps: None,
             exit_profit_reserve: Decimal::ZERO,
             close_slice_notional: Decimal::from(30),
             book_max_age_ms: 1500,
@@ -169,6 +173,7 @@ impl InventoryConfig {
     pub fn units(&self, q: Decimal) -> Result<i64> { self.market.units(q) }
     pub fn common_units(&self, notional: Decimal, price: Decimal) -> Result<i64> { self.market.common_units(notional, price) }
     pub fn common_step(&self) -> i64 { self.market.common_step() }
+    pub fn entry_slippage(&self) -> Decimal { self.entry_slippage_bps.unwrap_or(self.execution_slippage_bps) }
     /// The approved transition changes inventory/loss bounds only, never account,
     /// pricing, sizing, confirmation, or execution protections.
     pub fn validate_live_limit_upgrade(&self, previous: &Self) -> Result<()> {
@@ -297,6 +302,8 @@ impl InventoryConfig {
                 && self.execution_slippage_bps <= Decimal::from(20),
             "invalid execution price protection"
         );
+        ensure!(self.entry_slippage_bps.is_none_or(|bps| bps >= Decimal::ZERO && bps <= Decimal::from(5)),
+            "entry price protection must be between 0 and 5 bps");
         ensure!(
             self.exit_profit_reserve >= Decimal::ZERO
                 && self.close_slice_notional >= Decimal::from(10)

@@ -17,6 +17,12 @@ try {
   foreach ($Key in @('source_commit','strategy_core_sha256','runtime','version')) {
     if ($Health.build.$Key -ne $Build.$Key) { throw "Running binary $Key differs from package" }
   }
+  $EntryTemplate=Get-Content (Join-Path (Split-Path $Exe) 'config-templates/strategy.example.json') -Raw | ConvertFrom-Json
+  $AnthTemplate=Get-Content (Join-Path (Split-Path $Exe) 'config-templates/strategy.anth.example.json') -Raw | ConvertFrom-Json
+  if ($EntryTemplate.entry_slippage_bps -ne 4 -or $EntryTemplate.execution_slippage_bps -ne 1 -or $AnthTemplate.execution_slippage_bps -ne 1 -or $null -ne $AnthTemplate.entry_slippage_bps) { throw 'Entry/close slippage templates are incorrect' }
+  $ChartScript=(Invoke-WebRequest "$Base/assets/openai-market-visuals.js").Content
+  if ($ChartScript.Contains('行情缺失或过期，价差暂停更新')) { throw 'Removed candle warning is still in the binary' }
+  if (!(Invoke-WebRequest "$Base/assets/glass-ui.js").Content.Contains('accountForDisplay')) { throw 'Fresh balance rendering is missing' }
   $Status = (Invoke-RestMethod "$Base/api/openai-inventory").data
   if ($Status.vault_unlocked -or $Status.configured -or $Status.view) { throw 'Clean package contains account state' }
   if ($Status.residual_recovery_version -ne 4) { throw 'Residual recovery version is incorrect' }

@@ -5,6 +5,40 @@ mod close_minimum_tests;
 
 fn d(v: i64) -> Decimal { Decimal::from(v) }
 
+#[test]
+fn entry_four_bps_never_changes_ordinary_close_limits_or_five_bps_hedge_cap() {
+    let now=100_000;
+    for multiplier in [1,10] {for side in [Side::Buy,Side::Sell] {for venue in [Venue::Lighter,Venue::Entropy] {
+        let (mut s,_,mut b)=incident(now,Direction::LighterShort);
+        s.config.set_initial_capital(multiplier).unwrap();s.config.entry_slippage_bps=Some(d(4));
+        let qty=100*multiplier as i64;
+        for book in &mut b {
+            book.bids=vec![Level{price:d(2000),units:qty*2}];book.asks=book.bids.clone();
+        }
+        for suffix in ["first","hedge"] {
+            let r=request(&s,&b,venue,side,qty,false,suffix,now).unwrap();
+            assert_eq!(r.limit,d(2000)*(Decimal::ONE+Decimal::from(side.sign())*Decimal::new(4,4)));
+        }
+        s.pending.as_mut().unwrap().action=Action::Close;
+        for suffix in ["first","hedge"] {
+            let r=request(&s,&b,venue,side,qty,true,suffix,now).unwrap();
+            assert_eq!(r.limit,d(2000)*(Decimal::ONE+Decimal::from(side.sign())*Decimal::new(1,4)));
+        }
+        s.pending.as_mut().unwrap().action=Action::Open;
+        s.pending.as_mut().unwrap().entry_hedge_retry=Some(Default::default());
+        for attempt in 1..=4 {
+            s.pending.as_mut().unwrap().entry_hedge_retry.as_mut().unwrap().attempt=attempt;
+            let r=request(&s,&b,venue,side,qty,false,"hedge",now).unwrap();
+            assert_eq!(r.limit,d(2000)*(Decimal::ONE+Decimal::from(side.sign())*Decimal::new(5,4)));
+        }
+        let book=&mut b[venue.index()];
+        let levels=vec![Level{price:d(2000),units:10},Level{price:d(2000)+Decimal::from(side.sign())*Decimal::new(6,1),units:qty}];
+        if side==Side::Buy {book.asks=levels}else{book.bids=levels}
+        assert!(protected_entry_limit(&s,&b,venue,side,qty,now).is_ok());
+        assert!(protected_limit(&s,&b,venue,side,qty,now).is_err());
+    }}}
+}
+
 // Sep 25 incident shape: ten old pairs (850), extra Entropy 90, terminal
 // zero-fill Lighter hedge and terminal zero-fill Entropy reducing repair.
 fn incident(now: u64, direction: Direction) -> (Snapshot, [AccountEvidence; 2], [Book; 2]) {

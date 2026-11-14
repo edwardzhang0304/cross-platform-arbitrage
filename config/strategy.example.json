@@ -7,7 +7,7 @@
   "direction_policy":"both", "exit_policy":"per_group", "group_take_profit":"2", "shared_exit_conditions":true,
   "group_notional":"15", "max_groups":20, "leverage":3, "max_notional_per_venue":"300",
   "max_loss_usdc":"30", "min_free_margin":"10", "paper_capital_per_venue":"100",
-  "fee_entropy":"0.00009", "fee_lighter":"0", "execution_slippage_bps":"1",
+  "fee_entropy":"0.00009", "fee_lighter":"0", "execution_slippage_bps":"1", "entry_slippage_bps":"4",
   "exit_profit_reserve":"0", "close_slice_notional":"15", "book_max_age_ms":1500,
   "account_max_age_ms":3000, "operation_timeout_ms":5000, "exclusive_positions":true, "auto_neutralize":true
 }

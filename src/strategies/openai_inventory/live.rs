@@ -171,8 +171,17 @@ fn entropy_collateral(
             return Ok((dex_equity, (dex_equity - dex_margin_used).min(venue_available))),
         _ => anyhow::bail!("unsupported account abstraction mode for collateral"),
     }
-    let usdc = spot.balances.iter().find(|balance| balance.coin == "USDC")
-        .context("missing unified USDC balance")?;
+    ensure!(spot.balances.iter().all(|b| !b.coin.is_empty()), "invalid unified balance identity");
+    let usdc: Vec<_> = spot.balances.iter().filter(|balance| balance.coin == "USDC").collect();
+    ensure!(usdc.len() <= 1, "duplicate unified USDC balance");
+    let Some(usdc) = usdc.first() else {
+        // A valid empty balance array after withdrawal is zero, not a failed
+        // read. Missing/malformed responses fail deserialization upstream.
+        ensure!(dex_equity.is_zero() && dex_margin_used.is_zero()
+            && available.iter().all(|v|decimal(v).is_ok_and(|d|d.is_zero())),
+            "missing unified USDC balance conflicts with account capacity");
+        return Ok((Decimal::ZERO, Decimal::ZERO));
+    };
     let total = Decimal::from_str(&usdc.total)?;
     let hold = Decimal::from_str(&usdc.hold)?;
     ensure!(total >= Decimal::ZERO && hold >= Decimal::ZERO && hold <= total,
@@ -1496,6 +1505,29 @@ fn expired_lighter_absence(r:&OrderRequest,server_ms:u64,account:&Value,history:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_unified_usdc_is_zero_only_with_confirming_zero_capacity() {
+        let zero=json!({"availableToTrade":["0","0"]});
+        for balances in [json!([]),json!([{"coin":"HYPE","total":"1","hold":"0"}]),
+            json!([{"coin":"USDC","total":"0","hold":"0"}])] {
+            let spot=serde_json::from_value(json!({"balances":balances})).unwrap();
+            assert_eq!(entropy_collateral("unifiedAccount",Decimal::ZERO,Decimal::ZERO,&spot,&zero).unwrap(),
+                (Decimal::ZERO,Decimal::ZERO));
+        }
+        let empty=serde_json::from_value(json!({"balances":[]})).unwrap();
+        for (equity,margin,active) in [(Decimal::ONE,Decimal::ZERO,zero.clone()),
+            (Decimal::ZERO,Decimal::ONE,zero.clone()),
+            (Decimal::ZERO,Decimal::ZERO,json!({"availableToTrade":["1","1"]})),
+            (Decimal::ZERO,Decimal::ZERO,json!({"availableToTrade":["0","1"]}))] {
+            assert!(entropy_collateral("unifiedAccount",equity,margin,&empty,&active).is_err());
+        }
+        let duplicate=serde_json::from_value(json!({"balances":[
+            {"coin":"USDC","total":"0","hold":"0"},{"coin":"USDC","total":"10","hold":"0"}]})).unwrap();
+        assert!(entropy_collateral("unifiedAccount",Decimal::ZERO,Decimal::ZERO,&duplicate,&zero).is_err());
+        let deposited=serde_json::from_value(json!({"balances":[{"coin":"USDC","total":"100","hold":"0"}]})).unwrap();
+        assert_eq!(entropy_collateral("unifiedAccount",Decimal::ZERO,Decimal::ZERO,&deposited,
+            &json!({"availableToTrade":["100","100"]})).unwrap(),(Decimal::from(100),Decimal::from(100)));
+    }
     #[test]
     fn lighter_equity_rest_includes_isolated_margin_without_double_counting_pnl() {
         let account = json!({

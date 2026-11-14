@@ -11,14 +11,17 @@ pub const RECOVERY_INITIAL_SLIPPAGE_BPS: u32 = 2;
 pub const RECOVERY_MAX_SLIPPAGE_BPS: u32 = 5;
 /// Read-only capability used to verify that a user-requested reload took effect.
 pub const RESIDUAL_RECOVERY_VERSION: u32 = 4;
-pub fn recovery_policy() -> serde_json::Value {
+pub fn recovery_policy(config: Option<&InventoryConfig>) -> serde_json::Value {
+    let legacy = InventoryConfig::default();
+    let config = config.unwrap_or(&legacy);
     serde_json::json!({"retry_interval_ms":REPAIR_RETRY_DELAY_MS,
         "initial_slippage_bps":RECOVERY_INITIAL_SLIPPAGE_BPS,
         "step_slippage_bps":1,"max_slippage_bps":RECOVERY_MAX_SLIPPAGE_BPS,
         "unknown_order_action":"lookup_only",
         "close_alignment":"remaining_original_close_budget",
         "minimum_order_failure":"hold_without_resubmission",
-        "entry_hedge_retry":{"retry_interval_ms":3000,"slippage_bps":[2,3,4,5],
+        "entry_hedge_retry":{"retry_interval_ms":3000,"initial_slippage_bps":config.entry_slippage(),
+            "slippage_bps":(1..=4).map(|attempt|entry_hedge_retry::slippage(config,attempt)).collect::<Vec<_>>(),
             "after_exhaustion":"reduce_unpaired_exposure","unknown_order_action":"lookup_only"}})
 }
 const RESIDUAL_HALT: &str = "residual could not be neutralized within protected execution; manual attention required";
@@ -269,6 +272,10 @@ pub(super) fn protected_limit(
     protected_limit_with_slippage(s,books,venue,side,qty,now,s.config.execution_slippage_bps)
 }
 
+pub(super) fn protected_entry_limit(s:&Snapshot,books:&[Book;2],venue:Venue,side:Side,qty:i64,now:u64)->Result<Decimal> {
+    protected_limit_with_slippage(s,books,venue,side,qty,now,s.config.entry_slippage())
+}
+
 fn protected_limit_with_slippage(s:&Snapshot,books:&[Book;2],venue:Venue,side:Side,qty:i64,now:u64,slippage:Decimal)->Result<Decimal> {
     let b = &books[venue.index()];
     b.validate(now, s.config.book_max_age_ms)?;
@@ -359,8 +366,8 @@ fn request(
         Decimal::from(recovery_slippage(s.pending.as_ref().context("missing operation")?))
     }else if suffix == "hedge" && s.pending.as_ref().is_some_and(|p|p.action==Action::Open) {
         s.pending.as_ref().and_then(|p|p.entry_hedge_retry.as_ref())
-            .filter(|r|r.attempt>0).map_or(s.config.execution_slippage_bps,|r|Decimal::from(r.attempt+1))
-    }else{s.config.execution_slippage_bps};
+            .filter(|r|r.attempt>0).map_or(s.config.entry_slippage(),|r|entry_hedge_retry::slippage(&s.config,r.attempt))
+    }else if !reduce {s.config.entry_slippage()}else{s.config.execution_slippage_bps};
     request_with_slippage(s,books,venue,side,qty,reduce,suffix,now,slippage)
 }
 
@@ -630,7 +637,7 @@ pub(super) async fn advance_with_hedge_evidence(
         let entry = s.direction.entry(books, op.requested_units)?;
         ensure!(entry >= threshold, "entry spread moved below threshold");
         let [l,e] = [Venue::Lighter,Venue::Entropy].map(|v|
-            protected_limit(s,books,v,s.direction.open_side(v),op.requested_units,now));
+            protected_entry_limit(s,books,v,s.direction.open_side(v),op.requested_units,now));
         ensure!((e? - l?) * Decimal::from(s.direction.sign()) >= threshold,
             "paired protected limits no longer meet entry threshold");
         Ok(())

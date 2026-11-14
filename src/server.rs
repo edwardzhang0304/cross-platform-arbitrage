@@ -162,7 +162,7 @@ async fn status(State(app): State<App>, h: HeaderMap) -> Json<Value> {
         "vault_exists":app.paths.vault.exists(),"startup_failure":s.startup_failure,
         "notifications":{"saved":notification_path(&app).exists(),"unlocked":s.notification.is_some(),"config":s.notification.as_ref().map(|c|c.public()),"execution_grace_ms":inventory::alerts::EXECUTION_GRACE_MS,"delivery":s.service.as_ref().map(|v|v.notifications.status())},
         "residual_recovery_version":inventory::execution::RESIDUAL_RECOVERY_VERSION,
-        "recovery_policy":inventory::execution::recovery_policy(),
+        "recovery_policy":inventory::execution::recovery_policy(view.as_ref().map(|v|&v.snapshot.config).or(s.settings.as_ref().map(|x|&x.strategy))),
         "profile":app.paths.profile.descriptor(),
         "strategy":s.settings.as_ref().map(|x|&x.strategy),"sleep_prevention":cfg!(windows),
         "data_dir":app.root.to_string_lossy()
@@ -260,6 +260,7 @@ async fn handle(app: &App, h: &HeaderMap, r: &Request) -> Result<Value> {
             crate::lighter_runtime::LighterApiCredential::from_hex(index,key_index,&r.lighter_key).context("Lighter API 私钥格式错误")?;
             let mut strategy: InventoryConfig = serde_json::from_str(include_str!("../config/strategy.example.json"))?;
             strategy.market=app.paths.market;
+            if strategy.market==MarketPair::Anth {strategy.entry_slippage_bps=None;}
             strategy.set_initial_capital(app.paths.profile.capital_multiplier)?;
             if !app.paths.profile.is_legacy() || strategy.market==MarketPair::Anth {strategy.lighter_account=app.paths.profile.alias("lighter");strategy.entropy_account=app.paths.profile.alias("entropy");}
             strategy.entropy_address=r.entropy_address.clone(); strategy.lighter_account_index=Some(index);strategy.lighter_address=Some(r.lighter_address.clone());

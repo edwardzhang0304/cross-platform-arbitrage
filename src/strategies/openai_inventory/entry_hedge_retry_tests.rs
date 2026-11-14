@@ -67,6 +67,31 @@ fn workers(results:Vec<Option<i64>>)->([AccountWorker;2],Calls) {
 }
 
 #[tokio::test]
+async fn openai_four_bps_entry_retries_at_five_then_rolls_back_without_touching_old_lots() {
+    let mut now=crate::domain::now_ms();let (mut s,_,b)=fixture(now,MarketPair::Openai,Direction::LighterShort);
+    s.config.entry_slippage_bps=Some(Decimal::from(4));
+    let old=serde_json::to_value(&s.lots).unwrap();let (w,calls)=workers(vec![Some(0);4]);
+    let (mut db,_)=Store::offline_replay(&s.config).unwrap();
+    for attempt in 1..=4 {
+        advance(&mut s,&mut db,&w,&fresh(&b,now),now).await.unwrap();
+        let at=s.pending.as_ref().unwrap().entry_hedge_retry.as_ref().unwrap().after_ms.unwrap();
+        assert_eq!(at,now+3000);
+        let early=evidence(&s,at-1);
+        advance_with_hedge_evidence(&mut s,&mut db,&w,&fresh(&b,at-1),at-1,Some(&early)).await.unwrap();
+        assert_eq!(calls.lock().unwrap().len(),attempt-1);
+        now=at;let a=evidence(&s,now);
+        advance_with_hedge_evidence(&mut s,&mut db,&w,&fresh(&b,now),now,Some(&a)).await.unwrap();
+        assert_eq!(calls.lock().unwrap().last().unwrap().1.limit,
+            b[0].bids[0].price*(Decimal::ONE-Decimal::new(5,4)));
+    }
+    advance(&mut s,&mut db,&w,&fresh(&b,now),now).await.unwrap();
+    assert_eq!(calls.lock().unwrap().len(),5);assert!(calls.lock().unwrap()[4].1.reduce_only);
+    advance(&mut s,&mut db,&w,&fresh(&b,now),now).await.unwrap();
+    assert!(s.pending.is_none());assert_eq!(serde_json::to_value(&s.lots).unwrap(),old);
+    assert_eq!(s.positions[0].units,-s.positions[1].units);assert_eq!(s.consecutive_rollbacks,1);
+}
+
+#[tokio::test]
 async fn tenfold_partial_hedge_retries_only_unfilled_units_with_the_same_slippage_ladder() {
     let mut now=crate::domain::now_ms();let (mut s,_,b)=fixture(now,MarketPair::Openai,Direction::LighterShort);
     s.config.set_initial_capital(10).unwrap();s.config.validate().unwrap();

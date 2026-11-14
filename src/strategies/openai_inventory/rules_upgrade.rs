@@ -5,11 +5,12 @@ use rust_decimal::{Decimal, prelude::ToPrimitive};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{fs::OpenOptions, path::Path};
 
-/// Change only the user's approved grid/time-add parameters. Account binding,
+/// Change only the approved grid/time-add and OPENAI entry guard. Account binding,
 /// size, fees, exit policy, risk limits and every other setting are retained.
 pub fn current_config(previous: &InventoryConfig) -> Result<InventoryConfig> {
     previous.validate()?;
     let mut next = previous.clone();
+    if next.market == MarketPair::Openai { next.entry_slippage_bps = Some(Decimal::from(4)); }
     let rules = next.accumulation.as_mut().context("升级需要现有同价加仓策略配置")?;
     if next.grid == Decimal::from(5) && rules.quota_scope == TimeAddQuotaScope::GridStage
         && [1_800_000, CURRENT_TIME_ADD_INTERVAL_MS].contains(&rules.interval_ms) {
@@ -75,8 +76,8 @@ pub fn migrate_snapshot(state: &mut Snapshot, desired: &InventoryConfig) -> Resu
     strategy::clear_entry_confirmation(state);
     state.entry_attempts_remaining = Some(0);
     state.resume_after_recovery = false;
-    state.reason = format!("已升级：5U 网格、同价至少 60 分钟、每档最多 {} 次；原持仓、已用次数和上次成交时间保留，等待账户核对后启动",
-        desired.accumulation.as_ref().unwrap().max_time_adds);
+    state.reason = format!("已升级：开仓滑点 {}%、5U 网格、同价至少 60 分钟、每档最多 {} 次；原持仓、已用次数和上次成交时间保留，等待账户核对后启动",
+        desired.entry_slippage()/Decimal::from(100),desired.accumulation.as_ref().unwrap().max_time_adds);
     Ok(true)
 }
 
@@ -95,14 +96,16 @@ pub fn migrate_ledger(path: &Path, desired: &InventoryConfig) -> Result<bool> {
     let mut state: Snapshot = serde_json::from_str(&body)?;
     let old_grid = state.config.grid;
     let old_interval = state.config.accumulation.as_ref().map(|r| r.interval_ms);
+    let old_entry_slippage = state.config.entry_slippage();
     if !migrate_snapshot(&mut state, desired)? { return Ok(false); }
     let after = serde_json::to_string(&state)?;
     tx.execute("UPDATE state SET body=?1 WHERE id=1", [&after])?;
     let event = serde_json::json!({"from_grid":old_grid,"to_grid":desired.grid,
+        "from_entry_slippage_bps":old_entry_slippage,"to_entry_slippage_bps":desired.entry_slippage(),
         "from_interval_ms":old_interval,"to_interval_ms":CURRENT_TIME_ADD_INTERVAL_MS,
         "quota_scope":"grid_stage","time_adds_used":state.time_adds_used,
         "groups":state.lots.len(),"kept_positions":true});
-    tx.execute("INSERT INTO events(at_ms,kind,body) VALUES(?1,'rules_interval_60m_v1',?2)",
+    tx.execute("INSERT INTO events(at_ms,kind,body) VALUES(?1,'rules_entry_slippage_v1',?2)",
         params![crate::domain::now_ms(),event.to_string()])?;
     tx.commit()?;
     Ok(true)

@@ -272,7 +272,7 @@ pub fn risk_check(
                 s.config.quantity(qty) * px >= Decimal::from(10),
                 "below venue minimum notional"
             );
-            let limit = execution::protected_price_bound(s,&books[i],a.venue,side,s.config.execution_slippage_bps)?;
+            let limit = execution::protected_price_bound(s,&books[i],a.venue,side,s.config.entry_slippage())?;
             entry_margin::check_account(a,&s.config,qty,limit,side).map_err(|e| entry_availability::classify(e, entry_availability::Obstacle::Funding))?;
             let risk_price = limit.max(px);
             let ntl = s.config.quantity(qty) * risk_price;
@@ -320,8 +320,8 @@ fn timed_entry_candidates(s: &mut Snapshot, books: &[Book; 2], accounts: &[Accou
     } else if *armed { Some(0) } else { None };
     if s.lots.len() >= s.config.max_groups { return Ok([None; 2]); }
     let qty = s.config.common_units(s.config.group_notional, (books[0].mid().unwrap() + books[1].mid().unwrap()) / Decimal::TWO)?;
-    let e = execution::protected_limit(s, books, Venue::Entropy, direction.open_side(Venue::Entropy), qty, now)?;
-    let l = execution::protected_limit(s, books, Venue::Lighter, direction.open_side(Venue::Lighter), qty, now)?;
+    let e = execution::protected_entry_limit(s, books, Venue::Entropy, direction.open_side(Venue::Entropy), qty, now)?;
+    let l = execution::protected_entry_limit(s, books, Venue::Lighter, direction.open_side(Venue::Lighter), qty, now)?;
     let entry = entry.min(direction.entry(books, qty)?).min((e - l) * Decimal::from(direction.sign()));
     let grid = grid_level.filter(|level| entry >= s.required_entry_spread(mean, *level));
     let time = s.config.accumulation.as_ref().and_then(|r| {
@@ -629,9 +629,9 @@ fn evaluate_inner(
     let mean = means[s.direction.long()].unwrap_or(mid * Decimal::from(s.direction.sign()));
     risk_check(s, books, accounts, now, qty, action)?;
     if action == Action::Open {
-        let protected = execution::protected_limit(s, books, Venue::Entropy, s.direction.open_side(Venue::Entropy), qty, now)
+        let protected = execution::protected_entry_limit(s, books, Venue::Entropy, s.direction.open_side(Venue::Entropy), qty, now)
             .and_then(|e| {
-                execution::protected_limit(s, books, Venue::Lighter, s.direction.open_side(Venue::Lighter), qty, now)
+                execution::protected_entry_limit(s, books, Venue::Lighter, s.direction.open_side(Venue::Lighter), qty, now)
                     .map(|l| (e - l) * Decimal::from(s.direction.sign()))
             });
         let required = s.required_entry_spread(mean,level);

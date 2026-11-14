@@ -511,7 +511,6 @@ pub struct ClearinghouseState {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpotClearinghouseState {
-    #[serde(default)]
     pub balances: Vec<SpotBalance>,
 }
 
@@ -1452,9 +1451,6 @@ pub(crate) async fn fetch_user_funding(environment: &str, user: &str, start: u64
 }
 
 pub fn parse_spot_clearinghouse_state_value(value: Value) -> Result<SpotClearinghouseState> {
-    if value.is_null() {
-        return Ok(SpotClearinghouseState::default());
-    }
     serde_json::from_value(value).context("failed to parse spot clearinghouse state")
 }
 
@@ -2515,9 +2511,11 @@ mod tests {
     }
 
     #[test]
-    fn spot_clearinghouse_state_parses_null_and_balances() {
-        let empty = parse_spot_clearinghouse_state_value(serde_json::Value::Null)
-            .expect("null spot state should default");
+    fn spot_clearinghouse_state_requires_an_explicit_balances_array() {
+        for invalid in [serde_json::Value::Null, serde_json::json!({}), serde_json::json!({"balances":null})] {
+            assert!(parse_spot_clearinghouse_state_value(invalid).is_err());
+        }
+        let empty = parse_spot_clearinghouse_state_value(serde_json::json!({"balances":[]})).unwrap();
         assert!(empty.balances.is_empty());
 
         let raw = serde_json::json!({

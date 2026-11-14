@@ -3,6 +3,9 @@ use super::*;
 
 pub(super) const DELAY_MS:u64=3_000;
 const MAX_ATTEMPTS:u32=4;
+pub(super) fn slippage(config:&InventoryConfig,attempt:u32)->Decimal {
+    (config.entry_slippage().max(Decimal::ONE)+Decimal::from(attempt)).min(Decimal::from(5))
+}
 
 fn eligible(s:&Snapshot)->bool {
     s.pending.as_ref().is_some_and(|p|p.action==Action::Open && p.first_venue==Venue::Entropy

@@ -105,7 +105,7 @@ test('shared account and fill components preserve each market precision and esca
 
 test('isolated entry funds distinguish valuation, transferable collateral and unknown evidence',()=>{
   const f=fixture();
-  const row={venue:'lighter',equity:'110',free_margin:'28',position_units:-1600,isolated:true,leverage:3,
+  const row={venue:'lighter',equity:'110',free_margin:'28',position_units:-1600,isolated:true,leverage:3,authenticated:true,observed_ms:Date.now(),
     entry_margin:{reported_available:'28',collateral:'0.1',isolated_only:true}};
   f.payload.view.accounts=[row];f.render();
   assert.match(f.element('accounts').innerHTML,/平台显示可用 28.00 U/);

@@ -55,7 +55,7 @@ fn probe_direction(s: &mut Snapshot, books: &[Book; 2], accounts: &[AccountEvide
     let result = (|| {
         strategy::risk_check(s, books, accounts, now, qty, Action::Open)?;
         for venue in [Venue::Lighter, Venue::Entropy] {
-            execution::protected_limit(s, books, venue, direction.open_side(venue), qty, now)
+            execution::protected_entry_limit(s, books, venue, direction.open_side(venue), qty, now)
                 .map_err(|e| classify(e, Obstacle::Depth))?;
         }
         Ok(())

@@ -65,6 +65,7 @@ pub fn reject_shared_live_accounts(candidate: &InventoryConfig, others: &[Invent
 pub fn paper_config(market: MarketPair) -> Result<InventoryConfig> {
     let mut c: InventoryConfig = serde_json::from_str(include_str!("../config/strategy.example.json"))?;
     c.market = market; c.mode = Mode::Paper;
+    if market == MarketPair::Anth { c.entry_slippage_bps = None; }
     c.lighter_account = format!("{}:virtual:lighter", market.id());
     c.entropy_account = format!("{}:virtual:entropy", market.id());
     c.lighter_address = None; c.lighter_account_index = None;

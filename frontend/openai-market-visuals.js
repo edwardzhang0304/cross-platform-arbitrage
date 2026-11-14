@@ -131,7 +131,6 @@
     const key=pointer.series==='entry'?selected:closing;
     const range=spreadAxis(model.candles,[selected,closing]);
     const latest=model.rows.at(-1),value=v=>v==null?'—':v.toFixed(4);
-    if(latest[selected]==null || latest[closing]==null)status.textContent='行情缺失或过期，价差暂停更新';
     svg.append(node('text',{x:left,y:25,fill:'#526277','font-size':captionFont},selected==='shortL'?'空 Lighter / 多 Entropy':'空 Entropy / 多 Lighter'));
     const panels=[{top:62,range}];
     for(const panel of panels){

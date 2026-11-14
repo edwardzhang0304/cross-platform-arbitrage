@@ -34,6 +34,25 @@ fn half_hour_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Sn
 }
 
 #[test]
+fn rc35_upgrade_changes_only_openai_entry_slippage_for_both_account_sizes() {
+    for market in [MarketPair::Openai,MarketPair::Anth] {for multiplier in [1,10] {
+        let mut s=half_hour_rules_snapshot(market,false,Mode::Live);
+        s.config.accumulation.as_mut().unwrap().interval_ms=3_600_000;
+        s.config.set_initial_capital(multiplier).unwrap();s.config.entry_slippage_bps=None;
+        let before=serde_json::to_value(&s).unwrap();
+        let desired=rules_upgrade::current_config(&s.config).unwrap();
+        assert_eq!(desired.entry_slippage(),d(if market==MarketPair::Openai {4}else{1}));
+        assert_eq!(desired.execution_slippage_bps,s.config.execution_slippage_bps);
+        let mut expected=s.config.clone();if market==MarketPair::Openai {expected.entry_slippage_bps=Some(d(4));}
+        assert_eq!(desired,expected);
+        assert_eq!(rules_upgrade::migrate_snapshot(&mut s,&desired).unwrap(),market==MarketPair::Openai);
+        let mut actual=serde_json::to_value(&s).unwrap();
+        for key in ["config","entry_attempts_remaining","resume_after_recovery","reason"] {actual[key]=before[key].clone();}
+        assert_eq!(actual,before);
+    }}
+}
+
+#[test]
 fn half_hour_upgrade_changes_only_interval_preserving_slots_quota_and_completion_clock() {
     for market in [MarketPair::Openai, MarketPair::Anth] {
         for reverse in [false, true] { for mode in [Mode::Paper, Mode::Live] {
@@ -135,18 +154,19 @@ fn migrated_inventory_uses_new_grid_and_half_hourly_gate_before_granting_next_st
     assert!(strategy::evaluate(&mut s,&books(now,12),&a,now).unwrap().is_none());
     for x in &mut a{x.observed_ms=now+1000;}
     assert!(strategy::evaluate(&mut s,&books(now+1000,12),&a,now+1000).unwrap().is_none(),"old 2U grid must not open");
+    // Leave room for the migrated 4 bps entry guard above the 15U grid threshold.
     for x in &mut a{x.observed_ms=now+2000;}
-    assert!(strategy::evaluate(&mut s,&books(now+2000,15),&a,now+2000).unwrap().is_none());
+    assert!(strategy::evaluate(&mut s,&books(now+2000,16),&a,now+2000).unwrap().is_none());
     for x in &mut a{x.observed_ms=now+3000;}
-    let mut op=strategy::evaluate(&mut s,&books(now+3000,15),&a,now+3000).unwrap().unwrap();
+    let mut op=strategy::evaluate(&mut s,&books(now+3000,16),&a,now+3000).unwrap().unwrap();
     assert_eq!(op.level,1);
     op.first_filled=op.requested_units;op.hedge_filled=op.requested_units;
     op.first_terminal=true;op.hedge_terminal=true;
-    op.first_value=d(115)*Decimal::from(op.requested_units);op.hedge_value=d(100)*Decimal::from(op.requested_units);
+    op.first_value=d(116)*Decimal::from(op.requested_units);op.hedge_value=d(100)*Decimal::from(op.requested_units);
     for p in &mut s.positions{p.units+=p.units.signum()*op.requested_units;}
     s.pending=Some(op);s.finish_operation(now+3000).unwrap();
     assert_eq!(s.time_adds_used,0);
-    assert_eq!(s.last_open_completed,Some((now+3000,d(15))));
+    assert_eq!(s.last_open_completed,Some((now+3000,d(16))));
 }
 
 #[test]
@@ -178,9 +198,9 @@ fn rule_upgrade_transaction_is_locked_idempotent_and_recovers_between_ledger_and
         assert_eq!(paths.load().unwrap().unwrap().strategy,desired);
         paths.upgrade_rules(&mut settings).unwrap();
         let raw=rusqlite::Connection::open(&paths.database).unwrap();
-        let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_interval_60m_v1'",[],|r|r.get(0)).unwrap();
+        let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_entry_slippage_v1'",[],|r|r.get(0)).unwrap();
         assert_eq!(count,1);
-        let event:String=raw.query_row("SELECT body FROM events WHERE kind='rules_interval_60m_v1'",[],|r|r.get(0)).unwrap();
+        let event:String=raw.query_row("SELECT body FROM events WHERE kind='rules_entry_slippage_v1'",[],|r|r.get(0)).unwrap();
         let event:serde_json::Value=serde_json::from_str(&event).unwrap();
         assert_eq!(event["from_interval_ms"],1_800_000);
         assert_eq!(event["to_interval_ms"],3_600_000);
