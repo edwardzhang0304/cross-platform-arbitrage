@@ -18,6 +18,7 @@ try {
   if ($Text -match 'synthetic-credential|0xaaaaaaaa|private\.invalid|unexpected_secret|private_key|vault-secret|profile-secret') { throw 'Diagnostic leaked synthetic private content' }
   foreach ($Market in $ProfileIds) {
     $Ledger=$Report.ledgers.$Market
+    if ($Ledger.snapshot.entry_high_water -ne 45 -or $Ledger.snapshot.rules.grid_spacing -ne 'capped_doubling' -or $Ledger.snapshot.rules.accumulation.interval_ms -ne 14400000) { throw 'Capped grid, held entry floor or four-hour interval missing' }
     if (!$Ledger.snapshot.automatic_entry_pause.active -or $Ledger.snapshot.automatic_entry_pause.cause -ne 'funding' -or $Ledger.snapshot.automatic_entry_pause.reason -ne 'synthetic entry pause') { throw 'Automatic entry pause evidence missing' }
     if ($Ledger.snapshot.entry_funding_wait.reason -ne 'synthetic funding wait' -or !$Ledger.snapshot.entry_funding_wait.retry_after_ms) { throw 'Local funding wait evidence missing' }
     if ($Ledger.snapshot.entry_margin_block.rejection -ne 'margin_not_allowed' -or !$Ledger.snapshot.entry_margin_block.order_ref) { throw 'Margin protection evidence missing' }

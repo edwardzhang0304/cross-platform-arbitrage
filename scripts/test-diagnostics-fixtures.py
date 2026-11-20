@@ -79,11 +79,11 @@ for profile in profiles:
     state = dict(status="needs_attention", stop_requested=True, paused=True,
                  reason=f"account worker request deadline exceeded https://private.invalid/?key={secret} Bearer {secret}",
                  config=dict(market=market, mode="live", entropy_address="0x"+"a"*40,
-                             private_key=secret, grid="5", capital_multiplier=profile.get("capital_multiplier",1), group_notional="150" if profile["id"]==extra_id else "15", leverage=3, max_loss_usdc="300" if profile["id"]==extra_id else "30", accumulation=dict(interval_ms=1800000,max_time_adds=5,quota_scope="grid_stage",unexpected_secret=secret)),
+                             private_key=secret, grid="5", grid_spacing="capped_doubling", capital_multiplier=profile.get("capital_multiplier",1), group_notional="150" if profile["id"]==extra_id else "15", leverage=3, max_loss_usdc="300" if profile["id"]==extra_id else "30", accumulation=dict(interval_ms=14400000,max_time_adds=5,quota_scope="grid_stage",unexpected_secret=secret)),
                  pending=pending, positions=[dict(units=-4900),dict(units=5600)],
                  lots=[dict(level=i,units=700,opened_ms=start-10000*(i+1),entry_spread="28.4",private_field=secret) for i in range(7)],
                  fills={"fill-key":dict(id="fill-key",order_id="synthetic-order",venue="entropy",side="buy",units=700,price="2100",fee="0.001",time_ms=start+1000,private_key=secret)},
-                 closed_groups=1, direction="lighter_short", anchor="28", time_adds_used=1)
+                 closed_groups=1, direction="lighter_short", anchor="28", entry_high_water="45", time_adds_used=1)
     state['resume_after_recovery']=True
     state['automatic_entry_pause']=dict(cause='funding',active=True,since_ms=now,reason='synthetic entry pause',unexpected_secret=secret)
     state['entry_funding_wait']=dict(retry_after_ms=now+30000,reason='synthetic funding wait',unexpected_secret=secret)

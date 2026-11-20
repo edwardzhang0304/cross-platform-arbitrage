@@ -102,9 +102,9 @@ function Snapshot-View($s) {
     ledger=@(for ($i=0; $i -lt @($s.positions).Count; $i++) { [ordered]@{venue=@('lighter','entropy')[$i]; units=$s.positions[$i].units} })
     lots=@($s.lots | Select-Object @{Name='lot_ref';Expression={Ref $_.id}},level,units,opened_ms,entry_spread)
     sequence=$s.sequence; last_sample_ms=$s.last_sample_ms; last_action_ms=$s.last_action_ms; armed=$s.armed; first_armed=$s.first_armed
-    direction=$s.direction; anchor=$s.anchor; time_adds_used=$s.time_adds_used; last_open_completed=$s.last_open_completed
+    direction=$s.direction; anchor=$s.anchor; entry_high_water=$s.entry_high_water; time_adds_used=$s.time_adds_used; last_open_completed=$s.last_open_completed
     pending=(Pending-View $s.pending)
-    rules=($s.config | Select-Object market,mode,grid,max_groups,capital_multiplier,group_notional,leverage,entry_offset,entry_threshold_cap,entry_confirmation_ms,decision_ms,mean_window_ms,book_max_age_ms,account_max_age_ms,operation_timeout_ms,execution_slippage_bps,entry_slippage_bps,max_notional_per_venue,min_free_margin,max_loss_usdc,fee_lighter,fee_entropy,exit_profit_reserve,close_slice_notional,group_take_profit,exit_policy,auto_neutralize,@{Name='accumulation';Expression={$_.accumulation | Select-Object interval_ms,max_time_adds,quota_scope,entry_floor,contraction_ratio}})
+    rules=($s.config | Select-Object market,mode,grid,grid_spacing,max_groups,capital_multiplier,group_notional,leverage,entry_offset,entry_threshold_cap,entry_confirmation_ms,decision_ms,mean_window_ms,book_max_age_ms,account_max_age_ms,operation_timeout_ms,execution_slippage_bps,entry_slippage_bps,max_notional_per_venue,min_free_margin,max_loss_usdc,fee_lighter,fee_entropy,exit_profit_reserve,close_slice_notional,group_take_profit,exit_policy,auto_neutralize,@{Name='accumulation';Expression={$_.accumulation | Select-Object interval_ms,max_time_adds,quota_scope,entry_floor,contraction_ratio}})
     funding_synced_ms=$s.funding_synced_ms
     fills_in_operation_window=@($selected | ForEach-Object { [ordered]@{fill_ref=(Ref $_.id); order_ref=(Ref $_.order_id); venue=$_.venue; side=$_.side; units=$_.units; price=$_.price; fee=$_.fee; time_ms=$_.time_ms} })
     fills_capped=($selected.Count -eq 120)
