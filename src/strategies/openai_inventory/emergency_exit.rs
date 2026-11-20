@@ -179,6 +179,7 @@ fn finish(s:&mut Snapshot,now:u64)->Result<()> {
     // All original paired ownership is retired only after authentic fills and actual flatness agree.
     next.closed_groups+=next.lots.len() as u64;
     next.lots.clear();next.pending=None;next.anchor=None;next.last_open_completed=None;next.time_adds_used=0;
+    next.entry_high_water=None;
     next.previous_group_exit.clear();next.previous_exit=None;next.exit_batch_active=false;
     next.close_requested=false;next.stop_after_close=false;next.status=Status::Stopped;
     next.emergency_exit.as_mut().unwrap().completed_ms=Some(now);

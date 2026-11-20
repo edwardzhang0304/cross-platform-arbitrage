@@ -44,11 +44,11 @@ fn eligible(s:&Snapshot,spread:&str,now:u64)->bool {
 #[test]
 fn linear_target_boundaries_floor_and_clock_rollback() {
     let mut s=seed(MarketPair::Openai,1,false,0);let l=&mut s.lots[0];
-    for (age,want) in [(0,"25"),(DAY*7/2,"15"),(DAY*7,"5"),(DAY*30,"5")] {
+    for (age,want) in [(0,"25"),(DAY/4,"20"),(DAY/2,"15"),(3*DAY/4,"10"),(DAY,"5"),(DAY*7,"5"),(DAY*30,"5")] {
         assert_eq!(strategy::group_profit_target(&s.config,l,NOW+age),d(want));
     }
     assert_eq!(strategy::group_profit_target(&s.config,l,NOW-1),d("25"));
-    assert!(strategy::group_profit_target(&s.config,l,NOW+7*DAY-1)>d("5"));
+    assert!(strategy::group_profit_target(&s.config,l,NOW+DAY-1)>d("5"));
     for entry in ["7","10"] {l.entry_spread=d(entry);
         for age in [0,DAY,7*DAY,30*DAY] {assert_eq!(strategy::group_profit_target(&s.config,l,NOW+age),d("5"));}}
 }

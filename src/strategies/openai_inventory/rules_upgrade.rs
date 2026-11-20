@@ -1,7 +1,7 @@
 //! The same stopped-ledger rule migration is used by both runtimes.
 use super::*;
 use anyhow::{Context, Result, ensure};
-use rust_decimal::{Decimal, prelude::ToPrimitive};
+use rust_decimal::Decimal;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{fs::OpenOptions, path::Path};
 
@@ -13,9 +13,10 @@ pub fn current_config(previous: &InventoryConfig) -> Result<InventoryConfig> {
     if next.market == MarketPair::Openai { next.entry_slippage_bps = Some(Decimal::from(4)); }
     let rules = next.accumulation.as_mut().context("升级需要现有同价加仓策略配置")?;
     if next.grid == Decimal::from(5) && rules.quota_scope == TimeAddQuotaScope::GridStage
-        && [1_800_000, CURRENT_TIME_ADD_INTERVAL_MS].contains(&rules.interval_ms) {
-        // Interval-only migration preserves smaller quotas and every held lot.
+        && [1_800_000, 3_600_000, CURRENT_TIME_ADD_INTERVAL_MS].contains(&rules.interval_ms) {
+        // Preserve smaller quotas and every held lot while migrating the schedule.
         rules.interval_ms = CURRENT_TIME_ADD_INTERVAL_MS;
+        next.grid_spacing = GridSpacing::CappedDoubling;
         next.validate()?;
         return Ok(next);
     }
@@ -24,6 +25,7 @@ pub fn current_config(previous: &InventoryConfig) -> Result<InventoryConfig> {
         && rules.max_time_adds <= 5,
         "无法识别旧网格参数，需先核对配置，不能直接覆盖");
     next.grid = Decimal::from(5);
+    next.grid_spacing = GridSpacing::CappedDoubling;
     rules.interval_ms = CURRENT_TIME_ADD_INTERVAL_MS;
     rules.max_time_adds = 5;
     rules.quota_scope = TimeAddQuotaScope::GridStage;
@@ -45,15 +47,13 @@ pub fn migrate_snapshot(state: &mut Snapshot, desired: &InventoryConfig) -> Resu
         "原账本双腿数量与持仓组数不匹配，不能迁移");
     ensure!(state.time_adds_used <= 5 && state.armed.len() == desired.max_groups,
         "旧加仓计数或网格长度异常，不能迁移");
-    // Merge old 2U grid slots into 5U slots. Multiple historical groups may
+    // Map old fixed grid slots into the new cumulative schedule. Historical groups may
     // occupy one new slot; all of their IDs, sizes and actual fill prices stay.
-    // An interval-only upgrade must not re-arm or disarm any existing grid slot.
-    if state.config.grid != desired.grid {
+    // Interval-only upgrades retain slot state; schedule upgrades merge consumed slots.
+    if state.config.grid != desired.grid || state.config.grid_spacing != desired.grid_spacing {
         let level = |old: usize| -> Result<usize> {
-            let mapped = (Decimal::from(old) * state.config.grid / desired.grid).floor()
-                .to_usize().context("invalid migrated grid slot")?;
-            ensure!(mapped < desired.max_groups, "migrated grid outside capacity");
-            Ok(mapped)
+            (0..desired.max_groups).rev().find(|n| desired.grid_offset(*n) <= state.config.grid_offset(old))
+                .context("invalid migrated grid slot")
         };
         let mut armed = vec![true; desired.max_groups];
         for (old, ready) in state.armed.iter().enumerate() {
@@ -69,6 +69,11 @@ pub fn migrate_snapshot(state: &mut Snapshot, desired: &InventoryConfig) -> Resu
         state.lots = lots;
         state.armed = armed;
     }
+    if !state.lots.is_empty() {
+        state.entry_high_water = state.entry_high_water.into_iter()
+            .chain(state.last_open_completed.map(|(_, spread)| spread))
+            .chain(state.lots.iter().map(|l| l.entry_spread)).max();
+    } else { state.entry_high_water = None; }
     state.config = desired.clone();
     // Installing an update does not itself award extra same-price entries.
     // The next completed paired grid entry renews the stage quota normally.
@@ -76,7 +81,7 @@ pub fn migrate_snapshot(state: &mut Snapshot, desired: &InventoryConfig) -> Resu
     strategy::clear_entry_confirmation(state);
     state.entry_attempts_remaining = Some(0);
     state.resume_after_recovery = false;
-    state.reason = format!("已升级：开仓滑点 {}%、5U 网格、同价至少 60 分钟、每档最多 {} 次；原持仓、已用次数和上次成交时间保留，等待账户核对后启动",
+    state.reason = format!("已升级：开仓滑点 {}%、网格间距5/10/20U后固定20U、同价至少4小时、每档最多{}次；逐组24小时止盈衰减。原持仓和计时保留，等待账户核对后启动",
         desired.entry_slippage()/Decimal::from(100),desired.accumulation.as_ref().unwrap().max_time_adds);
     Ok(true)
 }
@@ -95,17 +100,20 @@ pub fn migrate_ledger(path: &Path, desired: &InventoryConfig) -> Result<bool> {
     let Some(body) = body else { return Ok(false); };
     let mut state: Snapshot = serde_json::from_str(&body)?;
     let old_grid = state.config.grid;
+    let old_spacing = state.config.grid_spacing;
     let old_interval = state.config.accumulation.as_ref().map(|r| r.interval_ms);
     let old_entry_slippage = state.config.entry_slippage();
     if !migrate_snapshot(&mut state, desired)? { return Ok(false); }
     let after = serde_json::to_string(&state)?;
     tx.execute("UPDATE state SET body=?1 WHERE id=1", [&after])?;
     let event = serde_json::json!({"from_grid":old_grid,"to_grid":desired.grid,
+        "from_grid_spacing":old_spacing,"to_grid_spacing":desired.grid_spacing,
+        "profit_decay_ms":strategy::PROFIT_DECAY_MS,"entry_high_water":state.entry_high_water,
         "from_entry_slippage_bps":old_entry_slippage,"to_entry_slippage_bps":desired.entry_slippage(),
         "from_interval_ms":old_interval,"to_interval_ms":CURRENT_TIME_ADD_INTERVAL_MS,
         "quota_scope":"grid_stage","time_adds_used":state.time_adds_used,
         "groups":state.lots.len(),"kept_positions":true});
-    tx.execute("INSERT INTO events(at_ms,kind,body) VALUES(?1,'rules_entry_slippage_v1',?2)",
+    tx.execute("INSERT INTO events(at_ms,kind,body) VALUES(?1,'rules_capped_grid_24h_v1',?2)",
         params![crate::domain::now_ms(),event.to_string()])?;
     tx.commit()?;
     Ok(true)

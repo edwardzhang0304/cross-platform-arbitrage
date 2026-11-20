@@ -1,4 +1,4 @@
-use super::{InventoryConfig, entry_margin, entry_availability};
+use super::{InventoryConfig, GridSpacing, entry_margin, entry_availability};
 use anyhow::{Result, bail, ensure};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
@@ -415,6 +415,10 @@ pub struct Snapshot {
     pub time_adds_used: usize,
     #[serde(default)]
     pub last_open_completed: Option<(u64, Decimal)>,
+    /// Highest completed entry spread in this nonempty inventory round.
+    /// Closing one group must not lower the admission floor for the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_high_water: Option<Decimal>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liquidation_protection: Option<super::liquidation::Protection>,
     #[serde(default)]
@@ -509,13 +513,27 @@ pub struct Snapshot {
     pub execution_cost_tracked_fills: u64,
 }
 impl Snapshot {
+    pub fn held_entry_floor(&self) -> Option<Decimal> {
+        if self.lots.is_empty() || self.config.grid_spacing != GridSpacing::CappedDoubling { return None; }
+        self.entry_high_water.into_iter()
+            .chain(self.last_open_completed.map(|(_, spread)| spread))
+            .chain(self.lots.iter().map(|l| l.entry_spread)).max()
+    }
+    pub fn next_grid_level(&self) -> Option<usize> {
+        let floor = self.held_entry_floor();
+        (0..self.config.max_groups).find(|k| self.armed[*k]
+            && !self.lots.iter().any(|l| l.level == *k)
+            && floor.is_none_or(|f| self.anchor.is_some_and(|a| a + self.config.grid_offset(*k) > f)))
+    }
     pub fn required_entry_spread(&self, mean:Decimal, level:usize) -> Decimal {
         let base=self.config.entry_threshold(mean);
         if self.config.accumulation.is_some() && level>=self.config.max_groups {
             // Time additions reuse the last completed entry price, not the moving MA gate.
-            return self.last_open_completed.map_or(base,|(_,spread)|spread);
+            let last = self.last_open_completed.map_or(base,|(_,spread)|spread);
+            return self.held_entry_floor().map_or(last, |floor| last.max(floor));
         }
-        base.max(self.anchor.map_or(base,|a|a+Decimal::from(level)*self.config.grid))
+        let required = base.max(self.anchor.map_or(base,|a|a+self.config.grid_offset(level)));
+        self.held_entry_floor().map_or(required, |floor| required.max(floor))
     }
     pub fn new(config: InventoryConfig) -> Result<Self> {
         config.validate()?;
@@ -523,6 +541,7 @@ impl Snapshot {
             live_orphan: None,
             time_adds_used: 0,
             last_open_completed: None,
+            entry_high_water: None,
             liquidation_protection: None,
             previous_group_exit: BTreeMap::new(),
             closed_lot_allocations: BTreeMap::new(),
@@ -751,6 +770,9 @@ impl Snapshot {
             if self.anchor.is_none() {
                 self.anchor = Some(spread);
             }
+            if self.config.grid_spacing == GridSpacing::CappedDoubling {
+                self.entry_high_water = Some(self.held_entry_floor().unwrap_or(spread).max(spread));
+            }
             let prefix = format!("{}-v2-", op.id);
             let operation_fills=self.fills.values().filter(|f| f.order_id==op.id || f.order_id.starts_with(&prefix)).collect::<Vec<_>>();
             let known=[Venue::Lighter,Venue::Entropy].into_iter().all(|v|
@@ -825,6 +847,7 @@ impl Snapshot {
             self.previous_group_exit.clear();
             self.time_adds_used=0;
             self.last_open_completed=None;
+            self.entry_high_water=None;
             self.anchor = None;
             self.armed.fill(true);
             if op.action == Action::Close && op.first_filled > 0 {

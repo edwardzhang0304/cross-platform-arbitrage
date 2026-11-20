@@ -28,13 +28,14 @@ fn half_hour_rules_snapshot(market: MarketPair, reverse: bool, mode: Mode) -> Sn
     let mut s = legacy_rules_snapshot(market, reverse, mode);
     s.config = rules_upgrade::current_config(&s.config).unwrap();
     s.config.accumulation.as_mut().unwrap().interval_ms = 1_800_000;
+    s.config.grid_spacing = GridSpacing::Fixed;
     // A slot may already have re-armed while its older lot still exists.
     s.armed[0] = true;
     s
 }
 
 #[test]
-fn rc35_upgrade_changes_only_openai_entry_slippage_for_both_account_sizes() {
+fn rc36_upgrade_preserves_execution_guards_and_money_for_both_account_sizes() {
     for market in [MarketPair::Openai,MarketPair::Anth] {for multiplier in [1,10] {
         let mut s=half_hour_rules_snapshot(market,false,Mode::Live);
         s.config.accumulation.as_mut().unwrap().interval_ms=3_600_000;
@@ -44,16 +45,20 @@ fn rc35_upgrade_changes_only_openai_entry_slippage_for_both_account_sizes() {
         assert_eq!(desired.entry_slippage(),d(if market==MarketPair::Openai {4}else{1}));
         assert_eq!(desired.execution_slippage_bps,s.config.execution_slippage_bps);
         let mut expected=s.config.clone();if market==MarketPair::Openai {expected.entry_slippage_bps=Some(d(4));}
+        expected.grid_spacing=GridSpacing::CappedDoubling;
+        expected.accumulation.as_mut().unwrap().interval_ms=CURRENT_TIME_ADD_INTERVAL_MS;
         assert_eq!(desired,expected);
-        assert_eq!(rules_upgrade::migrate_snapshot(&mut s,&desired).unwrap(),market==MarketPair::Openai);
+        assert!(rules_upgrade::migrate_snapshot(&mut s,&desired).unwrap());
         let mut actual=serde_json::to_value(&s).unwrap();
-        for key in ["config","entry_attempts_remaining","resume_after_recovery","reason"] {actual[key]=before[key].clone();}
+        for (i,l) in actual["lots"].as_array_mut().unwrap().iter_mut().enumerate() {l["level"]=before["lots"][i]["level"].clone();}
+        for key in ["config","entry_attempts_remaining","resume_after_recovery","reason","entry_high_water","armed"] {actual[key]=before[key].clone();}
+        if before.get("entry_high_water").is_none() {actual.as_object_mut().unwrap().remove("entry_high_water");}
         assert_eq!(actual,before);
     }}
 }
 
 #[test]
-fn half_hour_upgrade_changes_only_interval_preserving_slots_quota_and_completion_clock() {
+fn old_stage_upgrade_preserves_money_quota_and_completion_clock() {
     for market in [MarketPair::Openai, MarketPair::Anth] {
         for reverse in [false, true] { for mode in [Mode::Paper, Mode::Live] {
             for used in [0, 4, 5] {
@@ -62,14 +67,17 @@ fn half_hour_upgrade_changes_only_interval_preserving_slots_quota_and_completion
                 let before = serde_json::to_value(&s).unwrap();
                 let desired = rules_upgrade::current_config(&s.config).unwrap();
                 let mut expected_config = s.config.clone();
-                expected_config.accumulation.as_mut().unwrap().interval_ms = 3_600_000;
+                expected_config.accumulation.as_mut().unwrap().interval_ms = CURRENT_TIME_ADD_INTERVAL_MS;
+                expected_config.grid_spacing = GridSpacing::CappedDoubling;
                 assert_eq!(desired, expected_config);
                 assert!(rules_upgrade::migrate_snapshot(&mut s, &desired).unwrap());
                 let mut actual = serde_json::to_value(&s).unwrap();
-                for key in ["config", "entry_attempts_remaining", "resume_after_recovery", "reason"] {
+                for (i,l) in actual["lots"].as_array_mut().unwrap().iter_mut().enumerate() {l["level"]=before["lots"][i]["level"].clone();}
+                for key in ["config", "entry_attempts_remaining", "resume_after_recovery", "reason", "entry_high_water", "armed"] {
                     actual[key] = before[key].clone();
                 }
-                assert_eq!(actual, before, "lots, armed slots, quota and last fill clock must remain exact");
+                if before.get("entry_high_water").is_none() {actual.as_object_mut().unwrap().remove("entry_high_water");}
+                assert_eq!(actual, before, "economic lot fields, quota and last fill clock must remain exact");
                 let after = serde_json::to_value(&s).unwrap();
                 assert!(!rules_upgrade::migrate_snapshot(&mut s, &desired).unwrap());
                 assert_eq!(serde_json::to_value(&s).unwrap(), after);
@@ -101,13 +109,14 @@ fn rule_upgrade_preserves_money_inventory_and_used_quota_for_both_markets_and_mo
             let desired=rules_upgrade::current_config(&s.config).unwrap();
             assert_eq!(desired.grid,d(5));
             let r=desired.accumulation.as_ref().unwrap();
-            assert_eq!((r.interval_ms,r.max_time_adds,r.quota_scope),(3_600_000,5,TimeAddQuotaScope::GridStage));
+            assert_eq!((r.interval_ms,r.max_time_adds,r.quota_scope),(CURRENT_TIME_ADD_INTERVAL_MS,5,TimeAddQuotaScope::GridStage));
             assert!(rules_upgrade::migrate_snapshot(&mut s,&desired).unwrap());
             assert_eq!(s.lots.iter().map(|l|l.level).collect::<Vec<_>>(),vec![0,0,0,1,24]);
             assert_eq!(s.time_adds_used,4);
             let mut actual=serde_json::to_value(&s).unwrap();
-            for (i,lot) in actual["lots"].as_array_mut().unwrap().iter_mut().enumerate() {lot["level"]=before["lots"][i]["level"].clone();}
-            for key in ["config","armed","entry_attempts_remaining","resume_after_recovery","reason"] {actual[key]=before[key].clone();}
+        for (i,l) in actual["lots"].as_array_mut().unwrap().iter_mut().enumerate() {l["level"]=before["lots"][i]["level"].clone();}
+            for key in ["config","entry_attempts_remaining","resume_after_recovery","reason","entry_high_water","armed"] {actual[key]=before[key].clone();}
+            if before.get("entry_high_water").is_none() {actual.as_object_mut().unwrap().remove("entry_high_water");}
             assert_eq!(actual,before,"balances, fills, prices, fees, funding, group IDs and history must stay intact");
             let after=serde_json::to_value(&s).unwrap();
             assert!(!rules_upgrade::migrate_snapshot(&mut s,&desired).unwrap());
@@ -198,16 +207,18 @@ fn rule_upgrade_transaction_is_locked_idempotent_and_recovers_between_ledger_and
         assert_eq!(paths.load().unwrap().unwrap().strategy,desired);
         paths.upgrade_rules(&mut settings).unwrap();
         let raw=rusqlite::Connection::open(&paths.database).unwrap();
-        let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_entry_slippage_v1'",[],|r|r.get(0)).unwrap();
+        let count:i64=raw.query_row("SELECT count(*) FROM events WHERE kind='rules_capped_grid_24h_v1'",[],|r|r.get(0)).unwrap();
         assert_eq!(count,1);
-        let event:String=raw.query_row("SELECT body FROM events WHERE kind='rules_entry_slippage_v1'",[],|r|r.get(0)).unwrap();
+        let event:String=raw.query_row("SELECT body FROM events WHERE kind='rules_capped_grid_24h_v1'",[],|r|r.get(0)).unwrap();
         let event:serde_json::Value=serde_json::from_str(&event).unwrap();
         assert_eq!(event["from_interval_ms"],1_800_000);
-        assert_eq!(event["to_interval_ms"],3_600_000);
+        assert_eq!(event["to_interval_ms"],CURRENT_TIME_ADD_INTERVAL_MS);
         let body:String=raw.query_row("SELECT body FROM state WHERE id=1",[],|r|r.get(0)).unwrap();
         let restored:Snapshot=serde_json::from_str(&body).unwrap();
         assert_eq!(restored.config,desired);assert_eq!(restored.time_adds_used,4);assert_eq!(restored.closed_groups,7);
-        assert_eq!(restored.armed,s.armed);
+        let mut migrated=s.clone();rules_upgrade::migrate_snapshot(&mut migrated,&desired).unwrap();
+        assert_eq!(restored.armed,migrated.armed);
+        assert_eq!(restored.entry_high_water,Some(d(18)));
         assert_eq!(restored.last_open_completed,s.last_open_completed);
         assert_eq!(std::fs::read(&paths.vault).unwrap(),b"synthetic-trading-vault");
         assert_eq!(std::fs::read(&feishu).unwrap(),b"synthetic-feishu-vault");

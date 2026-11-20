@@ -38,8 +38,9 @@ test('parameter text describes the loaded rules, including unchanged legacy acco
   vm.runInContext(script,ctx);
   const newer=JSON.parse(fs.readFileSync(path.join(__dirname,'../config/strategy.example.json'),'utf8'));
   const legacy=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/inventory/live-strategy.json'),'utf8'));
-  assert.match(ctx.entryRulesText(newer),/网格间隔 5U；同价加仓至少 60 分钟，每个网格阶段最多 5 次/);
+  assert.match(ctx.entryRulesText(newer),/网格间隔 5、10、20，之后固定20U；同价加仓至少 240 分钟，每个网格阶段最多 5 次/);
   assert.match(ctx.entryRulesText(newer),/双腿成交配平后重置/);
+  assert.match(ctx.entryRulesText(newer),/在24小时内线性降低至5/);
   assert.match(ctx.entryRulesText(legacy),/网格间隔 2U；同价加仓至少 15 分钟，整轮最多 5 次/);
   assert.equal(ctx.entryRulesText(null),'请先配置或导入账户');
   assert.match(ctx.entryRulesText({...newer,group_notional:'150',max_loss_usdc:'300'}),/每组每边保证金约 50U（持仓金额约 150U），逐仓 3 倍；亏损保护 300U/);

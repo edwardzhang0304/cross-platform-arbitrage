@@ -117,19 +117,19 @@ fn automatic_pause_requires_valid_funding_ownership_and_single_group_depth_to_re
 }
 
 #[test]
-fn hourly_time_add_waits_for_full_hour_and_confirmation_but_grid_is_independent() {
+fn current_time_add_waits_for_full_interval_and_confirmation_but_grid_is_independent() {
     for reverse in [false,true] {
-        let now=8_000_000;
+        let now=20_000_000;
         let (mut s,mut a)=accumulation_fixture(now,reverse);
         s.config.grid=d(5);
         s.config.accumulation.as_mut().unwrap().interval_ms=CURRENT_TIME_ADD_INTERVAL_MS;
         s.config.accumulation.as_mut().unwrap().quota_scope=TimeAddQuotaScope::GridStage;
-        s.last_open_completed=Some((now-3_599_000,d(10)));
+        s.last_open_completed=Some((now-CURRENT_TIME_ADD_INTERVAL_MS+1000,d(10)));
         s.config.entry_confirmation_ms=Some(5000);
         for offset in 0..=6 {
             let t=now+offset*1000;for account in &mut a {account.observed_ms=t;}
             let result=strategy::evaluate(&mut s,&bidir_books(t,10,reverse),&a,t).unwrap();
-            if offset<6 {assert!(result.is_none(),"hour and five-second confirmation must both pass");}
+            if offset<6 {assert!(result.is_none(),"full interval and five-second confirmation must both pass");}
             else {assert_eq!(result.unwrap().level,s.config.max_groups);}
         }
         let (mut s,mut a)=accumulation_fixture(now,reverse);

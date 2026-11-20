@@ -1949,3 +1949,4 @@ fn depleted_cash_prevents_reserving_first_leg_without_consuming_entry_quota() {
 }
 
 include!("entry_availability_tests.rs");
+include!("capped_grid_tests.rs");

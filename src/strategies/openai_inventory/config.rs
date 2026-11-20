@@ -7,7 +7,7 @@ pub const PAPER_ENTROPY_ADDRESS: &str = "0x0000000000000000000000000000000000000
 pub const LIVE_CONFIRMATION: &str = "START_OPENAI_INVENTORY_LIVE";
 pub const LIVE_STRATEGY_CONFIRMATION: &str = "START_OPENAI_LIVE_STRATEGY";
 pub const LIVE_LIMIT_UPGRADE_CONFIRMATION: &str = "UPGRADE_OPENAI_LIVE_LIMITS";
-pub const CURRENT_TIME_ADD_INTERVAL_MS: u64 = 3_600_000;
+pub const CURRENT_TIME_ADD_INTERVAL_MS: u64 = 4 * 60 * 60 * 1000;
 pub fn default_capital_multiplier() -> u32 { 1 }
 fn is_standard_capital(value: &u32) -> bool { *value == 1 }
 
@@ -38,6 +38,18 @@ impl TimeAddQuotaScope {
     fn is_round(&self) -> bool { *self == Self::Round }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GridSpacing {
+    #[default]
+    Fixed,
+    /// Increments of one, two, then four base steps for all subsequent levels.
+    CappedDoubling,
+}
+impl GridSpacing {
+    fn is_fixed(&self) -> bool { *self == Self::Fixed }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccumulationRules {
@@ -63,7 +75,7 @@ pub struct InventoryConfig {
     pub accumulation: Option<AccumulationRules>,
     pub exit_policy: ExitPolicy,
     /// Legacy non-accumulation target. The approved accumulation policy uses
-    /// strategy::group_profit_target (half entry, seven-day decay, floor 5).
+    /// strategy::group_profit_target (half entry, one-day decay, floor 5).
     pub group_take_profit: Decimal,
     pub direction_policy: super::DirectionPolicy,
     pub mode: Mode,
@@ -85,6 +97,8 @@ pub struct InventoryConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry_threshold_cap: Option<Decimal>,
     pub grid: Decimal,
+    #[serde(skip_serializing_if = "GridSpacing::is_fixed")]
+    pub grid_spacing: GridSpacing,
     /// Explicit account-local capital tier. Missing in existing ledgers means 1x.
     #[serde(skip_serializing_if = "is_standard_capital")]
     pub capital_multiplier: u32,
@@ -131,6 +145,7 @@ impl Default for InventoryConfig {
             entry_offset: Decimal::from(4),
             entry_threshold_cap: None,
             grid: Decimal::from(2),
+            grid_spacing: GridSpacing::Fixed,
             capital_multiplier: 1,
             group_notional: Decimal::from(15),
             max_groups: 20,
@@ -154,6 +169,17 @@ impl Default for InventoryConfig {
     }
 }
 impl InventoryConfig {
+    pub fn grid_offset(&self, level: usize) -> Decimal {
+        let steps = match self.grid_spacing {
+            GridSpacing::Fixed => Decimal::from(level),
+            GridSpacing::CappedDoubling => match level {
+                0 => Decimal::ZERO,
+                1 => Decimal::ONE,
+                n => Decimal::from(n) * Decimal::from(4) - Decimal::from(5),
+            },
+        };
+        self.grid * steps
+    }
     /// Apply only while creating a new account configuration, never to a held ledger.
     pub fn set_initial_capital(&mut self, multiplier: u32) -> Result<()> {
         ensure!([1,10].contains(&multiplier), "unsupported capital multiplier");
@@ -215,6 +241,9 @@ impl InventoryConfig {
         self.sample_ms * 2
     }
     pub fn validate(&self) -> Result<()> {
+        ensure!(self.grid_spacing != GridSpacing::CappedDoubling
+            || (self.grid == Decimal::from(5) && self.accumulation.is_some()),
+            "capped grid requires the approved 5/10/20 accumulation schedule");
         ensure!([1,10].contains(&self.capital_multiplier), "unsupported capital multiplier");
         let capital_scale = Decimal::from(self.capital_multiplier);
         // The 10x tier is the explicitly approved 50U margin / 150U notional

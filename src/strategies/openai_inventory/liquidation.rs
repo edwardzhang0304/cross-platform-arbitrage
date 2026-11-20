@@ -217,6 +217,7 @@ async fn advance_protection(s:&mut Snapshot,store:&mut Store,workers:&[AccountWo
         let (l,e)=tokio::join!(workers[0].reconcile_account(),workers[1].reconcile_account());
         ensure!([l?,e?].iter().all(|a|a.authenticated && a.position_units==0 && a.open_orders==0),"flat confirmation pending");
         s.closed_groups+=s.lots.len() as u64;s.lots.clear();s.previous_group_exit.clear();s.anchor=None;
+        s.entry_high_water=None;
         s.close_requested=false;s.exit_batch_active=false;s.status=Status::Stopped;
         s.reason="liquidation protection completed; both venues flat; manual review before restart".into();
         let guard=s.liquidation_protection.as_mut().unwrap();guard.completed_ms.get_or_insert(now);

@@ -101,7 +101,7 @@ fn paper_and_live_share_the_same_decision_trace() {
     for scale in [1,10] {for market in [MarketPair::Openai,MarketPair::Anth] {for reverse in [false,true] {
         for case in ["decay_fresh","decay_half","decay_mature","decay_funding_cost","decay_funding_unknown"] {
             let day=86_400_000;let now=20*day;
-            let age=match case {"decay_fresh"=>0,"decay_half"=>7*day/2,_=>7*day};
+            let age=match case {"decay_fresh"=>0,"decay_half"=>day/2,_=>day};
             let mut paper=super::profit_decay_tests::seed(market,scale,reverse,age);
             paper.instance_id=format!("decay-parity-{}-{scale}-{reverse}-{case}",market.id());
             if case=="decay_funding_cost" || case=="decay_funding_unknown" {
@@ -144,6 +144,45 @@ fn paper_and_live_share_the_same_decision_trace() {
             assert_eq!(entry_availability::active(&paper),offset<11);
             trace.push(serde_json::json!({"case":"automatic_funding_recovery","market":market,
                 "scale":scale,"reverse":reverse,"offset":offset,"status":paper.status,"pause":paper.automatic_entry_pause}));
+        }
+    }}}
+    for scale in [1,10] {for market in [MarketPair::Openai,MarketPair::Anth] {for reverse in [false,true] {
+        for case in ["four_hour_early","four_hour_ready","held_floor","stage_quota","second_grid","capped_grid"] {
+            let now=20_000_000;
+            let (mut paper,mut a)=capped_fixture(now,reverse);
+            paper.config.market=market;
+            for p in &mut paper.positions {p.average+=d(100);}
+            if scale==10 {
+                paper.config.set_initial_capital(10).unwrap();
+                for p in &mut paper.positions {p.units*=10;}
+                for l in &mut paper.lots {l.units*=10;}
+                for x in &mut a {x.position_units*=10;x.free_margin*=d(10);x.equity*=d(10);}
+            }
+            paper.instance_id=format!("capped-parity-{}-{scale}-{reverse}-{case}",market.id());
+            let spread=match case {
+                "four_hour_early"=>{paper.last_open_completed=Some((now-3_600_000,d(10)));11},
+                "held_floor"=>{paper.entry_high_water=Some(d(30));paper.last_open_completed=Some((now-14_400_000,d(30)));29},
+                "stage_quota"=>{paper.time_adds_used=5;11},
+                "second_grid"=>{paper.entry_high_water=Some(d(15));paper.last_open_completed=Some((now,d(15)));paper.armed[1]=false;25},
+                "capped_grid"=>{paper.entry_high_water=Some(d(45));paper.last_open_completed=Some((now,d(45)));paper.armed[1..4].fill(false);65},
+                _=>11,
+            };
+            let mut live=paper.clone();live.config.mode=Mode::Live;
+            for offset in [0,1000] {
+                let t=now+offset;for x in &mut a {x.observed_ms=t;}
+                let mut b=bidir_books(t,spread,reverse);
+                // Keep both legs above venue minimum notional even at a 65U spread.
+                for book in &mut b {for level in book.bids.iter_mut().chain(&mut book.asks){level.price+=d(100);}}
+                if scale==10 {for book in &mut b {for level in book.bids.iter_mut().chain(&mut book.asks){level.units*=10;}}}
+                let p=strategy::evaluate(&mut paper,&b,&a,t).unwrap();
+                let l=strategy::evaluate(&mut live,&b,&a,t).unwrap();
+                assert_eq!(serde_json::to_value(&p).unwrap(),serde_json::to_value(&l).unwrap());
+                let expected=match case {"four_hour_ready"=>Some(20),"second_grid"=>Some(2),"capped_grid"=>Some(4),_=>None};
+                assert_eq!(p.as_ref().map(|o|o.level),if offset>0 {expected}else{None},"{market:?}/{scale}/{reverse}/{case}");
+                let mut normalized=serde_json::to_value(&live).unwrap();normalized["config"]["mode"]="paper".into();
+                assert_eq!(serde_json::to_value(&paper).unwrap(),normalized);
+                trace.push(serde_json::json!({"case":case,"market":market,"scale":scale,"reverse":reverse,"offset":offset,"operation":p}));
+            }
         }
     }}}
     if let Some(path) = std::env::var_os("STRATEGY_PARITY_REPORT") {

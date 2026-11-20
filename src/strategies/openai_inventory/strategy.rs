@@ -314,9 +314,9 @@ fn timed_entry_candidates(s: &mut Snapshot, books: &[Book; 2], accounts: &[Accou
     if entry < threshold { *armed = true; }
     let grid_level = if let Some(anchor) = s.anchor {
         for k in 0..s.armed.len() {
-            if entry < anchor + Decimal::from(k) * s.config.grid { s.armed[k] = true; }
+            if s.config.grid_spacing == GridSpacing::Fixed && entry < anchor + s.config.grid_offset(k) { s.armed[k] = true; }
         }
-        (0..s.config.max_groups).find(|k| s.armed[*k] && !s.lots.iter().any(|l| l.level == *k))
+        s.next_grid_level()
     } else if *armed { Some(0) } else { None };
     if s.lots.len() >= s.config.max_groups { return Ok([None; 2]); }
     let qty = s.config.common_units(s.config.group_notional, (books[0].mid().unwrap() + books[1].mid().unwrap()) / Decimal::TWO)?;
@@ -327,7 +327,7 @@ fn timed_entry_candidates(s: &mut Snapshot, books: &[Book; 2], accounts: &[Accou
     let time = s.config.accumulation.as_ref().and_then(|r| {
         let (at, spread) = s.last_open_completed?;
         (s.anchor.is_some() && s.time_adds_used < r.max_time_adds && now >= at
-            && now - at >= r.interval_ms && entry >= spread)
+            && now - at >= r.interval_ms && entry >= spread.max(s.held_entry_floor().unwrap_or(spread)))
             .then_some(s.config.max_groups + s.time_adds_used)
     });
     if grid.is_none() && time.is_none() { return Ok([None; 2]); }
@@ -599,12 +599,13 @@ fn evaluate_inner(
             if entry < threshold { *armed = true; }
             let level = if let Some(anchor) = s.anchor {
                 for k in 0..s.armed.len() {
-                    if entry < anchor + Decimal::from(k) * s.config.grid { s.armed[k] = true; }
+                    if s.config.grid_spacing == GridSpacing::Fixed && entry < anchor + s.config.grid_offset(k) { s.armed[k] = true; }
                 }
-                (0..s.config.max_groups).find(|k| s.armed[*k] && !s.lots.iter().any(|l| l.level == *k))
+                s.next_grid_level()
             } else if *armed { Some(0) } else { None };
             let Some(level) = level else { continue; };
-            let grid_threshold = s.anchor.map(|a| a + Decimal::from(level) * s.config.grid).unwrap_or(threshold);
+            let grid_threshold = s.anchor.map(|a| a + s.config.grid_offset(level)).unwrap_or(threshold)
+                .max(s.held_entry_floor().unwrap_or(Decimal::ZERO));
             let required = threshold.max(grid_threshold).max(Decimal::ZERO);
             if entry < required || prev_entry < s.config.entry_threshold(prev_mean).max(grid_threshold) { continue; }
             let qty = s.config.common_units(s.config.group_notional, (books[0].mid().unwrap() + books[1].mid().unwrap()) / Decimal::TWO)?;
@@ -704,11 +705,11 @@ fn evaluate_inner(
     }))
 }
 
-pub const PROFIT_DECAY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+pub const PROFIT_DECAY_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Current accumulation policy: each durable lot independently relaxes its
-/// contraction target from half its entry spread to 5 over seven elapsed days.
-/// A backwards clock never makes a lot older; after day seven the floor holds.
+/// contraction target from half its entry spread to 5 over 24 elapsed hours.
+/// A backwards clock never makes a lot older; after day one the floor holds.
 pub fn group_profit_target(config: &InventoryConfig, lot: &Lot, now: u64) -> Decimal {
     if config.accumulation.is_none() { return config.group_take_profit; }
     let floor = Decimal::from(5);
